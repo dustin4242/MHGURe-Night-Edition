@@ -1,28 +1,9 @@
 # MHGU Recomp
 
-A native PC port of **Monster Hunter Generations Ultimate** (Nintendo Switch, version 1.4.0), made by statically
-recompiling the game's 32-bit ARM code to C and running it on a host runtime: Switch system services and the NVN
-graphics API are reimplemented on Windows, with Vulkan for rendering.
+A fork of MHGURecomp by morerokk. Mainly to put in features I would specifically want in mhgu over what others may prefer.
 
 **No game files are included.** You need your own copy of the game, dumped from your own Switch. This project does
 not explain how to dump it and does not provide game files, keys or links to them.
-
-Status: fully playable, but there may be some bugs. I've played a dozen hunts with no remaining issues. Multiplayer also works.
-
-## What it adds over the Switch version
-
-- Graphics settings (resolution, MSAA, FXAA, Supersampling, VSync)
-- Any screen shape from 16:10 to ultrawide (21:9, 32:9 and wider), with the HUD unstretched: centered or spread to
-  the screen's sides
-- Frame rate cap anywhere between 30-240 fps
-- Supports almost every controller under the sun
-- Experimental KB+M controls
-- Optional: small monsters are properly synced between players in multiplayer
-- Optional: monster HP scaling by playercount
-- Fast-forward unskippable cutscenes by pressing A
-- Optional: village quests are playable in multiplayer (press L/R at the quest counter), with appropriately re-scaled monster HP
-- Mod support. The vast majority of mods work by dropping them into the `mods` folder, including Forge mods. (see [Mods](#mods))
-- Cheat codes in the same format as Ryujinx and Atmosphère, in the `cheats` folder (see [Cheats](#cheats))
 
 ## Requirements
 
