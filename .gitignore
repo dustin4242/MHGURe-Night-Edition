@@ -9,6 +9,7 @@
 /save/
 /mods/
 /data/
+/mhgu/
 tools/venv/
 __pycache__/
 *.pyc

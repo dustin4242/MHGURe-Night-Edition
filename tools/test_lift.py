@@ -231,6 +231,8 @@ def main():
            f'-I{os.path.join(ROOT, "runtime")}', '-o', exe, os.path.join(HERE, 'test_harness.c'),
            os.path.join(work, 'tests.c'), os.path.join(ROOT, 'runtime', 'simd_int.c'),
            os.path.join(ROOT, 'runtime', 'neon.c')] + ([os.path.join(ROOT, 'runtime', 'interp.c')] if args.interp else [])
+    if not sys.platform.startswith('win'):
+        cmd += ['-lm']  # (Linux clang does not link libm on its own; lifted sqrt / rsqrt call into it)
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         print(r.stderr[:6000], file=sys.stderr)
