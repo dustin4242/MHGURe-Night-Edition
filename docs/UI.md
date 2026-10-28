@@ -264,6 +264,79 @@ value/label change goes through that class's own `+0x44`/`+0x48`/`+0x4c` handler
 is the only one of these whose item tables were also mapped in detail (above). None of this is hooked:
 the map exists so a future port feature can address the right class rather than guess.
 
+**The village (town) pause bar and its sub-menus** — pressing `PLUS` in the village (the hub) opens the
+same bar: `cUIOMenuBar` `0x17719a0` and `cUIOMenuBarPanel` `0x1771908` are live there too. Its `uUI`-level
+owner is the town class `uUILobbyStartMenu` (size `0x800`, parent `uUIStartMenu`; class table image `0x17307ec`
+→ runtime `0x19307ec`, object vptr `0x19307f4`), registered by `f_21095c` (`main_000.c`) together with the whole
+village UI family (`uUIItemBox`, `uUIKitchen`, `uUIPostOffice`, `uUIQuestBoard`, `uUIPetMenu`, `uUIRoomService`,
+`uUIBarTopMenu`, `uUIJukeBox`, `uUICrossCoin`, the `uLobbyNpc…` NPCs — each class table is derived from that
+driver's GOT pairs, e.g. `uUIItemBox` `0x1730558`, `uUIQuestBoard` `0x173079c`, `uUIRoomService` `0x17307d8`);
+that table only holds the class's dtor thunk `f_2108f4` and construct thunk `f_20ef90` (`f_20ef90` news `0x800`
+bytes and tail-calls the ctor), i.e. the town classes carry no per-tab virtuals and the tab logic is the same
+free-function family the hunt uses. The village bar has **8 + 8** rows — page 1: Item Pouch, Combine, Combo
+List, Quest Info (grey), Palicoes (grey), Hunter's Notes, Friends, Chat; page 2: Wireless Settings, Status,
+Equipment, Guild Cards, View Special Permits, Gestures, Options, Quit Game — and the page flip again keeps the
+**row** (`RIGHT` from Combine lands on Status, `RIGHT` from Hunter's Notes lands on Gestures). Three rows are
+actions, not windows: Wireless Settings leaves the menu and enables the multiplayer shortcuts (ZL Multiplayer
+Menu, X World Map, Y Hunter Search), View Special Permits prints "See how many Special Permits you own." and
+closes the bar, Quit Game quits. Every other row's window was located the same way as in the hunt (`find` of
+class-table+8 then `fntrace 200000 2347000 120 <obj> <obj+4>` on the live object, 120 per-frame calls) and
+screenshotted while open:
+
+| Village tab | Window classes live while the tab is shown (class table → runtime vptr) | File |
+| --- | --- | --- |
+| Item Pouch | `cUIOItemPouch` `0x1770b48` → `0x1970b50`, `cUIOItemPouch::cUIODelAndItemWindow` `0x1770ae0` → `0x1970ae8`, `cUIOItemExpWindow` `0x1770a64` → `0x1970a6c` | `generated/main/main_100.c` |
+| Combine | `cUIOMix` `0x1771a50` → `0x1971a58` | `generated/main/main_101.c` |
+| Combo List | `cUIOMixList` `0x1771ae0` → `0x1971ae8` | `generated/main/main_101.c` |
+| Hunter's Notes | `cUIOHunterNoteTips` `0x176ff88` → `0x196ff90` plus `cUIOHunterNoteStandard` `0x17700f0` → `0x19700f8`, `cUIOHunterNoteMonsterList` `0x1770008` → `0x1970010`, `cUIOHunterNoteWeaponGuide` `0x177007c` → `0x1970084`; its own rows are Control Type, Request Log, Hunter Info, Monster List, Weapon Controls, Manual (`cUIOHunterNote` `0x1770164` itself is **not** instantiated in the village) | `generated/main/main_100.c` |
+| Friends | `cUIONetworkFriendList` `0x17727a8` → `0x19727b0` (rows Friend List, Friend Registration, Ignore List, Add to Ignore List) | `generated/main/main_102.c` |
+| Chat | `cUIOKaiwaExpWindow` `0x1777bb8` → `0x1977bc0` (rows Chat Menu, Shoutout Reset); the chat panel itself is `cUIOChatWindow` `0x176db94` → `0x196db9c` with `cUIOChatFixedPharase` `0x176db04` → `0x196db0c` | `generated/main/main_106.c`, `main_096.c` |
+| Status | `cUIOStatus` `0x1776a80` → `0x1976a88`, `cUIOStatusParamWindow` `0x1776810` → `0x1976818`, `cUIOStatusUserWindow` `0x1776768` → `0x1976770` | `generated/main/main_105.c` |
+| Equipment | `cUIOEquipList` `0x176e3cc` → `0x196e3d4`, `cUIOStatusEquipWindow` `0x1776948` → `0x1976950` | `generated/main/main_097.c`, `main_105.c` |
+| Guild Cards | opens its own list window `cUIOGuildCardList` `0x176faac` → `0x196fab4` (rows Check, Edit, Send, Card List), whose rows open `cUIOGuildCardView` `0x176fbdc` → `0x196fbe4` and `cUIOGuildCardEdit` `0x176f9b4` → `0x196f9bc` | `generated/main/main_097.c`, `main_098.c` |
+| Gestures | `cUIOStatusStyleWindow` `0x17768e0` → `0x19768e8` (Greet, Bow, Nod, Shrug, Wave, Clap, Fist Pump, Point over 2 pages) | `generated/main/main_105.c` |
+| Options | `cUIOOptionWindowForGame` `0x1772c80` → `0x1972c88` — the **same** window and the same 27-item / 4-page tables as the in-hunt submenu above | `generated/main/main_102.c` |
+
+The Options row is not a guess: with the village submenu open, only `cUIOOptionWindowForGame`'s own virtuals
+run per frame (`+0x4c f_7e7000`, `f_7e5840`, `+0x94 f_7e6978`, `+0x98 f_7e9084`), and moving the item cursor
+re-arms the trace to the identical chain `f_7e87d0` → `f_7e635c` → `f_7e753c` → `f_7e7558` → `f_7e5714` →
+`f_7e7d34`. `cUIOOptionWindowForChat` `0x1772bc0` → `0x1972bc8` and `cUIOOptionWindowForNetwork` `0x1772d40`
+→ `0x1972d48` objects also exist in the village but only their base draw `f_76e2d8` runs; `cUIOOptionWindowBase`
+`0x1772b04` → `0x1972b0c` is never instantiated (it is the shared base).
+
+Own virtuals of the village-only window classes (`cUIOItemExpWindow` — `+0x00 f_7b9f94` `+0x04 f_7b9f98`
+`+0x08 f_7b9fc8` `+0x10 f_7b9fcc` `+0x14 f_7ba310` `+0x28 f_7b9fd0` `+0x44 f_7ba0ac` `+0x48 f_7ba004`
+`+0x4c f_7ba0b0` `+0x6c f_7ba30c` `+0x70 f_7b9f30`; `cUIOGuildCardList` — `+0x00 f_79b0b8` `+0x04 f_79b0bc`
+`+0x08 f_79d7b8` `+0x10 f_79d7bc` `+0x14 f_79e744` `+0x28 f_79d7c0` `+0x48 f_79b0ec` `+0x4c f_79b974`
+`+0x6c f_79e6fc` `+0x70 f_79afc8` `+0x80 f_79e700` `+0x84 f_79e644`; `cUIOGuildCardView` — `+0x00 f_79eaa0`
+`+0x04 f_79ec64` `+0x08 f_7a16d8` `+0x10 f_7a16dc` `+0x14 f_7aa434` `+0x28 f_7a16e0` `+0x48 f_79ec94`
+`+0x4c f_79faf8` `+0x6c f_7aa3ec` `+0x70 f_79e8d4` `+0x80 f_7aa3f0` `+0x84 f_7aa2f8`, then the same tab-panel
+group the bar panel uses at `+0x90`…`+0x124` (`f_80217c`, `f_802244`, `f_802248`, `f_8027f4`, `f_802828`,
+`f_80259c`, `f_80224c`, `f_8026b8`, `f_8025b8`, `f_802844`, `f_802864`, `f_802878`, `f_8028b8`, `f_8028f0`,
+`f_802910`, `f_802928`, `f_802948`, `f_80294c`, `f_76c780`, `f_80298c`, `f_76c78c`, `f_76c794`, `f_8029f0`);
+`cUIOGuildCardEdit` — `+0x00 f_797f54` `+0x04 f_797fd4` `+0x08 f_79977c` `+0x10 f_799780` `+0x14 f_79abb8`
+`+0x28 f_799784` `+0x48 f_798074` `+0x4c f_7984ac` `+0x6c f_79abb4` `+0x70 f_797e7c` `+0x7c f_79ad5c`
+`+0x80 f_79ad60` `+0x84 f_79ad90` `+0x8c f_79ad94` `+0x90 f_79ae94` `+0xa4 f_79ad98` `+0xc0 f_79ae48`
+`+0xc4 f_79adcc` `+0xc8 f_79ae4c` `+0xe8 f_79ae90` `+0xec f_79acfc`; `cUIOKaiwaExpWindow` — `+0x00 f_8427f8`
+`+0x04 f_843098` `+0x08 f_8430c8` `+0x10 f_8430cc` `+0x14 f_843370` `+0x28 f_8430d0` `+0x44 f_84303c`
+`+0x48 f_84297c` `+0x4c f_843040` `+0x60 f_843104` `+0x64 f_8431bc` `+0x68 f_843294` `+0x6c f_843350`
+`+0x7c f_843358` `+0x80 f_8426e0` `+0x90 f_84335c` `+0x94 f_84304c`, whose input path is the one seen open in
+the village (`+0x60 f_843104`, `+0x68 f_843294`, `+0x6c f_843350`, `f_8429a4`); `cUIOChatWindow` — `+0x00 f_7774c4`
+`+0x04 f_7774c8` `+0x14 f_777cd8` `+0x18 f_777548` `+0x28 f_7775f8` `+0x48 f_77762c` `+0x4c f_77766c`
+`+0x6c f_777cd4` `+0x70 f_777460`; `cUIOChatFixedPharase` — `+0x00 f_775d5c` `+0x04 f_775d60` `+0x14 f_7772d0`
+`+0x28 f_77651c` `+0x48 f_776550` `+0x4c f_7769d4` `+0x6c f_777288` `+0x70 f_775b98` `+0x80 f_77728c`
+`+0x84 f_775cc8`; `cUIONetworkFriendList` — `+0x00 f_7da180` `+0x04 f_7da184` `+0x14 f_7db244` `+0x18 f_7da3a8`
+`+0x28 f_7da3c0` `+0x48 f_7da3f4` `+0x4c f_7da78c` `+0x6c f_7db240` `+0x70 f_7da0f8`, and its siblings
+`cUIONetworkAreaSelect` `0x177272c` → `0x1972734`, `cUIONetworkOnlineSelect` `0x1772824` → `0x197282c`,
+`cUIONetworkRoomList` `0x17728a0` → `0x19728a8`, `cUIONetworkRoomSetting` `0x177291c` → `0x1972924` (the
+multiplayer menu Wireless Settings opens) have the same nine-slot shape.
+
+Reproducing the village pass: `MHGU_HIDDEN=1` only (no `MHGU_QUICKHUNT`), boot to the title, `A` ×8 to load the
+save and reach the village, `PLUS`. `A` on an action row or on a greyed row closes the whole menu, so a probe run
+must skip those rows and park the cursor by `DOWN`s only — a run that walked straight through mis-attributed
+Gestures/Friends/Options/Chat to the town. Options is reached without touching Wireless Settings: `PLUS`,
+`RIGHT`, `DOWN` ×6, `A`.
+
 The one place the pause menu *is* handled concretely is the port's HUD repositioning for
 non-16:9 pictures, in `runtime/nvn/vulkan/exec.c` (the vertex stage of 2D draws, cbuf 3). The
 whole pause menu and every sub-menu inside it are drawn at NVN layer `pos_z = 97`; the text and
@@ -431,7 +504,8 @@ it intact at that boundary.
 | HUD elements (status, item wheel, minimap, target cam, Hunter Arts, banners, help box, nameplates) | game GUI code (per-layer, not address-pinned) | repositioned by `exec.c` cbuf 3, by `pos_z` layer |
 | Smithy / equipment 3D previews | `is_3d_overlay` (pos_z > 180) | `exec.c` `ui_preview_map` viewport/scissor |
 | UI text / labels | — | `.gui` + `gmd` in `romfs` |
-| Options menu (title and in-hunt pause submenu) | `cUIOOptionWindowForGame` ctor `f_7e90a8`, handlers `f_7e6efc`–`f_7e9664`, pause-submenu path `f_7e87d0`/`f_7e7558`/`f_7e7d34` (`main_102.c`), pause tabs `uUIQuestStartMenu` `f_877ee0`/`f_8785f0`/`f_8786d0` (`main_108.c`) — pinned, not hooked | open task: adding port entries — `docs/STATUS.md` item 8 |
+| Options menu (title, in-hunt pause submenu and the village pause submenu) | `cUIOOptionWindowForGame` ctor `f_7e90a8`, handlers `f_7e6efc`–`f_7e9664`, pause-submenu path `f_7e87d0`/`f_7e7558`/`f_7e7d34` (`main_102.c`), pause tabs `uUIQuestStartMenu` `f_877ee0`/`f_8785f0`/`f_8786d0` (`main_108.c`) — pinned, not hooked | open task: adding port entries — `docs/STATUS.md` item 8 |
+| Village pause menu & sub-menus | bar owner `uUILobbyStartMenu` class table `0x17307ec` (registered with the town UI family by `f_21095c`, `main_000.c`); one window class per tab (`cUIOItemPouch`, `cUIOMix`, `cUIOMixList`, `cUIOHunterNote*`, `cUIONetworkFriendList`, `cUIOKaiwaExpWindow`, `cUIOStatus*`, `cUIOEquipList`, `cUIOGuildCard*`, `cUIOStatusStyleWindow`, Options = `cUIOOptionWindowForGame`) — §4 tables, not hooked | game GUI; placed by `exec.c` (layers 97/98) |
 | Software keyboard / name entry | — | `runtime/hle/swkbd.c` + `runtime/textinput.c` |
 | Forge / ImGui overlay | — | `runtime/forge*.c`, `runtime/overlay.cpp` |
 | FSR HUD boundary | — | `runtime/nvn/vulkan/fsr.c` (`hud_start`) |
