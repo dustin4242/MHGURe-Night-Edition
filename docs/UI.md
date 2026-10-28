@@ -160,6 +160,44 @@ pause by the `fnnew` trace (entered from the GUI-thread update fns `f_76de98`, `
 thunk: `bl f_76e4d8`, then `ldr r1,[r0,#0x64]; blx r1`), `f_82d1ac`, `f_82d298`, `f_82da7c`, `f_82dd88`,
 `f_82dde4`, and the menu-bar / tab dispatchers `f_800aa4`, `f_8027f4`, `f_802828`, `f_802864`, `f_8029f0`.
 
+**The in-hunt tab bar and the Options submenu inside it** — inside a hunt the bar with the 13 tabs
+("Menu 1 / Menu 2": Item Pouch, Combine, Combo List, Quest Info, Palicoes, Hunter's Notes, Pause |
+Status, Equipment, Gestures, **Options**, End via Subquest, Abandon Quest) and the per-tab handlers
+are another class: `uUIQuestStartMenu` (size `0x6b0`, parent `uUIStartMenu`, both `uUIBase`-derived;
+class registration `f_879c38`, which loads the class name and calls the MTDTI ctor `f_9aedcc`). Its
+vtable is runtime `0x197aeb0` (the class's ctor stores vtable+8 at object+0), so the object's first
+word reads `0x197aeb8` under the control file's `peek`. The Options submenu's own window is the
+`cUIOOptionWindowForGame` object of §5c (its vptr reads `0x1972c88`, i.e. class vtable runtime
+`0x1972c80` = image `0x1772c80`, so `f_<addr>` names in `main_102.c` are its methods):
+
+| uUIQuestStartMenu | vtable slot | File |
+| --- | --- | --- |
+| tab handler, a 14-way switch on the tab index at object+`0x4c` — Options is index 10, branch `f_878058` | +`0x68` `f_877ee0` | `generated/main/main_108.c` |
+| tab state byte: `*(*(this+0xa8) + index*8)` | +`0x90` `f_8785f0` | `generated/main/main_108.c` |
+| per-tab setter (branches on `r1` = 4 / 5) | +`0xb0` `f_8786d0` | `generated/main/main_108.c` |
+| selector: flat tab index = page × tab count + index (`mla` of the bytes at +`0xe5`/`+0xe6`/`+0xe8`, kept at +`0x4c`), then calls the three virtuals above | `f_86f868` (called from `0x86f578`) | `generated/main/main_107.c` |
+
+| cUIOOptionWindowForGame | vtable slot | File |
+| --- | --- | --- |
+| initialize (calls the base's `f_7e5664`, clears the flags at +`0x85`/+`0x86`) | +`0x18` `f_7e6f98` | `generated/main/main_102.c` |
+| per-frame update: state byte at +`0x85` (0 → base `f_7e5840`, `0xa` → the draw path) | +`0x4c` `f_7e7000` | `generated/main/main_102.c` |
+| item count accessor — returns `0x1b` (27 items; the object keeps 8 items per page and 4 pages) | +`0x60` `f_7e7534` | `generated/main/main_102.c` |
+| page/item setup: passes (9, `0x17`) to `f_75bc4c` | +`0x64` `f_7e753c` | `generated/main/main_102.c` |
+| per-item label/layout: jump tables on (page ≤ 3, item ≤ `0x1c`) | +`0x68` `f_7e7558` | `generated/main/main_102.c` |
+| per-item value metadata: jump tables on (page ≤ 3, item ≤ `0x1c`) | +`0x6c` `f_7e7d34` | `generated/main/main_102.c` |
+| input: calls the base's `f_7e635c`, then a 30-entry table on the selected item | +`0x90` `f_7e87d0` | `generated/main/main_102.c` |
+| "finished" stub, returns 0 | +`0x98` `f_7e9084` | `generated/main/main_102.c` |
+| shared base `cUIOOptionWindowBase` (vtable runtime `0x1972b04`) versions: `f_7e5664`, `f_7e5840`, `f_7e5714` (a 6-way switch over an item-state struct), `f_7e635c`, `f_7e6978` | +`0x18`/`0x4c`/`0x8c`/`0x90`/`0x94` | `generated/main/main_102.c` |
+
+The window's fields (a `0x90`-byte object, read with `peek`): +`0x00` vptr, +`0x30` and +`0x3c`
+child GUI objects, +`0x5c` the item objects' class vptr (`0x196cac8`), +`0x68` page index, +`0x69`
+item index on the page, +`0x6a` = 8 items per page, +`0x6b` = 4 pages, +`0x74` = mode (2 = changing
+values), +`0x85` = state. Changing **any** item runs one shared path — no per-item function exists —
+observed with `fnnew 7e0000 7f0000 2500` re-armed before each `RIGHT` press on all 8 items of page 1:
+`f_7e87d0` → `f_7e635c` → `f_7e753c` → `f_7e7558` → `f_7e5714` → `f_7e7d34`. So new (port) entries
+plug into the item tables of `f_7e7558` / `f_7e7d34` / `f_7e87d0` and the count `f_7e7534` returns,
+not into per-item code.
+
 The one place the pause menu *is* handled concretely is the port's HUD repositioning for
 non-16:9 pictures, in `runtime/nvn/vulkan/exec.c` (the vertex stage of 2D draws, cbuf 3). The
 whole pause menu and every sub-menu inside it are drawn at NVN layer `pos_z = 97`; the text and
@@ -256,8 +294,8 @@ menu** is that same GUI (.gui layouts, gmd text, per-item code): adding a port o
 extending its item tables / text / handlers — the effort judgement is still open (`docs/STATUS.md`
 item 8), but its code is now pinned. The Options window is the GUI class family `cUIOOptionWindowBase`
 (ctor `f_7e69e4`, `generated/main/main_102.c`), with per-mode variants `cUIOOptionWindowForChat`
-(ctor `f_7e6dc8`), `cUIOOptionWindowForGame` — the single-player / in-game Options screen, the one
-opened from the title's main menu (ctor `f_7e90a8`) — and
+(ctor `f_7e6dc8`), `cUIOOptionWindowForGame` — the single-player Options screen, opened both from the title's main menu and
+from the Options tab of the in-hunt pause menu (ctor `f_7e90a8`) — and
 `cUIOOptionWindowForNetwork` (ctor `f_7e9674`). Their virtual methods (vtables read at runtime via
 `peek`) are the handler chains `f_7e55e0`–`f_7e6fcc` (Base: `f_7e5630`, `f_7e5664`, `f_7e6978`–`f_7e69dc`,
 `f_7e6ba0`–`f_7e6fcc`), `f_7e6efc`–`f_7e9664` (ForGame: `f_7e9230`, `f_7e9264`, `f_7e928c`, `f_7e92e4`–`f_7e9664`),
@@ -268,7 +306,12 @@ HLE hook exists for them yet. Observed live (`MHGU_HIDDEN=1`; boot → title, `P
 `f_7e6efc`, `f_7e6fcc`, `f_7e91dc`, `f_7e928c`, `f_7ea104`, `f_7ea4d8`, `f_7eaa24`, … — entered from the
 class-dispatch sites `f_85c200`, `f_85c264`, `f_85c2b0`, `f_85c578` (they load the object's vtable slot and
 call it), the `cUIObject` base-virtual call sites `f_76dfe4`/`f_76e260`, update/draw callers `f_801be8`/`f_801c30`,
-and the menu-creation fn `f_386824`.
+and the menu-creation fn `f_386824`. The **in-hunt** submenu is pinned the same way (`fnnew 200000
+2347000 40000` learning through boot → town → hunt, then `PLUS`, `LEFT` to the bar's page 2, `DOWN`×3
+to Options, `A`; `peek` of the two objects gives vptrs `0x197aeb8` = `uUIQuestStartMenu` and `0x1972c88`
+= `cUIOOptionWindowForGame`), and a `fnnew 7e0000 7f0000 2500` window re-armed before `RIGHT` on each
+of the 8 items of page 1 (Music Volume, SFX Volume, HUD, Map, Camera Angle, Camera Controls, Camera
+Speed, Scope Controls) logs the same six functions every time — see §4 for the slot tables.
 
 ### 5d. Menus that are full GUI systems, not HUD layers
 
@@ -282,10 +325,12 @@ and the menu-creation fn `f_386824`.
   `cUIOMenuBarPanel` (ctor `f_7ce4b4`, `main_101.c`); update/handler chain `f_82c288`–`f_82dfe0`
   plus tab dispatchers `f_800aa4`, `f_8027f4`. Its `.gui` layouts are `romfs/nativeNX/eng/GUI/02_common/menu/`
   (`menu`, `menu_option`, `menu_status`, `menu_concoct`, `menu_itemPouch`, `menu_equipMenu`, …).
-- **Options window** (the Options tab of the pause menu, and its chat/network variants) — see §5c:
-  `cUIOOptionWindowBase` (ctor `f_7e69e4`), `cUIOOptionWindowForGame` (ctor `f_7e90a8`, `main_102.c`),
-  `cUIOOptionWindowForChat` (`f_7e6dc8`), `cUIOOptionWindowForNetwork` (`f_7e9674`); layout
-  `GUI/02_common/menu/menu_option`.
+- **Options window** (the Options tab of the pause menu, and its chat/network variants) — see §5c and
+  §4: `cUIOOptionWindowBase` (ctor `f_7e69e4`), `cUIOOptionWindowForGame` (ctor `f_7e90a8`, `main_102.c`),
+  `cUIOOptionWindowForChat` (`f_7e6dc8`), `cUIOOptionWindowForNetwork` (`f_7e9674`); in a hunt the tab
+  opens it through `uUIQuestStartMenu` (`main_107.c`/`main_108.c`: tab switch `f_877ee0`, Options branch
+  `f_878058`, selector `f_86f868`) and its value changes run `f_7e87d0` → `f_7e635c` → `f_7e753c` →
+  `f_7e7558` → `f_7e5714` → `f_7e7d34`; layout `GUI/02_common/menu/menu_option`.
 - **Nameplates / nameplates over heads** are part of the HUD and are exercised by the ultrawide
   fix (`docs/STATUS.md` item 9 lists "nameplates" tested at 1680x840 Edges).
 
@@ -319,7 +364,7 @@ it intact at that boundary.
 | HUD elements (status, item wheel, minimap, target cam, Hunter Arts, banners, help box, nameplates) | game GUI code (per-layer, not address-pinned) | repositioned by `exec.c` cbuf 3, by `pos_z` layer |
 | Smithy / equipment 3D previews | `is_3d_overlay` (pos_z > 180) | `exec.c` `ui_preview_map` viewport/scissor |
 | UI text / labels | — | `.gui` + `gmd` in `romfs` |
-| Options menu (in-game) | `cUIOOptionWindowForGame` ctor `f_7e90a8`, handlers `f_7e6efc`–`f_7e9664` (`main_102.c`) — pinned, not hooked | open task: adding port entries — `docs/STATUS.md` item 8 |
+| Options menu (title and in-hunt pause submenu) | `cUIOOptionWindowForGame` ctor `f_7e90a8`, handlers `f_7e6efc`–`f_7e9664`, pause-submenu path `f_7e87d0`/`f_7e7558`/`f_7e7d34` (`main_102.c`), pause tabs `uUIQuestStartMenu` `f_877ee0`/`f_8785f0`/`f_8786d0` (`main_108.c`) — pinned, not hooked | open task: adding port entries — `docs/STATUS.md` item 8 |
 | Software keyboard / name entry | — | `runtime/hle/swkbd.c` + `runtime/textinput.c` |
 | Forge / ImGui overlay | — | `runtime/forge*.c`, `runtime/overlay.cpp` |
 | FSR HUD boundary | — | `runtime/nvn/vulkan/fsr.c` (`hud_start`) |
