@@ -337,6 +337,54 @@ must skip those rows and park the cursor by `DOWN`s only — a run that walked s
 Gestures/Friends/Options/Chat to the town. Options is reached without touching Wireless Settings: `PLUS`,
 `RIGHT`, `DOWN` ×6, `A`.
 
+**The house's Item Box in the village (the Home)** — the house, entered from the village
+destination menu with `X`, `A`, `A`, is one GUI set: `mhgu/romfs/nativeNX/eng/GUI/04_lobby/home/`
+holds `item_box/menu_style.gui` (the box's tab bar), `item_box/menu_style_down.gui`,
+`item_box/myset_equip.gui`, `item_box/skill.gui`, `item_box/stone.gui` — the loadout chest's
+Style / My Set / Skill / Stone tabs — plus `delivery_item.gui` (the Delivery Box) and
+`gallery.gui`, `gallery_down.gui`, `gallery_down_list.gui` (the Gallery), the Home's two other
+services. The box's stored state is a system object: `sItemBox` (parent `cSystem`, size
+`0x72e4`, dti `0x1858418`) with class table image `0x173f5dc` → runtime `0x193f5dc`, object
+vptr `0x193f5e4`, 190 function entries; its ctor `f_39b394` (`main_024.c`) registers the name
+through `f_9aedcc` at `0x39b49c` and stores that class table (`xref 0x173f5dc` lands inside it),
+and `sPastItemBox` (size `0x1b4c`) keeps the previous hunt's loadout. The UI object itself is
+the town family's `uUIItemBox` (size `0x1190`, dti `0x184d030`; class table image `0x1730558`
+→ runtime `0x1930558`, object vptr `0x1930560`, ctor `f_20e804` (`main_000.c`) at slot `+8` of
+that table — the same dtor-thunk/construct-thunk-only shape as `uUILobbyStartMenu`, so again
+no per-tab virtuals), registered by the same driver `f_21095c`.
+
+The box's windows, one class table per window (class table → runtime object vptr; ctor at
+slot `+0x00`), attributed to tabs by the GUI layout names in `item_box/`:
+
+| Item Box window | class table → vptr | ctor | File |
+|---|---|---|---|
+| tab bar `cUIOStyleMenu` | `0x177700c` → `0x1977014` | `f_837684` | `main_105.c` |
+| Style detail `cUIOStyleMenuDown` | `0x1777088` → `0x1977090` | `f_8393c0` | `main_105.c` |
+| My Set `cUIOMySetMenuLow` / `cUIOMySetStyleInfo` | `0x1772634` → `0x197263c` / `0x17726b0` → `0x19726b8` | `f_7d8f3c` / `f_7d9644` | `main_102.c` |
+| My Set name `cUIOMySetStyleName` | `0x176e518` → `0x196e520` | `f_78a36c` | `main_097.c` |
+| Skill `cUIOSkillWindow` / `cUIOSkillDetailWindow` | `0x17769b0` → `0x19769b8` / `0x1776a18` → `0x1976a20` | `f_8305e8` / `f_830ff4` | `main_105.c` |
+| Skill list / slot `cUIOSkillList` / `cUIOSkillSlot` | `0x1776214` → `0x197621c` / `0x17761a4` → `0x19761ac` | `f_82972c` / `f_82b148` | `main_105.c` |
+| Stone `cUIOStone` / `cUIOStoneList` / `cUIOStoneSlot` | `0x1776ddc` → `0x1976de4` / `0x1776d70` → `0x1976d78` / `0x1776d04` → `0x1976d0c` | `f_835350` / `f_835a70` / `f_835354` | `main_105.c` |
+| stored items `cUIOItemBox` / `cUIOItemExpWindow` | `0x1770a50` → `0x1970a58` / `0x1770a64` → `0x1970a6c` | `f_7b9e04` / `f_7b9f30` | `main_100.c` |
+
+`cUIOItemBox` is the one of these whose class table is taken from its own ctor: `f_7b9e04`
+registers the class name and stores `+8` of `0x1770a50` (`GOT` rt `0x1a3f83c`), where the
+dti-slot GOT pairing does not land. The Home's two NPC services are pinned the same way:
+Gallery `cUIOGalleryList` `0x176f658` → `0x196f660`, `cUIOGalleryListLow` `0x176f704` →
+`0x196f70c`, `cUIOGalleryLow` `0x176f780` → `0x196f788` (ctor `f_794398`, `main_097.c`), and
+Delivery Box `cUIODeliveryBox` `0x176e14c` → `0x196e154`, `cUIODeliveryBoxAnytime` `0x176e1c8`
+→ `0x196e1d0`, `cUIODeliveryBoxAnySub` `0x176e230` → `0x196e238` (ctor `f_77c6e8`, `main_096.c`).
+
+This subsection is static where the pause-menu ones above were runtime-verified: the box was
+never observed open. Its interaction marker is a fixed post at the chest's front-left corner,
+and the Gallery cat NPC stands exactly on it, so every `A` in reach of the chest goes through
+the NPC dialog system instead — the re-armed `fnnew` first-calls at those taps are
+`sNpcTalk::cNpcTalkInfo`, `uQuestNpcCatCart`/`uQuestNpcNyanJiro`/`uQuestNpcOldMan`,
+`sGameControl` — and no class in the table above ever became live; standing far enough to
+skip the cat skips the box's own check too. Two objects sit in the heap across every house
+attempt regardless (`cUIOItemExpWindow` at `0c19cf00`, an object at `0c0555d0` in town and
+house alike), so they are persistent, not evidence the box opened.
+
 The one place the pause menu *is* handled concretely is the port's HUD repositioning for
 non-16:9 pictures, in `runtime/nvn/vulkan/exec.c` (the vertex stage of 2D draws, cbuf 3). The
 whole pause menu and every sub-menu inside it are drawn at NVN layer `pos_z = 97`; the text and
@@ -501,6 +549,7 @@ it intact at that boundary.
 | Perspective matrix | `f_9c617c` (`main_127.c`) | 12 callers; 3 patched |
 | Quest-counter menu | `f_983074`, `f_981e34`, `f_981bb0` (`main_122.c`) | `runtime/hle/villagehub.c` |
 | Pause menu & sub-menus | `cUIOMenu` ctor `f_82d330` (`main_105.c`), `cUIOMenuBar` ctor `f_7ce4b4` (`main_101.c`); handlers `f_82c288`–`f_82dfe0`, tab dispatch `f_800aa4`/`f_8027f4`; in-hunt tabs `uUIQuestStartMenu` `f_877ee0` (`main_108.c`) and one window class per tab (`cUIOMix`, `cUIOMixList`, `cUIOQuestInfo`, `cUIOOtomo*`, `cUIOHunterNote*`, `cUIOStatus*`, `cUIOEquipList`, `cUIOOptionWindow*`) — §4 tables, not hooked | game GUI; placed by `exec.c` (layers 97/98/100) |
+| Item Box (village house) + Delivery Box / Gallery | `uUIItemBox` ctor `f_20e804`, `sItemBox` ctor `f_39b394`; tab windows `cUIOStyleMenu` `f_837684`, `cUIOMySetMenuLow` `f_7d8f3c`, `cUIOSkillWindow` `f_8305e8`, `cUIOStone` `f_835350`, items `cUIOItemBox` `f_7b9e04`, Gallery ctor `f_794398`, Delivery ctor `f_77c6e8` — §4 tables, static (never opened at runtime) | game GUI (`04_lobby/home/`) |
 | HUD elements (status, item wheel, minimap, target cam, Hunter Arts, banners, help box, nameplates) | game GUI code (per-layer, not address-pinned) | repositioned by `exec.c` cbuf 3, by `pos_z` layer |
 | Smithy / equipment 3D previews | `is_3d_overlay` (pos_z > 180) | `exec.c` `ui_preview_map` viewport/scissor |
 | UI text / labels | — | `.gui` + `gmd` in `romfs` |
