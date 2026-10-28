@@ -429,7 +429,7 @@ Known gaps that remain:
     f_7b9f30 (main_100.c); runtime-confirmed open: from the teleport spawn a 4 s STICK_UP hold (120 frames at 30 fps)
     reaches the marker post, and an idle A tap there opens the 8-row Item Box menu (Store/Take
     Items, Item Sets, Combine-Manage Items, Change Appearance, Manage Equipment, Equipment Sets,
-    Change Style/Arts) the whole 8-row menu is now toured end to end with the full press script (docs/UI.md
+    Change Style/Arts); the whole 8-row menu is now toured end to end with the full press script (docs/UI.md
     §4: Store/Take pouch cUIOItemPouch::cUIODelAndItemWindow f_7ba4e0 / f_7ba510 + cUIOKaiwaExpWindow
     f_843104 + cBoxCursor f_757e00 + cNumSelecter, Combine cUIOActionList f_764688 + cUIOFormItemWindow
     f_76dc28, Change Appearance purchase panel cUIOMixList f_7cfb1c + cUIOMoney f_7d0748 + cUIOAppearance*
