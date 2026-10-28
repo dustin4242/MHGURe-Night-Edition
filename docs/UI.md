@@ -177,6 +177,22 @@ word reads `0x197aeb8` under the control file's `peek`. The Options submenu's ow
 | per-tab setter (branches on `r1` = 4 / 5) | +`0xb0` `f_8786d0` | `generated/main/main_108.c` |
 | selector: flat tab index = page × row count + row (`mla` of the bytes at +`0xe5`, +`0xe6`, +`0xe8`, kept at +`0x4c`), then calls the three virtuals above | `f_86f868` (called from `0x86f578`) | `generated/main/main_107.c` |
 
+**The `‹ x / y ›` page indicator is live object data** — the bar's tail words: word
++`0xe4` = flag byte (`01`), `+0xe5` row byte, `+0xe6` rows-on-current-page byte (`07`),
++`0xe7` flag (`ff`); word +`0xe8` = LE16 current page (0-based) + LE16 **page count**
+at +`0xea` (init `0x00020000`). The init virtual `f_877d0c` builds the two page GUIs
+(`f_85ca84` with layout literals `0x11c8b3c`/`0x11c8460`) and the tab groups
+`f_870098(bar,7,1)` + `f_8700a4(bar,2,1)` (`0xd` = the 13 flat tabs total). `fntrace` with `r0` = bar while shown attributes the
+per-frame chain to virtuals +`0x24` `f_86ed24`, +`0x4c` `f_87828c`, +`0x58` `f_86eff4`,
++`0x5c` `f_877edc`, +`0x60` `f_8782ec`, +`0x64` `f_86f0a8`, +`0x7c` `f_878b64`, +`0x94`
+`f_878e80` — and poking the +`0xe8` word to `0x00030001` (page 1, count 3) redraws the
+header indicator as **‹ 2 / 3 ›** the next frame (`build/shots/pc_2of3.png`), count 0
+hides it (`bar_page2.png`), rows `+0xe6` 7→6 collapses the page's tab rows
+(`bar_rows6.png`), and page `+0xe8` 0→1 flips the bar to the second page (`bar_page2.png`
+row set). So a page-count/text change needs the object's words written and the page GUIs
+constructed via `f_85ca84` per page — the header number node re-derives from the words by
+itself, and page/tab *labels* come from the constructed page GUI layouts.
+
 | cUIOOptionWindowForGame | vtable slot | File |
 | --- | --- | --- |
 | initialize (calls the base's `f_7e5664`, clears the flags at +`0x85`/+`0x86`) | +`0x18` `f_7e6f98` | `generated/main/main_102.c` |
