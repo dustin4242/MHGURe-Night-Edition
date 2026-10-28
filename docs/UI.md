@@ -376,14 +376,19 @@ Delivery Box `cUIODeliveryBox` `0x176e14c` → `0x196e154`, `cUIODeliveryBoxAnyt
 → `0x196e1d0`, `cUIODeliveryBoxAnySub` `0x176e230` → `0x196e238` (ctor `f_77c6e8`, `main_096.c`).
 
 This subsection is static where the pause-menu ones above were runtime-verified: the box was
-never observed open. Its interaction marker is a fixed post at the chest's front-left corner,
-and the Gallery cat NPC stands exactly on it, so every `A` in reach of the chest goes through
-the NPC dialog system instead — the re-armed `fnnew` first-calls at those taps are
-`sNpcTalk::cNpcTalkInfo`, `uQuestNpcCatCart`/`uQuestNpcNyanJiro`/`uQuestNpcOldMan`,
-`sGameControl` — and no class in the table above ever became live; standing far enough to
-skip the cat skips the box's own check too. Two objects sit in the heap across every house
-attempt regardless (`cUIOItemExpWindow` at `0c19cf00`, an object at `0c0555d0` in town and
-house alike), so they are persistent, not evidence the box opened.
+never observed open. Its interaction marker is a fixed post at the chest's front-left corner
+(a yellow speech-bubble signpost), and the cat NPC standing there — Chamberlyne, the house's
+*Wycademy housekeeper*, i.e. the Gallery service — keeps every in-range `A` on the NPC dialog
+system instead: the re-armed `fnnew` first-calls at those taps are `sNpcTalk::cNpcTalkInfo`,
+`uQuestNpcCatCart`/`uQuestNpcNyanJiro`/`uQuestNpcOldMan`, `sGameControl` — and no class in the
+table above ever became live. Walking straight forward from the teleport spawn and pressing
+`A` *while still moving* — the control file's timed write (`A <len> <delay>` written together
+with the `STICK_UP` hold, same start frame) makes no difference either; her pages are tutorial
+chatter ("…before quitting the game, remember to use the bed to save…") that advance or restart
+with more taps and never offer a box service, and no window class of the table first-calls in
+any tap phase. Three objects sit in the heap across every house attempt regardless
+(`cUIOItemExpWindow`, and the `cUIOSkillWindow`/`cUIOSkillDetailWindow` pair at e.g.
+`0x19769b8`+8 / `0x1976a20`+8), so they are persistent, not evidence the box opened.
 
 The one place the pause menu *is* handled concretely is the port's HUD repositioning for
 non-16:9 pictures, in `runtime/nvn/vulkan/exec.c` (the vertex stage of 2D draws, cbuf 3). The

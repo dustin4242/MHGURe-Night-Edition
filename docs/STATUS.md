@@ -427,7 +427,8 @@ Known gaps that remain:
     cUIOStoneSlot f_835354 (main_105.c), cUIOMySetMenuLow f_7d8f3c / cUIOMySetStyleInfo
     f_7d9644 (main_102.c), items cUIOItemBox ctor f_7b9e04 / cUIOItemExpWindow ctor
     f_7b9f30 (main_100.c); never observed open at runtime (the Gallery cat NPC stands on
-    the chest's marker post, so in-range A taps go through sNpcTalk's dialog system),
+    the chest's marker post, so in-range A taps go through sNpcTalk's dialog system; pressing A
+    during a forward walk - same-frame timed control write - opens nothing either),
     open state unverified. Adding entries still means extending its item
     tables, text and handlers: judge the effort. Fallback: the port's own overlay panel
     (item 7) opened in game with a key / controller combination; settings that need a restart (resolution, MSAA) say so.
