@@ -49,6 +49,7 @@ static void boot(const char *root) {
     villagehub_init();  // (Village quests at the Hub / Pub counter: runtime/hle/villagehub.c)
     movelog_init();  // (debug, MHGU_LOG_MOVES: runtime/hle/movelog.c)
     quickhunt_init();  // (debug, MHGU_QUICKHUNT: runtime/hle/quickhunt.c)
+    pausepages_init();  // (MHGU_PAUSE_PAGES: in-hunt pause bar page counter: runtime/hle/pausepages.c)
     camjit_init();  // (FSR: the main camera and its jitter: runtime/hle/camera_jitter.c)
     emtrace_init();  // (debug, MHGU_EMTRACE: runtime/hle/emtrace.c)
     cheats_init();  // (cheat codes from cheats/: runtime/cheats.c)
