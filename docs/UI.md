@@ -198,6 +198,72 @@ before each `RIGHT` press on all 8 items of page 1: `f_7e87d0` → `f_7e635c` �
 `f_7e7558` → `f_7e5714` → `f_7e7d34`. So new (port) entries plug into the item tables of
 `f_7e7558` / `f_7e7d34` / `f_7e87d0` and the count `f_7e7534` returns, not into per-item code.
 
+**Every tab of the bar and the window class it opens** — the 14-way switch inside `f_877ee0`
+(jump table at image `0x877f10`) branches per tab index; three tabs are actions, not windows:
+
+| Tab index | Branch in `f_877ee0` | Tab |
+| --- | --- | --- |
+| 0 | `f_877f7c` | Item Pouch |
+| 1 | `f_877f8c` | Combine |
+| 2 | `f_877f9c` | Combo List |
+| 3 | `f_877fac` | Quest Info |
+| 4 | `f_877fbc` | Palicoes |
+| 5 | `f_877fe4` | Hunter's Notes |
+| 6 | `f_878028` | Pause (action — closes the menu) |
+| 7 | `f_878038` | Status |
+| 8 | `f_878048` | Equipment |
+| 9 | `f_877f5c` | Gestures |
+| 10 | `f_878058` | Options |
+| 11 | `f_878090` | End via Subquest (action) |
+| 12 | `f_878184` | Abandon Quest (action) |
+| 13 | `f_877f6c` | unused (14th row) |
+
+Which window class is open for which index was confirmed at runtime: the control file's `find`
+of the class vptr (the 4 little-endian bytes of class-table+8) locates the live heap object, and
+`fntrace 200000 2347000 40 <obj> <obj+4>` (an r0 filter on that one object) then logs 40 per-frame
+calls while the tab is shown. Page flipping preserves the **row**, not the cursor index: one `LEFT`
+from Gestures (page 2, row 2) lands on Quest Info (page 1, row 2).
+
+Each window class is a `0x18`-header class table in the image at `0x177xxxx` (the object's vptr =
+class table + 8, e.g. `0x1970b50` for `0x1770b48`); the slots below are measured from that vptr, and
+the shared `cUIObject` base virtuals (`f_76dc20`–`f_76e4dc`, `f_7635cc`–`f_7635f0`, `f_200b54`, the
+pure-virtual thunks `f_200011`–`f_200018`) are omitted. Slot meanings are the same across all of them:
+`+0x00`/`+0x04` ctor (complete/delegating) and dtor, `+0x08`/`+0x10` init/cleanup, `+0x14` per-frame
+update, `+0x28`/`+0x44`/`+0x48`/`+0x4c` the draw/branch and input group, `+0x6c`/`+0x70` child-window
+setup and the "finished" predicate.
+
+| Tab | Window classes (class table → runtime vptr) | File |
+| --- | --- | --- |
+| Item Pouch | `cUIOItemPouch` `0x1770b48` → `0x1970b50`, `cUIOItemPouch::cUIODelAndItemWindow` `0x1770ae0` → `0x1970ae8` | `generated/main/main_100.c` |
+| Combine | `cUIOMix` `0x1771a50` → `0x1971a58`, helper `cUIOMix::cSetupParam` `0x1771a30` | `generated/main/main_101.c` |
+| Combo List | `cUIOMixList` `0x1771ae0` → `0x1971ae8` (parent `cUIOListWindow` `0x176d188`) | `generated/main/main_101.c` |
+| Quest Info | `cUIOQuestInfo` `0x1774b14` → `0x1974b1c` | `generated/main/main_104.c` |
+| Palicoes | `cUIOOtomo` `0x1772ef8` → `0x1972f00`, `cUIOOtomoLow` `0x1773d60` → `0x1973d68`, `cUIOOtomoStatus` `0x1773e58` → `0x1973e60` | `generated/main/main_102.c`, `main_103.c` |
+| Hunter's Notes | `cUIOHunterNote` `0x1770164` → `0x197016c` plus its four live sub-windows `cUIOHunterNoteTips` `0x176ff88` → `0x196ff90`, `cUIOHunterNoteStandard` `0x17700f0` → `0x19700f8`, `cUIOHunterNoteMonsterList` `0x1770008` → `0x1970010`, `cUIOHunterNoteWeaponGuide` `0x177007c` → `0x1970084` (the tab's own rows: Control Type, Request Log, Hunter Info, Monster List, Weapon Controls, Manual) | `generated/main/main_100.c` |
+| Status | `cUIOStatus` `0x1776a80` → `0x1976a88`, `cUIOStatusParamWindow` `0x1776810` → `0x1976818` | `generated/main/main_105.c` |
+| Equipment | `cUIOEquipList` `0x176e3cc` → `0x196e3d4`, `cUIOStatusEquipWindow` `0x1776948` → `0x1976950` | `generated/main/main_097.c`, `main_105.c` |
+| Gestures | `cUIOStatusStyleWindow` `0x17768e0` → `0x19768e8` | `generated/main/main_105.c` |
+| Options | `cUIOOptionWindowBase` `0x1772b04` → `0x1972b0c`, `cUIOOptionWindowForGame` `0x1772c80` → `0x1972c88` (table above) | `generated/main/main_102.c` |
+
+Own virtuals per window class:
+
+- `cUIOItemPouch` — `+0x00 f_7bb070` `+0x04 f_7bb074` `+0x08 f_7bb0a4` `+0x10 f_7bb0a8` `+0x14 f_7bc63c` `+0x18 f_7bb0ac` `+0x1c f_7bb0b0` `+0x28 f_7bb0b4` `+0x44 f_7bb5a8` `+0x48 f_7bb0e8` `+0x4c f_7bb5ac`; its nested `cUIOItemPouch::cUIODelAndItemWindow` adds `+0x00 f_7ba4dc` `+0x04 f_7ba4e0` `+0x14 f_7bc62c` `+0x18 f_7ba510` `+0x28 f_7ba528` `+0x44 f_7bab18` `+0x48 f_7ba55c` `+0x4c f_7bab1c` and re-uses the eleven functions above at `+0x68`…`+0xb4` (the delete/item sub-window shares the pouch's handlers)
+- `cUIOMix` — `+0x00 f_7ce84c` `+0x04 f_7ce8a0` `+0x08 f_7ce914` `+0x10 f_7ce918` `+0x14 f_7cf8dc` `+0x28 f_7ce9d8` `+0x3c f_7ce91c` `+0x44 f_7ceb80` `+0x48 f_7cea0c` `+0x4c f_7ceb84` `+0x6c f_7cf8d4` `+0x70 f_7ce654` `+0x80 f_7cf8d8` `+0x84 f_7ce6d0` (helper `cSetupParam`: `f_7cf8ec`, `f_7cf91c`)
+- `cUIOMixList` — `+0x00 f_7cfb18` `+0x04 f_7cfb1c` `+0x08 f_7cfb4c` `+0x10 f_7cfb50` `+0x14 f_7d05a8` `+0x28 f_7cfb54` `+0x3c f_7c519c` `+0x44 f_7d0010` `+0x48 f_7cfb88` `+0x4c f_7d0014` `+0x50 f_7c54ec` `+0x60 f_7c5a40` `+0x64 f_764688` `+0x68 f_7c5664` `+0x6c f_7c5a54` `+0x70 f_7d04ec` `+0x80 f_7d05a4` `+0x84 f_7cfa9c`; the list base `cUIOListWindow` (shared with Combo List and Palicoes' `cUIOPetMenu`) contributes `f_764674`, `f_7640cc`
+- `cUIOQuestInfo` — `+0x00 f_814608` `+0x04 f_81460c` `+0x08 f_81463c` `+0x10 f_814640` `+0x14 f_815e70` `+0x18 f_814678` `+0x28 f_814644` `+0x48 f_8146e8` `+0x6c f_815e6c` `+0x70 f_814530`
+- `cUIOOtomo` — `+0x00 f_7ea7a8` `+0x04 f_7ea7ac` `+0x08 f_7ea7dc` `+0x10 f_7ea7e0` `+0x14 f_7f0e44` `+0x28 f_7ea7e4` `+0x44 f_7eaa24` `+0x48 f_7ea818` `+0x4c f_7eaa28` `+0x6c f_7f0e40` `+0x70 f_7ea6b4`; `cUIOOtomoStatus` — `+0x00 f_7fefcc` `+0x04 f_7fefd0` `+0x08 f_7ff000` `+0x10 f_7ff004` `+0x14 f_8007d4` `+0x28 f_7ff008` `+0x44 f_7ff498` `+0x48 f_7ff03c` `+0x4c f_7ff49c` `+0x6c f_8007d0` `+0x70 f_7fef4c`; `cUIOOtomoLow` — `+0x00 f_7fe3c8` `+0x04 f_7fe3cc` `+0x08 f_7fe3fc` `+0x10 f_7fe400` `+0x14 f_7fedb8` `+0x28 f_7fe7e0` `+0x44 f_7fe48c` `+0x48 f_7fe404` `+0x4c f_7fe490`
+- `cUIOHunterNote` — `+0x04 f_7b1910` `+0x08 f_7aeb10` `+0x18 f_7b1914` `+0x1c f_7aec98` `+0x2c f_7b1918` `+0x30 f_7b0708` `+0x40 f_7b191c` `+0x44 f_7b0d7c` `+0x54 f_7b1920` `+0x58 f_7b15f0`; `cUIOHunterNoteTips` — `+0x00 f_7aedbc` `+0x04 f_7aee10` `+0x14 f_7b1924` `+0x18 f_7b0510` `+0x1c f_7b0614` `+0x28 f_7aeb1c` `+0x44 f_7aebf0` `+0x48 f_7aeb50` `+0x4c f_7aebf4` `+0x60 f_7b0220` `+0x64 f_7aee84` `+0x68 f_7b04b8`; `cUIOHunterNoteStandard` — `+0x00 f_7aeb18` `+0x04 f_7b1650` `+0x14 f_7b1954` `+0x18 f_7b1880` `+0x1c f_7b189c` `+0x28 f_7aeb1c` `+0x44 f_7aebf0` `+0x48 f_7b1680` `+0x4c f_7b18b0` `+0x60 f_7aec2c` `+0x64 f_7b16b8` `+0x68 f_7b1874`; `cUIOHunterNoteMonsterList` — `+0x00 f_7b0774` `+0x04 f_7b07c8` `+0x14 f_7b1934` `+0x18 f_7b0d4c` `+0x1c f_7b0d68` `+0x28 f_7aeb1c` `+0x44 f_7aebf0` `+0x48 f_7aeb50` `+0x4c f_7aebf4` `+0x60 f_7aec2c` `+0x64 f_7b083c` `+0x68 f_7b0b48`; `cUIOHunterNoteWeaponGuide` — `+0x00 f_7b0ea8` `+0x04 f_7b0efc` `+0x14 f_7b1944` `+0x18 f_7b134c` `+0x1c f_7b1454` `+0x28 f_7aeb1c` `+0x44 f_7aebf0` `+0x48 f_7aeb50` `+0x4c f_7aebf4` `+0x60 f_7b155c` `+0x64 f_7b0f70` `+0x68 f_7b1294`
+- `cUIOStatus` — `+0x00 f_8328c0` `+0x04 f_8328f0` `+0x08 f_832940` `+0x10 f_832944` `+0x14 f_833798` `+0x18 f_83297c` `+0x1c f_83299c` `+0x28 f_832948` `+0x44 f_832b60` `+0x48 f_8329d4` `+0x4c f_832b64`; `cUIOStatusParamWindow` — `+0x00 f_82e804` `+0x04 f_82e808` `+0x14 f_833738` `+0x18 f_82e8f4` `+0x1c f_82eaa0` `+0x28 f_82e838` `+0x44 f_82e8f0` `+0x48 f_82e86c` `+0x4c f_82eae0`; the sibling `cUIOStatusUserWindow` (`0x1776768`) uses `f_82e184`, `f_82e188`, `f_833728`, `f_82e234`, `f_82e770`, `f_82e1b8`, `f_82e774`, `f_82e1ec`, `f_82e778`
+- `cUIOEquipList` — `+0x00 f_789a78` `+0x04 f_789af4` `+0x14 f_789f00` `+0x28 f_789b90` `+0x44 f_789c48` `+0x48 f_789bc4` `+0x4c f_789c4c` `+0x6c f_789efc` `+0x70 f_7899dc`; `cUIOStatusEquipWindow` — `+0x00 f_830114` `+0x04 f_830158` `+0x14 f_833768` `+0x28 f_8301bc` `+0x44 f_83023c` `+0x48 f_8301f0` `+0x4c f_830240`
+- `cUIOStatusStyleWindow` — `+0x00 f_82f8e0` `+0x04 f_82f8e4` `+0x14 f_833758` `+0x18 f_82f914` `+0x1c f_82f934` `+0x28 f_82f954` `+0x44 f_82fa24` `+0x48 f_82f988` `+0x4c f_82fb44` (the Hub-only `cUIOStyleMenu` `0x177700c` — `f_837684`, `f_837688`, `f_838140`, `f_83813c`, `f_839178`, `f_839140`, `f_8376b8`, `f_8376bc`, `f_837eb0`, `f_839174`, `f_8375dc` — is never instantiated in a hunt, and neither is `cUIOPetMenu` `0x1774520` nor `cUIOHunterNoteLow` `0x17706a4`: those are the town/room GUI)
+- the bar itself: `cUIOMenuBar` `0x17719a0` → `0x19719a8` (`+0x00 f_7cd64c` `+0x04 f_7cd650` `+0x08 f_7cd680` `+0x10 f_7cd684` `+0x14 f_7ce4a4` `+0x28 f_7cd688` `+0x44 f_7cd910` `+0x48 f_7cd6bc` `+0x4c f_7cd914` `+0x6c f_7ce48c` `+0x70 f_7cc4f8` `+0x80 f_7ce490` `+0x84 f_7cd5b8`) and its panel `cUIOMenuBar::cUIOMenuBarPanel` `0x1771900` → `0x1971908`, whose virtuals are the tab dispatchers already listed (`f_802244`, `f_8027f4`, `f_802828`, `f_802864`, `f_8029f0`, plus `f_7cc578`, `f_7cc57c`, `f_7cc5ac`, `f_7cc5e0`, `f_7cc64c`)
+
+Every tab's window shares the same call shape: the GUI-thread update calls the window's `+0x14` and
+`+0x40` virtuals each frame (`f_76e2d8` and `f_76e4d8`, the `cUIObject` base implementations), so a
+value/label change goes through that class's own `+0x44`/`+0x48`/`+0x4c` handlers — the Options window
+is the only one of these whose item tables were also mapped in detail (above). None of this is hooked:
+the map exists so a future port feature can address the right class rather than guess.
+
 The one place the pause menu *is* handled concretely is the port's HUD repositioning for
 non-16:9 pictures, in `runtime/nvn/vulkan/exec.c` (the vertex stage of 2D draws, cbuf 3). The
 whole pause menu and every sub-menu inside it are drawn at NVN layer `pos_z = 97`; the text and
@@ -361,7 +427,7 @@ it intact at that boundary.
 | Aspect / FOV | `f_21c358`, `f_21c3a0`, `f_af4494` → `g_render_aspect`, `camera_fovy` | `config.c` (`AspectRatio`, `FOV`) |
 | Perspective matrix | `f_9c617c` (`main_127.c`) | 12 callers; 3 patched |
 | Quest-counter menu | `f_983074`, `f_981e34`, `f_981bb0` (`main_122.c`) | `runtime/hle/villagehub.c` |
-| Pause menu & sub-menus | `cUIOMenu` ctor `f_82d330` (`main_105.c`), `cUIOMenuBar` ctor `f_7ce4b4` (`main_101.c`); handlers `f_82c288`–`f_82dfe0`, tab dispatch `f_800aa4`/`f_8027f4` — not hooked | game GUI; placed by `exec.c` (layers 97/98/100) |
+| Pause menu & sub-menus | `cUIOMenu` ctor `f_82d330` (`main_105.c`), `cUIOMenuBar` ctor `f_7ce4b4` (`main_101.c`); handlers `f_82c288`–`f_82dfe0`, tab dispatch `f_800aa4`/`f_8027f4`; in-hunt tabs `uUIQuestStartMenu` `f_877ee0` (`main_108.c`) and one window class per tab (`cUIOMix`, `cUIOMixList`, `cUIOQuestInfo`, `cUIOOtomo*`, `cUIOHunterNote*`, `cUIOStatus*`, `cUIOEquipList`, `cUIOOptionWindow*`) — §4 tables, not hooked | game GUI; placed by `exec.c` (layers 97/98/100) |
 | HUD elements (status, item wheel, minimap, target cam, Hunter Arts, banners, help box, nameplates) | game GUI code (per-layer, not address-pinned) | repositioned by `exec.c` cbuf 3, by `pos_z` layer |
 | Smithy / equipment 3D previews | `is_3d_overlay` (pos_z > 180) | `exec.c` `ui_preview_map` viewport/scissor |
 | UI text / labels | — | `.gui` + `gmd` in `romfs` |
