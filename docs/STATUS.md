@@ -408,10 +408,19 @@ Known gaps that remain:
    with the ImGui the port already ships (a `--settings` switch, or a "Settings" shortcut), so no second program or
    toolkit; the same panel can serve item 8 and Android's controller-only settings (docs/research/android.md).
 8. Look into the port's options in the game's own Options menu. The menu is the game's GUI (.gui layouts, gmd text,
-   per-item code), so adding entries means extending its item tables, text and handlers: find how the Options list
-   is built (fnnew while opening it, the gmd its labels come from) and judge the effort. Fallback: the port's own
-   overlay panel (item 7) opened in game with a key / controller combination; settings that need a restart
-   (resolution, MSAA) say so.
+    per-item code); its code is now pinned (docs/UI.md §4/§5c): Options window classes cUIOOptionWindowBase/ForChat/
+    ForGame/ForNetwork (ctors f_7e69e4 / f_7e6dc8 / f_7e90a8 / f_7e9674, main_102.c; virtuals f_7e55e0–f_7ea578, vtables
+    read at runtime with `peek` through the ctors' GOT slots — the slots are relocation-filled, so the static image has
+    0 there), pause menu classes cUIOMenu / cUIOSMenuSub/Sub2/Top (ctor f_82d330, main_105.c) + cUIOSMenuDownTop (ctor
+    f_82c0e0), tab bar cUIOMenuBar/cUIOMenuBarPanel (ctor f_7ce4b4, main_101.c); pause-menu code observed at pause with
+    a fnnew trace (quickhunt into a quest, PLUS; the GUI-thread update calls it from f_76de98/f_76e364): f_82bf34,
+    f_82bfc0, f_82c078, f_82c474, f_82c62c, f_82d17c (virtual-call thunk), f_82da7c, f_82dd88, tab dispatchers f_800aa4,
+    f_8027f4. The Options screen itself is traced (MHGU_HIDDEN=1; boot to the title, PLUS then navigate): fntrace
+    7e4000–7ec000 logs its virtuals f_7e4870 … f_7eaa24 as the screen opens and runs, entered from the dispatch sites
+    f_85c200 / f_85c264 / f_85c2b0 / f_85c578, base-virtual callers f_76dfe4 / f_76e260, update/draw f_801be8 / f_801c30,
+    creation f_386824 (the in-hunt Options tab is still uncalibrated). Adding entries still means extending its item
+    tables, text and handlers: judge the effort. Fallback: the port's own overlay panel
+    (item 7) opened in game with a key / controller combination; settings that need a restart (resolution, MSAA) say so.
 9. Other aspect ratios. Ultrawide is in (PR #6 by dmitsuki, 2026-10-25, then fixed up): [Display] AspectRatio
    (Auto: the window's), FOV, UIAnchor (Center / Edges / 21:9 / 32:9). Wider than 16:9: the 3D cameras made for the
    screen (aspect 16:9 in sCamera / uCamera +0x38) get the picture's shape (Hor+, gen.py PATCHES at the three

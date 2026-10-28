@@ -1,0 +1,325 @@
+# UI
+
+The `generated/` folder is the game's own code, lifted AArch32 to C one instruction at a
+time (`#include "cpu.h"` / `"neon_rt.h"`, every function `f_<addr>(Cpu *c)` named for its
+guest address, `FN_ENTER(0x…)` markers, `goto L_<addr>` for branches). It carries **no
+comments and no string literals**: the recompiler never emits the game's text, and there is
+nothing in these files whose name mentions the HUD, a menu, or a screen. What *is* in
+`generated/` that relates to the game's UI are the specific guest instructions the port
+patches, and the game functions the port's runtime calls into for the UI. Everything else —
+placing the HUD, drawing the overlay, the keyboard — lives in `runtime/`, not here.
+
+The one module that holds the UI code is `generated/main/` (the `main` executable).
+`generated/sdk/` is only the Nintendo SDK library: its `extern`/HLE points are libc and
+compiler-rt (`memcpy`, `__aeabi_idiv`, … — see `runtime/hle/hle_symbols.txt`), with nothing
+UI in them.
+
+`tools/gen.py`'s `PATCHES` dict is authoritative for the patch sites below: each entry is
+`('main', address) -> (expected word, replacement C)`, and the generated C is what you get
+from applying it (`gen.py` refuses to build if the word at that address does not match, so a
+different game version is caught).
+
+---
+
+## 1. Display and 2D UI canvas size — `f_dbca50`
+
+`generated/main/main_218.c`, function **`f_dbca50`** (guest `0xdbca50`). This is the game's
+display-setup routine: it picks the 3D render target size and the 2D UI canvas size and
+writes them into the NVN buffer config. Four instructions in it were replaced:
+
+| Site | In `f_dbca50` | Original instruction | Replaced with (gen.py PATCHES) |
+| --- | --- | --- | --- |
+| `0xdbcd34` | L_dbcd34 | `mov r0, #1920` (`0xE3A00D1E`) | `c->r[0] = g_render_size[0]` |
+| `0xdbcd38` | L_dbcd38 | `movw r7, #1080` (`0xE3007438`) | `c->r[7] = g_render_size[1]` |
+| `0xdbcd48` | L_dbcd48 | `mov r7, #1280` (`0xE3A07C05`) | `c->r[7] = g_ui_size[0]` |
+| `0xdbcd54` | L_dbcd54 | `mov r7, #720` (`0xE3A07E2D`) | `c->r[7] = g_ui_size[1]` |
+
+The first two are the docked render size, the constants resolution mods used to patch
+(1920x1080). The last two are the **2D UI canvas**, the game's default 1280x720; this is
+what the game's HUD is laid out against.
+
+The patched path has its own fall-through default at `L_dbcd10` (main_218.c:6604):
+
+```c
+L_dbcd10:;
+    c->r[7] = 0x2d0u;   // 720
+    c->r[6] = 0x500u;   // 1280
+```
+
+So the unpatched game hard-codes a 1280x720 UI canvas here; the port replaces the two
+mov-immediate sites above with `g_ui_size` so the canvas width tracks the picture's shape.
+
+What feeds those globals is `runtime/config.c` (`config_apply_display`):
+
+```c
+g_render_size[0] = w;  g_render_size[1] = h;   // RenderResolution / window, fit to shape
+g_ui_size[1]     = 720;
+g_ui_size[0]     = (uint32_t)(720.0f * g_ui_anchor_aspect + 0.5f) & ~1u;
+if (g_ui_size[0] < 1280) g_ui_size[0] = 1280;   // never below the game's own canvas
+```
+
+`g_ui_anchor_aspect` is `[Display] UIAnchor`: `Center` → 16:9, `21:9`, `32:9`, or `Edges` →
+the picture's aspect, clamped to at most the picture's aspect. That is the whole
+"give the game's 2D canvas the HUD's width" half of the ultrawide feature.
+
+## 2. Camera projection, aspect ratio and FOV — the three screen cameras
+
+The same `generated/main/main_218.c` feature also touches the 3D cameras, so the 3D view and
+the HUD agree. The perspective-matrix builder is **`f_9c617c`** (`generated/main/main_127.c`,
+guest `0x9c617c`) — its arguments are near, far, fovy, aspect (radians). Twelve call sites
+load a camera's matrix through it (`f_9c617c(c)`), but only the **three** that build a camera
+made for the screen are patched, and only the two instructions that read the camera's aspect
+(`+0x38`) and pass its fovy:
+
+| Function | File | Patched sites |
+| --- | --- | --- |
+| `f_21c358` | `generated/main/main_001.c` | `0x21c36c`, `0x21c370` |
+| `f_21c3a0` | `generated/main/main_001.c` | `0x21c3b8`, `0x21c3c0` |
+| `f_af4494` | `generated/main/main_158.c` | `0xaf44a8`, `0xaf44ac` |
+
+Each pair becomes (gen.py PATCHES; the second differs only in argument order):
+
+```c
+{ extern float g_render_aspect;
+  float a = LDF(c->r[1] + 0x38u);
+  c->v.f[3] = a > 1.77f && a < 1.786f ? g_render_aspect : a; }        // aspect slot
+
+{ extern float camera_fovy(float, float);
+  c->v.f[2] = camera_fovy(c->v.f[2] * c->v.f[4], c->v.f[3]); }        // fovy slot
+```
+
+A camera only gets touched if it was built for 16:9 (`a > 1.77 && a < 1.786`); any other
+camera keeps its own aspect and fovy. For a 16:9 screen camera, its aspect becomes
+`g_render_aspect` (`config.c`: the picture's shape, at least 16:10) — that is Hor+ / the wider
+3D view — and its fovy is rewritten by `camera_fovy`:
+
+```c
+float camera_fovy(float fovy, float aspect) {           // runtime/config.c
+    if (aspect != g_render_aspect) return fovy;         // not a screen camera
+    fovy *= g_fov_scale;                                // [Display] FOV
+    if (aspect < 16.0f / 9.0f)                          // 16:9 .. 16:10: Vert+
+        fovy = 2.0f * atanf(tanf(fovy * 0.5f) * (16.0f / 9.0f) / aspect);
+    return fovy;
+}
+```
+
+Below 16:10 the whole picture is dropped (config.c forces 16:10 with letterbox bars); between
+16:10 and 16:9 the camera keeps 16:9's width and gains height (Vert+). The other nine
+`f_9c617c` callers are left untouched, so equipment-box previews, guild cards, etc. keep
+their own framing.
+
+## 3. Quest-counter menu — `uUIQuestCounter`
+
+`generated/main/main_122.c`. The game's quest-counter class is `uUIQuestCounter`; its
+methods appear here as plain `f_<addr>` functions. `runtime/hle/villagehub.c` hooks three of
+them (it documents the class name and the addresses in its header):
+
+| Function | Guest | Role (villagehub.c `#define`s) |
+| --- | --- | --- |
+| `f_983074` | `0x983074` | `FN_UI_ROWS` — the star rows of a rank |
+| `f_981e34` | `0x981e34` | `FN_UI_UPDATE` — vtable slot 9 |
+| `f_981bb0` | `0x981bb0` | `FN_UI_DRAW` — vtable slot 18 |
+
+They are fed by the selector job (`0x5b7cf8`, filter `f_5b8090` in `main_068.c`,
+category build/fill/get `0x5b85d8` / `0x5bb318` / `0x5bc96c`). The port uses these to post
+Village quests at the Hub / Hunters' Pub counter (`[Village Quests] VillageQuestsInHub`), so
+the menu's own tables get the extra categories — a UI layout change driven from the runtime
+side, not a patch to the generated code.
+
+## 4. Pause menu and its sub-menus
+
+The pause menu, and the sub-menus reached from it (Items, the two "Menu 1 / Menu 2" pages,
+Combine/Equipment, Status, Options), are the game's own **GUI**: their layout and labels are
+data — `.gui` layout files and `gmd` text in `romfs` — not code. So nothing in `generated/` is
+named for them, and the port neither patches nor hooks the menu (no `gen.py` `PATCHES` entry,
+no `hle_symbols.txt` point) — but the pause menu and its sub-menus are an MT Framework class
+system now **address-pinned** (identification only) in `generated/main/`. The pins come from the
+class tree (`tools/retool.py dti` / GOT-aware `xref str` on the class-name string pool in rodata)
+and from a runtime `fnnew` trace (boot → `MHGU_QUICKHUNT=101` into a quest → press `PLUS`; the
+functions first called after the learn window are the pause-menu code).
+
+**Pause-menu classes** (tree under `cUIObject`, plus the member `sMenu` of `cSystem`): `cUIOMenu`,
+`cUIOMenu::cSetupParam`, `cUIOSMenuTop`, `cUIOSMenuSub`, `cUIOSMenuSub2`, `cUIOSMenuDownTop`,
+`cUIOMenuBar`, `cUIOMenuBar::cUIOMenuBarPanel`. Class registration / constructor functions (they load the
+class name via GOT and call the MTDTI ctor `f_9aedcc`):
+
+| Class | ctor function | File |
+| --- | --- | --- |
+| `cUIOMenu` (registers `cUIOSMenuSub`/`Sub2`/`Top` too) | `f_82d330` | `generated/main/main_105.c` |
+| `cUIOSMenuDownTop` | `f_82c0e0` | `generated/main/main_105.c` |
+| `cUIOMenuBar` / `cUIOMenuBarPanel` | `f_7ce4b4` | `generated/main/main_101.c` |
+| `cSystem::sMenu` | `f_758694` | `generated/main/main_095.c` |
+
+Each class's virtual methods (its vtable, reached at runtime with the control file's `peek` through the
+ctor's GOT slots — the slots are relocation-filled, so they read 0 in the static image) are the
+`cUIOMenu` handler chain `f_82c288`, `f_82c77c`, `f_82cb74`, `f_82ce08`, `f_82d5d0`–`f_82d70c`,
+`f_82da68`–`f_82dfe0`; every GUI class shares the `cUIObject` base virtuals `f_76dc20`, `f_76dc24`,
+`f_76dc88`, `f_76dd14`, `f_76dd2c`, `f_76e200`, `f_76e23c`, `f_76e2d8`, `f_76e3ac`, `f_76e4dc`. Observed at
+pause by the `fnnew` trace (entered from the GUI-thread update fns `f_76de98`, `f_76dec8`, `f_76e0c0`,
+`f_76e364`): `f_82bf34`, `f_82bfc0`, `f_82c078`, `f_82c474`, `f_82c4d4`, `f_82c62c`, `f_82d17c` (virtual-call
+thunk: `bl f_76e4d8`, then `ldr r1,[r0,#0x64]; blx r1`), `f_82d1ac`, `f_82d298`, `f_82da7c`, `f_82dd88`,
+`f_82dde4`, and the menu-bar / tab dispatchers `f_800aa4`, `f_8027f4`, `f_802828`, `f_802864`, `f_8029f0`.
+
+The one place the pause menu *is* handled concretely is the port's HUD repositioning for
+non-16:9 pictures, in `runtime/nvn/vulkan/exec.c` (the vertex stage of 2D draws, cbuf 3). The
+whole pause menu and every sub-menu inside it are drawn at NVN layer `pos_z = 97`; the text and
+labels that sit over them — e.g. the **Qty.** label of the quantity box — are a separate layer,
+`98` (exec.c ~lines 2265–2266). The rules there (exec.c ~2263–2287):
+
+| Part of the pause menu | Screen region (1280×720 layout) | Anchor |
+| --- | --- | --- |
+| Left window — Quest Info | `x ≤ 430` | Left |
+| Submenu & Pause Menu content — Combine, Items, the "Menu 1 / Menu 2" pages | `x > 430` | Right |
+| Quest Complete banner's lower border (slides in from y 739) | `y > 650` | Bottom (else Top) |
+
+So the menu's panel (the two menu pages, the Combine / Items sub-windows) stays pinned to the
+right edge and grows into the empty middle, while a left-side panel (Quest Info) stays on the
+left — the split is at `x = 430`. Vertically the menu keeps its **Top** anchor; only the Quest
+Complete banner's lower border drops to the bottom edge. Layer 98 (the Qty. label and any text
+over a menu) follows the same rule as the layer-97 menu under it; before this fix it used the
+generic rule, which left it centered 36 px below its top-anchored box (exec.c:2266).
+
+The pause menu also affects a neighbouring layer, `100`. When a pass drew a layer-97 menu, the
+flag `ui_menu_pass` is set (exec.c:693 declaration, cleared at 1133, set at 2276). A layer-100
+left window then — the **Request Log** info panel / quest card (`x < 630`, `y < 560`) — is
+top-anchored so it lines up with the top-anchored 97 menu beside it, or the window splits.
+Without a menu in the pass (the results screen, whose labels on the left and numbers on the right
+are one table) those windows keep the layer's default Bottom anchor (exec.c:2286).
+
+Sub-menu scissor: the item / Combine sub-windows are drawn through a scissor sized for the
+original layout; when a moved bar slides out from under it, exec.c relaxes that scissor for the
+one draw (`ui_relax_scissor`, set exec.c:2298 at the layer-103 item selector wheel, applied at
+2738/2740) so the moved bar is not cut off.
+
+Do **not** confuse this with the quest-counter menu in section 3: `uUIQuestCounter`
+(`main_122.c`) is the village / Hub quest board's own rank and star menus (`villagehub.c`:
+"rank menu (UI state 1)" and "star menu (2)"), a separate GUI from the in-hunt pause menu.
+
+The pause menu is exercised by the ultrawide feature (`docs/STATUS.md` item 9): "tested...
+1680x720 Center, 1792x504 / 1680x840 Edges: hunt HUD, pause menu, help box, equipment windows".
+One related bug is still open — a white flashing bar seen in pause menu > Status, "not found yet:
+need a screenshot" (`docs/STATUS.md:100`).
+
+---
+
+## 5. Complete inventory of the game's UI
+
+Every UI element the game draws is either the game's own GUI (code in `generated/main/` driven
+by `.gui`/`gmd` **data** in `romfs`), or the port's own overlay. The game never draws HUD text
+from `generated/`: the labels are data. What the port can *do* to each element is reposition it
+for non-16:9 pictures, and that repositioning is keyed to the element's NVN **layer** — the
+`pos_z` in the 2D draw's matrix (`exec.c` cbuf 3, matrix slot `m[14]`). That layer is how the
+whole HUD/menu set is enumerated below (exec.c ~2215–2325 plus the model-preview path ~1210–1260
+and the viewport/scissor ~2720–2745).
+
+### 5a. HUD and in-hunt overlays — one anchor per layer
+
+`is_fullscreen` fades and full backdrops (centered quad, `m[0]≥1200` or `m[5]≥700`) are
+**left alone** (exec.c:2217–2221); only `!is_fullscreen` draws are moved. Layers, and which port
+flag each sets:
+
+| `pos_z` layer | UI element | Horizontal | Vertical | Flag |
+| --- | --- | --- | --- | --- |
+| `< 95` (94.0) | central notifications & banners ("Time limit: 50 min.") | Center | — | — |
+| `96.0` | dialogue & help text box (bottom left) | Left | Bottom | — |
+| `97.0` | pause menu & sub-menus: **Menu 1/2 pages, Items, Combine** (`x>430`) Right; **Quest Info** left window (`x≤430`) Left | by `x` split @430 | Top (Quest Complete border `y>650` → Bottom) | sets `ui_menu_pass` |
+| `98.0` | text drawn over menus — **Qty. label of the quantity box** — follows the 97 menu under it | as 97 | as 97 | — |
+| `99.0` | results-screen rule between its rows (`y` 266) | Center | forced **Bottom** (no center band) | — |
+| `100.0` | **Hunter Arts HUD** & bottom-right prompts (`y>600`); **target-cam selector** (`x>1000, y<360`); **Request Log** info panel / quest card (`x<630, y<560`); centered windows (`x` 640) stay one piece | Right | Bottom; **Top** for the selector, cutscene top bar (`y<10`), and the left panel when `ui_menu_pass` | `ui_menu_pass` |
+| `103.0` | in-hunt **Status HUD** (clock, HP bar, stamina, gauges, **palico** status, `y<500`) Left/Top; **Item Selector wheel** (`y≥500`) Right/Bottom | by `y` split @500 | Top / Bottom | sets `ui_relax_scissor` on the item bar |
+| `105.0` | **minimap** & **target cam** | Right | Top | — |
+| `110.0` | loading-screen scrolling backdrop (strips `y` 168/433/570) — also lock-on markers & other effects mid-hunt; strips keep height, nothing moves vertically | Center | — | sets `ui_loading_pass` on the strips |
+| else | general fallback | `x≤430` Left, `x≥650` Right, else Center | `y<240` Top, `y>480` Bottom, else Center | — |
+
+Loading-screen special case: once `ui_loading_pass` is set, every layer `94 ≤ pos_z < 109.5`
+scales about the **center** instead of by edge, so the quest panel's headers (100), text (101)
+and title (105) stay one picture (exec.c:2250–2255). Layer 110's mid-hunt lock-on markers must
+**not** be treated as loading strips — only `y` 168/433/570 set the flag (exec.c:2234).
+
+### 5b. 3D models drawn inside a HUD window
+
+`is_3d_overlay` is `pos_z > 180` (exec.c:2242). The Smithy's **weapon / armor preview** and the
+**equipment-box screens** show a 3D model through a viewport + scissor the game sized for its
+1280×720 canvas; when the window moves and squeezes, the model would spill past its frame. `ui_preview_map`
+(exec.c:1219–1244) maps that viewport/scissor with the same anchor rule — horizontally by where
+its centre lands (`cx ≤430` Left, `≥650` Right, else Center; split @430/650, `pm->kx = s`),
+vertically it follows how the **last HUD quad** (the window frame drawn just before) was anchored,
+`ui_last_vanchor` 0 Top / 1 Centre / 2 Bottom (exec.c:694, 2322). The viewport keeps its size and
+only its centre moves; only the scissor follows exactly (exec.c:2723–2740). Returns false for the
+scene itself (a viewport spanning ~the whole picture) or a plain 16:9 frame.
+
+### 5c. HUD text and menu labels — data, not code
+
+All UI strings (button prompts, menu labels, quest text, the Options-menu items) are `.gui`
+layout files and `gmd` text under `romfs`; no `generated/` file holds them. The in-game **Options
+menu** is that same GUI (.gui layouts, gmd text, per-item code): adding a port option means
+extending its item tables / text / handlers — the effort judgement is still open (`docs/STATUS.md`
+item 8), but its code is now pinned. The Options window is the GUI class family `cUIOOptionWindowBase`
+(ctor `f_7e69e4`, `generated/main/main_102.c`), with per-mode variants `cUIOOptionWindowForChat`
+(ctor `f_7e6dc8`), `cUIOOptionWindowForGame` — the single-player / in-game Options screen, the one
+opened from the title's main menu (ctor `f_7e90a8`) — and
+`cUIOOptionWindowForNetwork` (ctor `f_7e9674`). Their virtual methods (vtables read at runtime via
+`peek`) are the handler chains `f_7e55e0`–`f_7e6fcc` (Base: `f_7e5630`, `f_7e5664`, `f_7e6978`–`f_7e69dc`,
+`f_7e6ba0`–`f_7e6fcc`), `f_7e6efc`–`f_7e9664` (ForGame: `f_7e9230`, `f_7e9264`, `f_7e928c`, `f_7e92e4`–`f_7e9664`),
+`f_7e7000`–`f_7e87d0` (ForChat) and `f_7e9660`–`f_7ea578` (ForNetwork). No `gen.py` `PATCHES` entry and no
+HLE hook exists for them yet. Observed live (`MHGU_HIDDEN=1`; boot → title, `PLUS` → main menu, navigate):
+`fntrace 7e4000-7ec000` logs the window's virtuals as the Options screen opens and runs — `f_7e4870`,
+`f_7e48e0`, `f_7e49a0`, `f_7e49d4`, `f_7e4a20`, `f_7e55e0`, `f_7e56e0`, `f_7e57b4`, `f_7e6b18`, `f_7e6ba4`,
+`f_7e6efc`, `f_7e6fcc`, `f_7e91dc`, `f_7e928c`, `f_7ea104`, `f_7ea4d8`, `f_7eaa24`, … — entered from the
+class-dispatch sites `f_85c200`, `f_85c264`, `f_85c2b0`, `f_85c578` (they load the object's vtable slot and
+call it), the `cUIObject` base-virtual call sites `f_76dfe4`/`f_76e260`, update/draw callers `f_801be8`/`f_801c30`,
+and the menu-creation fn `f_386824`.
+
+### 5d. Menus that are full GUI systems, not HUD layers
+
+- **Quest-counter / quest-board menu** — class `uUIQuestCounter`, methods as `f_<addr>` in
+  `generated/main/main_122.c` (`f_983074` rank star-rows, `f_981e34` vtable 9, `f_981bb0` vtable 18);
+  fed by the selector job (`0x5b7cf8`, filter `f_5b8090` `main_068.c`, categories `0x5b85d8`/`0x5bb318`/`0x5bc96c`).
+  The counter lays out its own **rank menu** (UI state 1) and **star menu** (2). The port posts
+  Village quests at the Hub / Hunters' Pub counter via `runtime/hle/villagehub.c`.
+- **Pause menu & its sub-menus** — see §4: class `cUIOMenu` (ctor `f_82d330`, `main_105.c`) with
+  `cUIOSMenuSub`/`Sub2`/`Top`, `cUIOSMenuDownTop` (ctor `f_82c0e0`); the tab bar `cUIOMenuBar` /
+  `cUIOMenuBarPanel` (ctor `f_7ce4b4`, `main_101.c`); update/handler chain `f_82c288`–`f_82dfe0`
+  plus tab dispatchers `f_800aa4`, `f_8027f4`. Its `.gui` layouts are `romfs/nativeNX/eng/GUI/02_common/menu/`
+  (`menu`, `menu_option`, `menu_status`, `menu_concoct`, `menu_itemPouch`, `menu_equipMenu`, …).
+- **Options window** (the Options tab of the pause menu, and its chat/network variants) — see §5c:
+  `cUIOOptionWindowBase` (ctor `f_7e69e4`), `cUIOOptionWindowForGame` (ctor `f_7e90a8`, `main_102.c`),
+  `cUIOOptionWindowForChat` (`f_7e6dc8`), `cUIOOptionWindowForNetwork` (`f_7e9674`); layout
+  `GUI/02_common/menu/menu_option`.
+- **Nameplates / nameplates over heads** are part of the HUD and are exercised by the ultrawide
+  fix (`docs/STATUS.md` item 9 lists "nameplates" tested at 1680x840 Edges).
+
+### 5e. The port's own UI (never in `generated/`)
+
+- **Inline software keyboard / hunter-name entry.** `nn::swkbd` is a Switch applet, absent from
+  both modules; the port supplies it by HLE in `runtime/hle/swkbd.c` (+ `runtime/textinput.c`)
+  — inline-keyboard callbacks the game registers on its own thread (character creation).
+- **Forge / ImGui overlay** (`runtime/forge.c`, `runtime/forge_imgui.c`, `runtime/overlay.cpp`,
+  `tools/imgui_thunks.py`) — the port's debug/settings panel, unrelated to the generated game code.
+- **SDL host window** (`runtime/ui.c`) — the port's window/swapchain setup, not game UI.
+
+### 5f. FSR and the HUD boundary
+
+When FSR is on, the scene is rebuilt at `g_fsr_output` and the **HUD is drawn at output size on
+top** (`runtime/nvn/vulkan/fsr.c:3`). "The start of the HUD" is detected as the first draw into
+the target that is not a post pass (`fsr.c:11`, `hud_start()` at `fsr.c:1553`, exec.c:1091/2598):
+from there on, the HUD renders at full resolution. The repositioning rules of 5a/5b are what keep
+it intact at that boundary.
+
+## Quick reference
+
+| UI feature | In `generated/` | Fed / used by |
+| --- | --- | --- |
+| 3D render size | `f_dbca50` @ `0xdbcd34`/`0xdbcd38` → `g_render_size` | `config.c` (`RenderResolution`) |
+| 2D UI canvas | `f_dbca50` @ `0xdbcd48`/`0xdbcd54` → `g_ui_size` | `config.c` (`UIAnchor`); placed by exec.c |
+| Aspect / FOV | `f_21c358`, `f_21c3a0`, `f_af4494` → `g_render_aspect`, `camera_fovy` | `config.c` (`AspectRatio`, `FOV`) |
+| Perspective matrix | `f_9c617c` (`main_127.c`) | 12 callers; 3 patched |
+| Quest-counter menu | `f_983074`, `f_981e34`, `f_981bb0` (`main_122.c`) | `runtime/hle/villagehub.c` |
+| Pause menu & sub-menus | `cUIOMenu` ctor `f_82d330` (`main_105.c`), `cUIOMenuBar` ctor `f_7ce4b4` (`main_101.c`); handlers `f_82c288`–`f_82dfe0`, tab dispatch `f_800aa4`/`f_8027f4` — not hooked | game GUI; placed by `exec.c` (layers 97/98/100) |
+| HUD elements (status, item wheel, minimap, target cam, Hunter Arts, banners, help box, nameplates) | game GUI code (per-layer, not address-pinned) | repositioned by `exec.c` cbuf 3, by `pos_z` layer |
+| Smithy / equipment 3D previews | `is_3d_overlay` (pos_z > 180) | `exec.c` `ui_preview_map` viewport/scissor |
+| UI text / labels | — | `.gui` + `gmd` in `romfs` |
+| Options menu (in-game) | `cUIOOptionWindowForGame` ctor `f_7e90a8`, handlers `f_7e6efc`–`f_7e9664` (`main_102.c`) — pinned, not hooked | open task: adding port entries — `docs/STATUS.md` item 8 |
+| Software keyboard / name entry | — | `runtime/hle/swkbd.c` + `runtime/textinput.c` |
+| Forge / ImGui overlay | — | `runtime/forge*.c`, `runtime/overlay.cpp` |
+| FSR HUD boundary | — | `runtime/nvn/vulkan/fsr.c` (`hud_start`) |
