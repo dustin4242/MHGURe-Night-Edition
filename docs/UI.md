@@ -401,6 +401,37 @@ windows as the selection moves). Chamberlyne (the Wycademy housekeeper, a fixed 
 marker post) only takes the `A` when the tap lands within her own radius — from ~2 m short she
 hijacks it into dialog, from the full-walk stance the box takes it.
 
+### The whole Item Box menu, toured row by row
+
+The full press script for all eight rows runs from the open stance with ~8-frame presses
+(the menu reacts instantly); the tour harness first sends a `B` after the teleport (an
+open shortcut panel hijacks the opening `A` into **World Map** — observed), then walks
+with two forward bursts (`STICK_UP 150` + `STICK_UP 40`) so the hunter is pressed against
+the chest. Rows 1–3 run as scripted; from row 4 the extra exit presses get consumed inside
+the sub-menu, so the bar cursor drifts a row or two off the intended one — but every
+window family still opens and every row's `fnnew` phase (re-armed per row, so each window's
+`+0x4` *show* virtual re-fires on every reopen) attributes cleanly. Newly pinned classes
+(class table image → runtime vptr = table + 8 + BASE; slot offsets are from that vptr):
+
+| Sub-menu row(s) | Window classes (table → vptr runtime) |
+| --- | --- |
+| Store / Take Items | `cUIOItemPouch::cUIODelAndItemWindow` `0x1770ae0` → `0x1970ae8` (pouch page window; +0x4 show `f_7ba4e0`, +0x18 `f_7ba510`, +0x28 `f_7ba528`, +0x44 `f_7bab18`, +0x80 `f_7bb0ac`, +0x84 `f_7bb0b0`, +0xb4 `f_7bb5ac`, +0xf8 `f_7ba454`, +0x10c `f_7bafe4`), `cUIOKaiwaExpWindow` `0x1777bb8` → `0x1977bc0` (Item Points page, +0x60 `f_843104`…+0x6c `f_843350`), `cBoxCursor` `0x176cb94` → `0x196cb9c` (+0x24 `f_757e00`), `cNumSelecter` `0x17729b8` → `0x19729c0` (Qty selector), `cUIOPageCounter::cSetupParam` `0x1773ed4` → `0x1973edc` |
+| Item Sets | `cUIOMySetMenuLow` `0x1772634` → `0x197263c` (set list + slot detail — two-panel layout, `s_row3.png`) |
+| Combine / Manage Items | `cUIOActionList` `0x176d110` → `0x196d118` (organize/sell actions), `cUIOFormItemWindow` `0x176cf6c` → `0x196cf74` (recipe/form list, +0x18 `f_76dc28`, +0x54 `f_76e4dc`), `cUIOLeftMenu` `0x1771180` → `0x1971188` |
+| Change Appearance | purchase panel: `cUIOMix` `0x1771a50` → `0x1971a58`, `cUIOMixList` `0x1771ae0` → `0x1971ae8` (buy-list), `cUIOMoney` `0x1771b70` → `0x1971b78`, `cUIODLCItemPack` `0x176e2c0` → `0x196e2c8`, `cUIOFacilityShopArms` `0x176e580` → `0x196e588`; appearance: `cUIOAppearanceList` `0x176d630` → `0x196d638`, `cUIOAppearanceColor` `0x176d5ac` → `0x196d5b4`, `cUIOAmulet` `0x176d530` → `0x196d538`, `cUIOInsectCustom` `0x17709c0` → `0x19709c8` (Bugjailed), `cUIOOtomoEquipColor` `0x1773834` → `0x197383c` (Palico colour) |
+| Manage Equipment | `cUIOStatusEquipWindow` `0x1776948` → `0x1976950`, `cUIOStatusParamWindow` `0x1776810` → `0x1976818` + the pinned Stone/Skill/Style/MySet families' construction virtuals (+0x28/+0x44/+0x48) |
+| Change Style / Hunter Arts | `cStyleArtsChange` `0x176c87c` → `0x196c884` (first slot +0x0 `f_748a08`) with `cUIOSkillDeco`/`cUIOSkillCompare` construction |
+
+Shared component classes used by every sub-window: `cUIOPanelBase::cSetupParam`
+`0x17740c8` → `0x19740d0`, `cUIOListWindow::cSetupParam` `0x176f6d0` → `0x196f6d8`,
+`cUIOArrangePanel::cSetupParam` `0x176deb8` → `0x196dec0`,
+`cUIOLeftRightArrows::cUIOLeftRightArrow` `0x177120c` → `0x1971214`, plus the shared
+`cInsertCursor`/`cCursor` bar cursors. Row 5's closing `B×3` fully exits the box (no
+box-family heap instances remain at that probe; `s_row5.png` shows only the shortcut
+panel); `r0`-filtered `fntrace` on every new heap instance again shows the shared
+per-frame base virtual `f_76e2d8` at 120 hits. Screenshots: `build/shots/walked.png`,
+`s_row1.png`–`s_row8.png` (per row), `done.png`.
+
 The one place the pause menu *is* handled concretely is the port's HUD repositioning for
 non-16:9 pictures, in `runtime/nvn/vulkan/exec.c` (the vertex stage of 2D draws, cbuf 3). The
 whole pause menu and every sub-menu inside it are drawn at NVN layer `pos_z = 97`; the text and

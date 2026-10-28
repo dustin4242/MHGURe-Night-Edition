@@ -429,8 +429,13 @@ Known gaps that remain:
     f_7b9f30 (main_100.c); runtime-confirmed open: from the teleport spawn a 4 s STICK_UP hold (120 frames at 30 fps)
     reaches the marker post, and an idle A tap there opens the 8-row Item Box menu (Store/Take
     Items, Item Sets, Combine-Manage Items, Change Appearance, Manage Equipment, Equipment Sets,
-    Change Style/Arts) with the live windows and their r0-fntraced virtuals pinned in docs/UI.md
-    §4; timed A presses mid-walk do not open it. Adding entries still means extending its item
+    Change Style/Arts) the whole 8-row menu is now toured end to end with the full press script (docs/UI.md
+    §4: Store/Take pouch cUIOItemPouch::cUIODelAndItemWindow f_7ba4e0 / f_7ba510 + cUIOKaiwaExpWindow
+    f_843104 + cBoxCursor f_757e00 + cNumSelecter, Combine cUIOActionList f_764688 + cUIOFormItemWindow
+    f_76dc28, Change Appearance purchase panel cUIOMixList f_7cfb1c + cUIOMoney f_7d0748 + cUIOAppearance*
+    f_7670c8 / f_767e0c / f_76a57c / cUIOOtomoEquipColor f_7f8ed4, Style/Arts cStyleArtsChange f_748a08,
+    all class-table pinned); timed A presses mid-walk do not open it, and an open shortcut panel
+    hijacks the opening A into World Map (close it with B first). Adding entries still means extending its item
     tables, text and handlers: judge the effort. Fallback: the port's own overlay panel
     (item 7) opened in game with a key / controller combination; settings that need a restart (resolution, MSAA) say so.
 9. Other aspect ratios. Ultrawide is in (PR #6 by dmitsuki, 2026-10-25, then fixed up): [Display] AspectRatio
