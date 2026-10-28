@@ -426,10 +426,11 @@ Known gaps that remain:
     f_82972c / cUIOSkillSlot f_82b148, cUIOStone f_835350 / cUIOStoneList f_835a70 /
     cUIOStoneSlot f_835354 (main_105.c), cUIOMySetMenuLow f_7d8f3c / cUIOMySetStyleInfo
     f_7d9644 (main_102.c), items cUIOItemBox ctor f_7b9e04 / cUIOItemExpWindow ctor
-    f_7b9f30 (main_100.c); never observed open at runtime (the Gallery cat NPC stands on
-    the chest's marker post, so in-range A taps go through sNpcTalk's dialog system; pressing A
-    during a forward walk - same-frame timed control write - opens nothing either),
-    open state unverified. Adding entries still means extending its item
+    f_7b9f30 (main_100.c); runtime-confirmed open: from the teleport spawn a 4 s STICK_UP hold (120 frames at 30 fps)
+    reaches the marker post, and an idle A tap there opens the 8-row Item Box menu (Store/Take
+    Items, Item Sets, Combine-Manage Items, Change Appearance, Manage Equipment, Equipment Sets,
+    Change Style/Arts) with the live windows and their r0-fntraced virtuals pinned in docs/UI.md
+    §4; timed A presses mid-walk do not open it. Adding entries still means extending its item
     tables, text and handlers: judge the effort. Fallback: the port's own overlay panel
     (item 7) opened in game with a key / controller combination; settings that need a restart (resolution, MSAA) say so.
 9. Other aspect ratios. Ultrawide is in (PR #6 by dmitsuki, 2026-10-25, then fixed up): [Display] AspectRatio

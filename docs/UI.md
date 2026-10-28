@@ -375,20 +375,31 @@ Gallery `cUIOGalleryList` `0x176f658` → `0x196f660`, `cUIOGalleryListLow` `0x1
 Delivery Box `cUIODeliveryBox` `0x176e14c` → `0x196e154`, `cUIODeliveryBoxAnytime` `0x176e1c8`
 → `0x196e1d0`, `cUIODeliveryBoxAnySub` `0x176e230` → `0x196e238` (ctor `f_77c6e8`, `main_096.c`).
 
-This subsection is static where the pause-menu ones above were runtime-verified: the box was
-never observed open. Its interaction marker is a fixed post at the chest's front-left corner
-(a yellow speech-bubble signpost), and the cat NPC standing there — Chamberlyne, the house's
-*Wycademy housekeeper*, i.e. the Gallery service — keeps every in-range `A` on the NPC dialog
-system instead: the re-armed `fnnew` first-calls at those taps are `sNpcTalk::cNpcTalkInfo`,
-`uQuestNpcCatCart`/`uQuestNpcNyanJiro`/`uQuestNpcOldMan`, `sGameControl` — and no class in the
-table above ever became live. Walking straight forward from the teleport spawn and pressing
-`A` *while still moving* — the control file's timed write (`A <len> <delay>` written together
-with the `STICK_UP` hold, same start frame) makes no difference either; her pages are tutorial
-chatter ("…before quitting the game, remember to use the bed to save…") that advance or restart
-with more taps and never offer a box service, and no window class of the table first-calls in
-any tap phase. Three objects sit in the heap across every house attempt regardless
-(`cUIOItemExpWindow`, and the `cUIOSkillWindow`/`cUIOSkillDetailWindow` pair at e.g.
-`0x19769b8`+8 / `0x1976a20`+8), so they are persistent, not evidence the box opened.
+The box is now runtime-confirmed open. From the house's teleport spawn, holding `STICK_UP` for
+4 s (120 presented frames at this port's 30 fps present — the tens-of-frames attempts stopped
+~2 m short of the marker post) reaches the chest's prompt, and an idle `A` tap at that stance
+opens the Item Box menu: Store Items / Take Items / Item Sets / Combine-Manage Items / Change
+Appearance / Manage Equipment / Equipment Sets / Change Style/Arts. (Timed writes that press `A`
+*while still walking* do not open it — the tap must land after arriving.) At the open stance the
+pinned classes report live in `find` (heap slots vary per run): `cUIOStyleMenu` `0x1977014`
+(tab bar), `cUIOStyleMenuDown`, `cUIOMySetMenuLow`, `cUIOMySetStyleInfo`, `cUIOMySetStyleName`,
+`cUIOSkillSlot`, `cUIOStoneList`, `cUIOStoneSlot`; the `cUIOItemExpWindow` +
+`cUIOSkillWindow`/`cUIOSkillDetailWindow` trio is live everywhere and is not evidence. Re-armed
+`fntrace` filtered on each object's `r0` shows a shared per-frame base virtual `f_76e2d8` (120×
+while a window is shown), and each window's own virtuals first-ran within the pinned ctor's
+region: StyleMenu `f_8376b8`–`f_837b28`, StyleMenuDown `f_8393f4`/`f_8398c0`, MySetMenuLow
+`f_7d8f70`/`f_7d8f74`/`f_7d935c`/`f_7d93e4`, MySetStyleInfo `f_7d9678`/`f_7d96f0`/`f_7d9914`/
+`f_7d9928`, MySetStyleName `f_78a3a8`/`f_78a3dc`/`f_78a430`/`f_78a4f0`, SkillSlot
+`f_82b184`/`f_82b1ec`/`f_82b684`/`f_82b79c`, StoneList `f_835aac`/`f_835b4c`, StoneSlot
+`f_835398`/`f_8353d8`/`f_835ef8`/`f_835f48` — so the class-table pins above stand runtime-
+verified. The same tap's `fnnew` also starts the Store/Take-Items pouch window
+`cUIOItemPouch::cUIODelAndItemWindow` (`f_7ba510`+, drawn as the "Item Pouch 2/4" page window
+with X Sort / Y Quantity rows) and shared components `cUIOPageCounter`,
+`cUIOLeftRightArrows`, `cUIOPanelBase`, `cUIOColorPanel`, `cUIOAppearanceList`,
+`cUIOOtomoEquipColor`. Screenshots: `build/shots/x_t3.png` (the menu), `tab1`–`tab5.png` (sub-
+windows as the selection moves). Chamberlyne (the Wycademy housekeeper, a fixed NPC at the
+marker post) only takes the `A` when the tap lands within her own radius — from ~2 m short she
+hijacks it into dialog, from the full-walk stance the box takes it.
 
 The one place the pause menu *is* handled concretely is the port's HUD repositioning for
 non-16:9 pictures, in `runtime/nvn/vulkan/exec.c` (the vertex stage of 2D draws, cbuf 3). The
