@@ -172,10 +172,10 @@ word reads `0x197aeb8` under the control file's `peek`. The Options submenu's ow
 
 | uUIQuestStartMenu | vtable slot | File |
 | --- | --- | --- |
-| tab handler, a 14-way switch on the tab index at object+`0x4c` — Options is index 10, branch `f_878058` | +`0x68` `f_877ee0` | `generated/main/main_108.c` |
+| tab handler: 14-way switch on the tab index at object+`0x4c` (Status = 7, Options = 10; page 2 has 6 rows, so 6 `DOWN`s return to Status) — Options branch `f_878058` | +`0x68` `f_877ee0` | `generated/main/main_108.c` |
 | tab state byte: `*(*(this+0xa8) + index*8)` | +`0x90` `f_8785f0` | `generated/main/main_108.c` |
 | per-tab setter (branches on `r1` = 4 / 5) | +`0xb0` `f_8786d0` | `generated/main/main_108.c` |
-| selector: flat tab index = page × tab count + index (`mla` of the bytes at +`0xe5`/`+0xe6`/`+0xe8`, kept at +`0x4c`), then calls the three virtuals above | `f_86f868` (called from `0x86f578`) | `generated/main/main_107.c` |
+| selector: flat tab index = page × row count + row (`mla` of the bytes at +`0xe5`, +`0xe6`, +`0xe8`, kept at +`0x4c`), then calls the three virtuals above | `f_86f868` (called from `0x86f578`) | `generated/main/main_107.c` |
 
 | cUIOOptionWindowForGame | vtable slot | File |
 | --- | --- | --- |
@@ -191,12 +191,12 @@ word reads `0x197aeb8` under the control file's `peek`. The Options submenu's ow
 
 The window's fields (a `0x90`-byte object, read with `peek`): +`0x00` vptr, +`0x30` and +`0x3c`
 child GUI objects, +`0x5c` the item objects' class vptr (`0x196cac8`), +`0x68` page index, +`0x69`
-item index on the page, +`0x6a` = 8 items per page, +`0x6b` = 4 pages, +`0x74` = mode (2 = changing
-values), +`0x85` = state. Changing **any** item runs one shared path — no per-item function exists —
-observed with `fnnew 7e0000 7f0000 2500` re-armed before each `RIGHT` press on all 8 items of page 1:
-`f_7e87d0` → `f_7e635c` → `f_7e753c` → `f_7e7558` → `f_7e5714` → `f_7e7d34`. So new (port) entries
-plug into the item tables of `f_7e7558` / `f_7e7d34` / `f_7e87d0` and the count `f_7e7534` returns,
-not into per-item code.
+item index on the page, +`0x6a` = 8 (items per page; the header draws 4 pages, `f_7e7534` returns
+27 items), +`0x74` = mode (2 = changing values), +`0x85` = state. Changing **any** item runs one
+shared path — no per-item function exists — observed with `fnnew 7e0000 7f0000 2500` re-armed
+before each `RIGHT` press on all 8 items of page 1: `f_7e87d0` → `f_7e635c` → `f_7e753c` →
+`f_7e7558` → `f_7e5714` → `f_7e7d34`. So new (port) entries plug into the item tables of
+`f_7e7558` / `f_7e7d34` / `f_7e87d0` and the count `f_7e7534` returns, not into per-item code.
 
 The one place the pause menu *is* handled concretely is the port's HUD repositioning for
 non-16:9 pictures, in `runtime/nvn/vulkan/exec.c` (the vertex stage of 2D draws, cbuf 3). The
@@ -307,9 +307,10 @@ HLE hook exists for them yet. Observed live (`MHGU_HIDDEN=1`; boot → title, `P
 class-dispatch sites `f_85c200`, `f_85c264`, `f_85c2b0`, `f_85c578` (they load the object's vtable slot and
 call it), the `cUIObject` base-virtual call sites `f_76dfe4`/`f_76e260`, update/draw callers `f_801be8`/`f_801c30`,
 and the menu-creation fn `f_386824`. The **in-hunt** submenu is pinned the same way (`fnnew 200000
-2347000 40000` learning through boot → town → hunt, then `PLUS`, `LEFT` to the bar's page 2, `DOWN`×3
-to Options, `A`; `peek` of the two objects gives vptrs `0x197aeb8` = `uUIQuestStartMenu` and `0x1972c88`
-= `cUIOOptionWindowForGame`), and a `fnnew 7e0000 7f0000 2500` window re-armed before `RIGHT` on each
+2347000 40000` learning through boot → town → hunt, then `PLUS`, `LEFT` or `RIGHT` to the bar's page 2
+— the cursor lands on Status (tab index 7) — `DOWN`×3 to Options (index 10; page 2 has 6 tabs, so a
+6-`DOWN` cycle returns to Status), `A`; `peek` of the two objects gives vptrs `0x197aeb8` =
+`uUIQuestStartMenu` and `0x1972c88` = `cUIOOptionWindowForGame`), and a `fnnew 7e0000 7f0000 2500` window re-armed before `RIGHT` on each
 of the 8 items of page 1 (Music Volume, SFX Volume, HUD, Map, Camera Angle, Camera Controls, Camera
 Speed, Scope Controls) logs the same six functions every time — see §4 for the slot tables.
 
