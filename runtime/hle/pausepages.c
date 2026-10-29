@@ -21,8 +21,10 @@
 #include <string.h>
 
 #include "../hle.h"
+#include "../config.h"
 
 #define FN_BAR_INIT     0x877d0cu     // uUIQuestStartMenu init virtual (fills the paging struct)
+#define FN_PAGING_INIT  0x87006cu     // paging setup (bar,3,7,1,totalTabs) called by the init virtual
 #define FN_BAR_TABSW    0x877ee0u     // uUIQuestStartMenu tab-window switch virtual (+0x68)
 #define FN_BAR_AKEY     0x86fc30u     // uUIQuestStartMenu +0x90 virtual: A-press tab handler
 #define BAR_VPTR_RT     0x197aeb8u    // uUIQuestStartMenu object vptr (class table 0x177aeb0 + 8)
@@ -33,6 +35,21 @@
 
 static uint32_t g_pages;              // forced page count (0: leave alone)
 static int g_graphics;                // 1: claim the 14th tab and retarget it to Options
+
+// f_87006c(bar, rows, _, totalTabs): the tab total is r3 (stock 13). It runs during the bar's
+// init virtual, so raising it here makes the original init size the paging struct for a third
+// page and build that page at once, instead of patching the paging struct afterwards.
+static void paging_init(Cpu *c) {
+    if (g_graphics && LD32(c->r[0]) == BAR_VPTR_RT) {
+        uint32_t total = c->r[3];
+        uint32_t want = (uint32_t)(g_graphics == 1 ? 15 : g_graphics);
+        if (total != want) {
+            c->r[3] = want;
+            LOG("[pausepages] paging init bar %08x: tab total %u -> %u\n", c->r[0], total, want);
+        }
+    }
+    fnhook_call_original(c, FN_PAGING_INIT);
+}
 
 static void bar_init(Cpu *c) {
     uint32_t bar = c->r[0];
@@ -46,11 +63,65 @@ static void bar_init(Cpu *c) {
     }
 }
 
+// Custom "Graphics" submenu: it is the real cUIOOptionWindowForGame, but opened on the third
+// page it must show a single FXAA row. Its row count comes from the +0x60 virtual (f_7e7534,
+// stock 0x1b = 27 items); reporting 1 makes the window lay out one row and one page.
+#define FN_OPT_COUNT 0x7e7534u
+#define OPT_VPTR_RT  0x1972c88u      // cUIOOptionWindowForGame object vptr
+
+static int g_gfx_menu;                // 1 while the Graphics submenu is the open window
+
+// Row plumbing for the one-row Graphics menu. The window's label virtual +0x68 is
+// (out, page, item) and its value virtual +0x6c is (page, item) -> value. We keep row 0 but
+// redirect it to the HUD item (item 2, the stock On/Off row), and answer its value from the
+// port's FXAA flag. The value setter f_85e5bc(4, _, 9, paramId) is intercepted to flip FXAA.
+#define FN_OPT_ROW   0x7e7558u       // label/layout setup virtual (+0x68)
+#define FN_OPT_VALUE 0x7e7d34u       // current-value virtual (+0x6c)
+#define FN_PARAM_SET 0x85e5bcu       // festa parameter setter
+#define HUD_ITEM     2u             // stock Options page-1 item index of the HUD row
+
+static void opt_row(Cpu *c) {
+    if (g_gfx_menu && LD32(c->r[0]) == OPT_VPTR_RT && c->r[2] == 0u && c->r[3] < 8u)
+        c->r[3] = HUD_ITEM;           // draw the HUD row (On/Off widget) in row 0
+    fnhook_call_original(c, FN_OPT_ROW);
+}
+
+static void opt_value(Cpu *c) {
+    if (g_gfx_menu && LD32(c->r[0]) == OPT_VPTR_RT) {
+        c->r[0] = g_config.fxaa ? 1u : 0u;
+        return;
+    }
+    fnhook_call_original(c, FN_OPT_VALUE);
+}
+
+static void param_set(Cpu *c) {
+    // One left/right press calls the setter twice (param 0xb6 = the value, 0xb7 = its display
+    // twin), so act on 0xb6 only and swallow 0xb7: toggling on both would cancel out.
+    if (g_gfx_menu && c->r[3] == 0xb6u) {
+        g_config.fxaa = !g_config.fxaa;
+        LOG("[pausepages] FXAA -> %s\n", g_config.fxaa ? "On" : "Off");
+        return;
+    }
+    if (g_gfx_menu && c->r[3] == 0xb7u) return;
+    fnhook_call_original(c, FN_PARAM_SET);
+}
+
+static void opt_count(Cpu *c) {
+    if (g_gfx_menu && LD32(c->r[0]) == OPT_VPTR_RT) {
+        c->r[0] = 1;
+        return;
+    }
+    fnhook_call_original(c, FN_OPT_COUNT);
+}
+
 static void bar_a(Cpu *c) {
     uint32_t bar = c->r[0];
+    if (bar && LD32(bar) == BAR_VPTR_RT && LD32(bar + 0x4cu) < GRAPHICS_TAB && g_gfx_menu)
+        g_gfx_menu = 0;               // leaving the Graphics row restores the stock Options menu
     if (g_graphics && bar && LD32(bar) == BAR_VPTR_RT && LD32(bar + 0x4cu) >= GRAPHICS_TAB) {
         ST32(bar + 0x4cu, 10);        // A opens the Options submenu under the Graphics row
-        LOG("[pausepages] tab %08x: flat 14 -> Options window\n", bar);
+        g_gfx_menu = 1;
+        LOG("[pausepages] tab %08x: flat 14 -> Graphics menu\n", bar);
     }
     fnhook_call_original(c, FN_BAR_AKEY);
 }
@@ -59,7 +130,8 @@ static void bar_tabsw(Cpu *c) {
     uint32_t bar = c->r[0];
     if (g_graphics && bar && LD32(bar) == BAR_VPTR_RT && LD32(bar + 0x4cu) >= GRAPHICS_TAB) {
         ST32(bar + 0x4cu, 10);        // Options submenu window in place of the Melody default
-        LOG("[pausepages] tab %08x: flat 14 -> Options window\n", bar);
+        g_gfx_menu = 1;
+        LOG("[pausepages] tab %08x: flat 14 -> Graphics menu\n", bar);
     }
     fnhook_call_original(c, FN_BAR_TABSW);
 }
@@ -72,6 +144,11 @@ void pausepages_init(void) {
     if (g_graphics && !g_pages) g_pages = 3;
     if (!g_pages) return;
     fnhook_set(FN_BAR_INIT, hle_register("pausepages:bar_init", bar_init));
+    fnhook_set(FN_PAGING_INIT, hle_register("pausepages:paging_init", paging_init));
+    fnhook_set(FN_OPT_COUNT, hle_register("pausepages:opt_count", opt_count));
+    fnhook_set(FN_OPT_ROW, hle_register("pausepages:opt_row", opt_row));
+    fnhook_set(FN_OPT_VALUE, hle_register("pausepages:opt_value", opt_value));
+    fnhook_set(FN_PARAM_SET, hle_register("pausepages:param_set", param_set));
     fnhook_set(FN_BAR_AKEY, hle_register("pausepages:bar_a", bar_a));
     fnhook_set(FN_BAR_TABSW, hle_register("pausepages:bar_tabsw", bar_tabsw));
     LOG("[pausepages] pause bar pages: %u%s\n", g_pages, g_graphics ? " + graphics tab" : "");

@@ -564,6 +564,62 @@ and the menu-creation fn `f_386824`. The **in-hunt** submenu is pinned the same 
 of the 8 items of page 1 (Music Volume, SFX Volume, HUD, Map, Camera Angle, Camera Controls, Camera
 Speed, Scope Controls) logs the same six functions every time — see §4 for the slot tables.
 
+**Stage B findings (custom "Graphics" tab label and FXAA submenu — not yet working):**
+
+- Table `.gmd` files (e.g. `table/StartMenuMsg_eng.gmd`) are uncompressed and hold only label
+  names, a hash block and the display string pool (`[hdr][name table][0x400 hash][names][pool]`,
+  551 labels, 556 strings). They contain no glyph records, so a new string cannot be added by
+  editing the file alone.
+- At runtime the parsed table is `rGUIMessage` (class table `0x1794e3c`, object size `0x4a0`,
+  `f_d84114` entry lookup) with its own count and key arrays at `+0x88`/`+0x98` and a 12-byte
+  entry array at `+0xa0`. Its glyph records are 36 bytes (`f_d84be4`, stride `0x24`).
+- The pause bar's label path is a separate decoded table: rows of stride `0x90` in
+  `generated/main/main_300.c` (`f_15813fc`, `f_15a4224`), with the text analyzer at
+  `cGUIMessageAnalyzer` (size `0x84`). Row labels are baked glyph runs, not inline strings.
+- The 12-byte records at `LD32(bar+0xc0) + 12*flat` are visibility parameters: `+6` a flag, `+8`
+  a festa param id. Changing `+8` does not change the label text. The third page shows no label
+  for flat 14 even when `+8` is set to the Options id.
+- Searching RAM for the StartMenuMsg table by its `Menu`/`Item` ASCII failed: the strings are
+  not stored inline in the rows. Neighbouring help-text tables were found instead.
+- A depth-first walk from the bar (`[walk]` debug, reverted) finds several objects with the
+  count word 551/556 at `+0x3a`. The count-556 objects (e.g. `tbl 1ae80004`) hold binary
+  node-like rows, not label text, so they are not the StartMenuMsg label store. The walk
+  results also change between runs (heap addresses shift), so pointer-based lookup is fragile.
+- Most likely label store: `rGUIMessage` (`+0xa0` entries, 36-byte glyph records). Next step:
+  find its instance from the class singleton and dump the entry for "Options" to confirm the
+  record format, then copy G, r, a, p, h, i, c, s glyph records into a synthesized "Graphics" entry.
+- `rGUIMessage` instance search: a `find` for its vtable word `0x1994e44` (class table `0x1794e3c`
+  + 8) returns exactly one hit, at `0x023262e8`. That object is the class descriptor (its name
+  pointer is image `0x177a923`, its fields are small integers), not an entry-holding instance. So
+  no live `rGUIMessage` instance exists at pause-open time; the bar's labels are not drawn from it.
+- Bar child class map (pause open, `MHGU_GFXDBG` debug, reverted): the 34 children
+  `[LD32(bar+0x34)][s]` have vtables that resolve to panels/gauges/windows, with slot 2 the page
+  panel (vptr `0x1976488`). The panel's `+0x90` head/tail list does not contain vtable-bearing
+  nodes at `+0x8` (sibling guess wrong), so the text-node children are not found yet.
+- Paging init: `f_87006c(bar, rows, _, totalTabs)` takes the tab total in **`r3`** (stock 13).
+  It runs inside the bar's init virtual, so raising it there builds the third page during init
+  (`runtime/hle/pausepages.c`, `paging_init`). The third page then renders (3/3), still unlabelled.
+- GUI instance child layout (from `f_7455c4` / `f_76e528`): `inst = LD32(gui+0x24)`, child count
+  `inst+0x298`, child pointer array `inst+0xf8` (overflow array `inst+0x294`). The page panel's
+  43 children have vtables `0x198f4d8` and `0x198f5b8` (GUI node classes). This replaces the
+  earlier guesswork about the panel's `+0x90` list.
+- **Labels are baked glyph runs, not strings.** Overwriting every RAM copy of "Item"/"Pouc"
+  (the romfs mapping copies, 32 hits) does not change any visible label, and no "Item Pouch"
+  ASCII exists outside the romfs mapping. So a synthesized "Graphics" label requires writing
+  glyph quads into a label node, which needs the quad/atlas format.
+- **Custom Graphics submenu (working):** `runtime/hle/pausepages.c` turns the real
+  `cUIOOptionWindowForGame` into a one-row menu. `f_7e7534` (item-count virtual, stock 27) reports
+  1 while `MHGU_PAUSE_GRAPHICS` is on; the label virtual `f_7e7558` redirects row 0 to item 2 (the
+  stock On/Off row); the value virtual `f_7e7d34` answers from `g_config.fxaa`; the festa setter
+  `f_85e5bc` is intercepted for param `0xb6` (its twin `0xb7` is swallowed) and flips the flag.
+  `fxaa_skipped()` in `runtime/nvn/vulkan/exec.c` reads `g_config.fxaa` every frame, so the toggle
+  takes effect immediately.
+- Option row text: rows are ASCII strings in a table loaded with the GUI data (e.g. `HUD\0On\0Off\0Map\0`)
+  and resolved at draw time, but a row's label and its On/Off value strings share one fixed-width
+  slot, so a 3-character row like HUD cannot be renamed to a 4-character word. Renaming the row to
+  "FXAA" (and the window title to "Graphics") needs a new text node, not a string edit.
+- Not yet done: the synthesized "Graphics"/"FXAA" labels.
+
 ### 5d. Menus that are full GUI systems, not HUD layers
 
 - **Quest-counter / quest-board menu** — class `uUIQuestCounter`, methods as `f_<addr>` in
