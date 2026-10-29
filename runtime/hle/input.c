@@ -9,13 +9,27 @@
 #include "../net/net.h"
 
 static volatile uint64_t g_buttons;
+volatile uint64_t g_lr_pressed_ns;
 static volatile int32_t g_sticks[4];  // lx, ly, rx, ry (-32767..32767, y up)
 static int64_t sampling;
 
 volatile uint64_t g_a_pressed_ns;
+volatile uint64_t g_b_pressed_ns;
+volatile uint64_t g_plus_pressed_ns;
+
+void pausepages_filter_input(uint64_t *buttons);  // pause menu: the Graphics row owns A and left/right
 
 void input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
-    if ((buttons & ~g_buttons) & (1ull << BTN_A)) g_a_pressed_ns = plat_now_ns();
+    // Edge timestamps come from the raw pad; g_buttons holds what the game is allowed to see
+    // (the pause menu's Graphics row masks A, so the raw state is kept apart).
+    static uint64_t raw;
+    uint64_t down = buttons & ~raw;
+    raw = buttons;
+    if (down & (1ull << BTN_A)) g_a_pressed_ns = plat_now_ns();
+    if (down & (1ull << BTN_B)) g_b_pressed_ns = plat_now_ns();
+    if (down & (1ull << BTN_PLUS)) g_plus_pressed_ns = plat_now_ns();
+    if (down & ((1ull << BTN_LEFT) | (1ull << BTN_RIGHT))) g_lr_pressed_ns = plat_now_ns();
+    pausepages_filter_input(&buttons);
     g_buttons = buttons;
     g_sticks[0] = lx, g_sticks[1] = ly, g_sticks[2] = rx, g_sticks[3] = ry;
 }

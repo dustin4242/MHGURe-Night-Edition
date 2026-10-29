@@ -608,17 +608,48 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   ASCII exists outside the romfs mapping. So a synthesized "Graphics" label requires writing
   glyph quads into a label node, which needs the quad/atlas format.
 - **Custom Graphics submenu (working):** `runtime/hle/pausepages.c` turns the real
-  `cUIOOptionWindowForGame` into a one-row menu. `f_7e7534` (item-count virtual, stock 27) reports
-  1 while `MHGU_PAUSE_GRAPHICS` is on; the label virtual `f_7e7558` redirects row 0 to item 2 (the
-  stock On/Off row); the value virtual `f_7e7d34` answers from `g_config.fxaa`; the festa setter
-  `f_85e5bc` is intercepted for param `0xb6` (its twin `0xb7` is swallowed) and flips the flag.
-  `fxaa_skipped()` in `runtime/nvn/vulkan/exec.c` reads `g_config.fxaa` every frame, so the toggle
-  takes effect immediately.
-- Option row text: rows are ASCII strings in a table loaded with the GUI data (e.g. `HUD\0On\0Off\0Map\0`)
-  and resolved at draw time, but a row's label and its On/Off value strings share one fixed-width
-  slot, so a 3-character row like HUD cannot be renamed to a 4-character word. Renaming the row to
-  "FXAA" (and the window title to "Graphics") needs a new text node, not a string edit.
-- Not yet done: the synthesized "Graphics"/"FXAA" labels.
+  `cUIOOptionWindowForGame` into a dedicated one-row menu, separate from the Options list. The
+  item-count virtual `f_7e7534` (stock 27) reports **1** while the Graphics tab is open, so the
+  window lays out a single row on a single page: no page indicator, no repeated rows, and the panel
+  keeps the stock Options size. `fxaa_skipped()` in `runtime/nvn/vulkan/exec.c` reads
+  `g_config.fxaa` every frame, so a toggle takes effect immediately.
+- **Row text is data, baked at layout.** Row labels and values are ASCII strings in the option
+  string table (`HUD\0On\0Off\0Map\0Camera\nAngle\0Type 1\0Type 2\0…`). The single row
+  borrows the "Camera Angle" slot (item 4, a long label with one value string per value), because a
+  short slot (HUD/Map) has no room for "FXAA". The label virtual points the row at one of two
+  host-owned buffers (`hle_alloc`, alternating `"FXAA"` + `"Off"`/`"On"`), and the same texts are
+  written over the "Type N" strings of the borrowed slot, since the window looks value strings up
+  there by index. The original 64 bytes of the slot are saved once and restored when the menu closes.
+- **Row refresh:** the row's text is baked into its nodes when the window lays out, and a node whose
+  string pointer did not change is not updated — changing the bytes in place leaves the old drawing
+  on screen. Two things fix that: the label pointer alternates between the two host buffers, and the
+  window's own layout `f_7e635c` is re-run from a hook on its update virtual `f_7e5840` after each
+  toggle. The row then redraws with the current `On`/`Off`.
+- **Input:** A is kept from the engine while the menu is open (it would open the stock value editor
+  on the borrowed row) and the setters are swallowed, so the borrowed option is never applied.
+  Left/right presses are timestamped in `runtime/hle/input.c` (`g_lr_pressed_ns`) and flip
+  `g_config.fxaa` exactly once per press; B and Plus pass through, clear the menu state and restore
+  the borrowed strings. The three press timestamps (`left/right`, B, Plus) are re-based when the menu
+  opens, so the press that opened it is not read as a toggle.
+- **Scope:** the one-row mode is active only for the Graphics tab. It is cleared when the bar
+  switches to another tab (`bar_tabsw`, flat < 14, with flat 10 exempt as the retarget), when a
+  pause menu opens (`bar_init`), and when B/Plus is pressed in the menu; the borrowed label strings
+  are restored at those points, so the stock Options menu (hunt, village, chat variants) is unchanged.
+- Window title: the title is a string at image `0x1827a193` ("Options\0End …"), right-aligned and
+  clipped to a fixed width. Writing "Graphics" there shows only "phics", so the title cannot be
+  widened without a different text node.
+- Bar tab labels are **live ASCII**, in a block in loaded data at `0x1827a0c0` (base `0x1827a080`):
+  `Menu\0Item Pouch\0Discard\0Swap\0Deliver\0Give\0Combine\0Combo List\0Quest Info\0Palicoes\0
+  Palico Status\0Palico Equipment\0Dismiss\0Hunter's Notes\0Request Log\0…\0Options\0
+  End via Subquest\0Abandon Quest\0…`. Poking `Quest Info` there changes the visible labels, so the
+  rows read these strings at draw time.
+- Per-tab label records: `[bar+0xa8]` is an array of 13 eight-byte entries `{flag, string pointer}`
+  (count at `bar+0xac` = 13), pointing into that block (`Item Pouch` 0x1827a0b5, `Combine` 0x1827a0da,
+  `Combo List` 0x1827a0e2, `Quest Info` 0x1827a0ed, `Palicoes` 0x1827a0f8, `Hunter's Notes` 0x1827a128,
+  `Pause` 0x1827a173, … `Abandon Quest` 0x1827a1ac). The bar also keeps 12-byte records at `[bar+0xc0]`.
+- Extending that array to 15 entries by pointing `[bar+0xa8]`/`[bar+0xc0]` at copies in the host-owned
+  guest heap (`0x04000000`) with "Graphics" in slot 14 made every row disappear, so the extension needs
+  the record semantics confirmed first. Still open: the third page's "Graphics" row label.
 
 ### 5d. Menus that are full GUI systems, not HUD layers
 
