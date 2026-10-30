@@ -617,29 +617,35 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   identifies each option by its list index in hardcoded code, so inserting a row in front would
   make every row below edit the next setting. With the entry at the end, all stock rows keep their
   index and edit exactly as before.
-- **Graphics submenu (three rows):** A on that row is intercepted in the input layer (that list
+- **Graphics submenu (four rows):** A on that row is intercepted in the input layer (that list
   index runs "Reset All Settings", so the press is masked) and switches the same window to a
-  three-row view: item count 3, rows/page 3, one page. The rows are `FXAA`, `MSAA` and `FSR`.
-  FXAA and MSAA borrow the "Camera Angle" slot (item 4, five value strings at +13/+20/+27/+34/+41),
-  sharing them as `0 Off, 1 2x, 2 On, 3 4x, 4 8x` so FXAA uses 0/2 and MSAA 0/1/3/4. FSR borrows
-  the next slot, "Camera Controls" (item 5, four value strings at +16/+23/+30/+37), patched to
-  `Off / FSR 3 / FSR 4`. The labels come from alternating host buffers (`hle_alloc`). Both borrowed
-  blocks are saved and restored around the menu. The pager fields are saved and restored too (row
-  +0xd, rows/page +0xe, page +0x10, page count +0x12, **total items +0x14**).
+  four-row view: item count 4, rows/page 4, one page. The rows are `FXAA`, `MSAA`, `FSR` and
+  `FSR Quality`. All four borrow the "Camera Angle" slot (item 4, five value strings at
+  +13/+20/+27/+34/+41). The window copies a row's value text while it builds that row, so the five
+  value strings are rewritten with the current row's texts just before the row is built: each row
+  has its own list on the same slot (`FXAA Off/On`, `MSAA Off/2x/4x/8x`, `FSR Off/FSR 3/FSR 4`,
+  `FSR Quality NAA/Q/B/P/UP`). The labels come from alternating host buffers (`hle_alloc`). The
+  borrowed block is saved and restored around the menu. The pager fields are saved and restored too
+  (row +0xd, rows/page +0xe, page +0x10, page count +0x12, **total items +0x14**).
 - **Applying the values:** `fxaa_skipped()` reads `g_config.fxaa` every frame (FXAA applies
   immediately); MSAA sets `g_config.msaa` and calls `vk_set_msaa` (the F7-key path; FSR keeps it
   off). FSR writes `FSR = On/Off` and `Upscaler = FSR3/FSR4` to the INI exactly as selected (Off
   also writes `Upscaler = FSR3`). Live, turning FSR off stops the upscaler at once; switching it
   back on works while the upscaler built at start-up is the same choice. The FSR render resolution
   and upscaler are created at start-up, so enabling FSR from a non-FSR boot (or changing 3 <-> 4)
-  takes effect on the next start — the log says which. Left/right adjust the highlighted row (FXAA
-  flips, MSAA cycles Off → 2x → 4x → 8x, FSR cycles Off → FSR 3 → FSR 4, both wrapping).
+  takes effect on the next start — the log says which. FSR Quality writes `FSRQuality = NativeAA /
+  Quality / Balanced / Performance / UltraPerformance` (the row shows the short forms NAA/Q/B/P/UP).
+  The quality sets the render scale, which is fixed when the game's render targets are created at
+  start-up, so it is a next-start setting as well (the log notes it while FSR is on). Left/right
+  adjust the highlighted row (FXAA flips, MSAA cycles Off → 2x → 4x → 8x, FSR cycles Off → FSR 3 →
+  FSR 4, FSR Quality cycles NAA → Q → B → P → UP, all wrapping).
 - **Row refresh:** a row's text is baked into its nodes at layout and a node whose string pointer
   did not change is left alone, so changing the bytes in place keeps the old drawing. The row labels
   alternate between their two host buffers and the window's layout `f_7e635c` is re-run from the
   update hook after each change; the rows then redraw with the current values.
 - **Input:** the stock behaviour is kept. A opens the value editor on the highlighted row
-  (`FXAA ◀ Off ▶`, `MSAA ◀ 2x ▶`, `FSR ◀ FSR 3 ▶`), left/right change it and A confirms; the same
+  (`FXAA ◀ Off ▶`, `MSAA ◀ 2x ▶`, `FSR ◀ FSR 3 ▶`, `FSR Quality ◀ Q ▶`), left/right change it and
+  A confirms; the same
   left/right presses are timestamped in `runtime/hle/input.c` (`g_lr_pressed_ns`) and change the
   port setting exactly once, so the editor moves a hidden stock value while the visible state always
   follows the port's setting. The value setters are swallowed while the submenu is up, so the
