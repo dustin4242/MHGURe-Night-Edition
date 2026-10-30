@@ -400,6 +400,55 @@ static void fit_aspect(int w, int h, float aspect, int *rw, int *rh) {
     *rw = w & ~1, *rh = h & ~1;
 }
 
+// Rewrite one "Key = Value" line in the settings file, keeping everything else as it is. Used when a
+// setting is changed in-game (the pause menu's Graphics row writes FXAA here, so it survives a restart).
+void config_save_key(const char *key, const char *value)
+{
+    char path[1100];
+    ini_path(path, sizeof path);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return; }
+    long size = ftell(f);
+    if (size < 0 || fseek(f, 0, SEEK_SET) != 0) { fclose(f); return; }
+    char *buf = (char *)malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return; }
+    size_t got = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[got] = 0;
+
+    size_t klen = strlen(key), off = 0, len = 0;
+    int found = 0;
+    for (char *p = buf; *p;) {
+        char *eol = strchr(p, '\n');
+        size_t l = eol ? (size_t)(eol - p) : strlen(p);
+        char *q = p;
+        while (q < p + l && isspace((unsigned char)*q)) q++;
+        if ((size_t)(p + l - q) >= klen && !strncasecmp(q, key, klen)) {
+            char *r = q + klen;
+            while (r < p + l && isspace((unsigned char)*r)) r++;
+            if (r < p + l && *r == '=') { found = 1; off = (size_t)(p - buf); len = l; break; }
+        }
+        if (!eol) break;
+        p = eol + 1;
+    }
+    if (!found) { free(buf); return; }
+
+    char line[256];
+    int ll = snprintf(line, sizeof line, "%s = %s", key, value);
+    if (ll < 0) ll = 0;
+    f = fopen(path, "wb");
+    if (f) {
+        fwrite(buf, 1, off, f);
+        fwrite(line, 1, (size_t)ll, f);
+        const char *rest = buf + off + len;
+        fwrite(rest, 1, got - (off + len), f);
+        fclose(f);
+        LOG("[config] %s: %s = %s\n", path, key, value);
+    }
+    free(buf);
+}
+
 // Sections of DEFAULT_INI the file lacks (written by an older build) are added with their defaults at its end; the
 // player's own settings stay as they are.
 static void append_missing_sections(const char *path, const char *seen) {

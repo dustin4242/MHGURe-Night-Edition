@@ -59,3 +59,4 @@ extern float g_fsr_lod_bias;       // FSR on: texture LOD bias for the lower ren
 float camera_fovy(float fovy, float aspect);  // a 3D camera's vertical field of view for its aspect (gen.py PATCHES)
 
 void config_load(void);  // before the window and the guest start
+void config_save_key(const char *key, const char *value);  // rewrite one setting (e.g. FXAA) in the INI

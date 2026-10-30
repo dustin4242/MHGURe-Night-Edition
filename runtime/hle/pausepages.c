@@ -1,15 +1,14 @@
 // MHGU_PAUSE_PAGES=<n>: grow the in-hunt pause tab bar (uUIQuestStartMenu, class table
 // 0x177aeb0, main_107/108.c) past its stock two pages (docs/UI.md 5b).
 //
-// MHGU_PAUSE_GRAPHICS=<0/1>: add a "Graphics" entry as the last row of the Options menu
-// (cUIOOptionWindowForGame) and open a one-row FXAA On/Off menu from it. The stock options
-// keep their own rows and indices, so nothing about their values changes.
+// MHGU_PAUSE_GRAPHICS=<0/1>: add a "Graphics" entry at the end of the Options menu
+// (cUIOOptionWindowForGame). It opens a two-row Graphics menu: FXAA (Off/On) and MSAA
+// (Off/2x/4x/8x). The stock options keep their own rows and indices.
 //
 // The window reports its item count through virtual +0x60 (f_7e7534, stock 27); reporting 28
 // gives the list one extra row on its last page. That row is drawn from the HUD slot (item 2,
-// a plain On/Off row) with the label "Graphics" and an empty value. Selecting it opens the
-// menu editor on the extra item; the window update sees that and switches this same window to
-// the one-row FXAA view. Backing out restores the Options list at the Graphics row.
+// a plain On/Off row) with the label "Graphics" and an empty value. Selecting it switches this
+// same window to the two-row Graphics view.
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,20 +29,34 @@
 #define OPT_VPTR_RT     0x1972c88u    // cUIOOptionWindowForGame object vptr
 
 // The window's pager (embedded setup param at +0x4c): row +0xd (obj+0x59), rows/page +0xe
-// (obj+0x5a), page u16 +0x10 (obj+0x5c), page count u16 +0x12 (obj+0x5e), flat u16 +0x14
+// (obj+0x5a), page u16 +0x10 (obj+0x5c), page count u16 +0x12 (obj+0x5e), total items u16 +0x14
 // (obj+0x60). The window's edit state is +0x74 (2 while a value editor is open).
 #define PW_ROW(w)   ((w) + 0x59u)
 #define PW_ROWS(w)  ((w) + 0x5au)
 #define PW_PAGE(w)  ((w) + 0x5cu)
 
-#define STOCK_ITEMS 27u               // rows of the stock Options list
+#define STOCK_ITEMS  27u              // rows of the stock Options list
 #define GRAPHICS_ITEM STOCK_ITEMS     // the extra row (last)
-#define FXAA_ITEM   4u                // "Camera Angle": a long label slot with one string per value
-#define GFX_ITEM    2u                // "HUD": a plain On/Off slot (draws the Graphics row)
+#define VALUE_ITEM   4u               // "Camera Angle": a long label slot with five value strings
+#define PLAIN_ITEM   2u               // "HUD": a plain On/Off slot (draws the extra list row)
+
+// Graphics submenu rows (page 0, rows 0/1).
+#define ROW_FXAA     0
+#define ROW_MSAA     1
+#define GFX_ROWS     2u
+
+// The borrowed "Camera Angle" slot holds five value strings at +13, +20, +27, +34, +41. Both
+// submenu rows read their value text from there, so the five slots are shared:
+//   0 "Off" (FXAA off, MSAA off)   1 "2x"   2 "On" (FXAA on)   3 "4x"   4 "8x"
+#define SLOT_OFF     0
+#define SLOT_2X      1
+#define SLOT_ON      2
+#define SLOT_4X      3
+#define SLOT_8X      4
 
 static uint32_t g_pages;              // forced bar page count (MHGU_PAUSE_PAGES; 0: leave alone)
-static int g_graphics;                // 1: Graphics row / FXAA menu enabled
-static int g_fxaa_menu;               // 1: the one-row FXAA menu is the current view
+static int g_graphics;                // 1: Graphics row / menu enabled
+static int g_gfx_menu;                // 1: the Graphics menu is the current view
 static uint32_t g_opt_obj;            // the Options window
 static int g_refresh;                 // rebuild the row nodes on the next update
 
@@ -53,38 +66,44 @@ static uint64_t g_b_last;             // last B press timestamp seen
 static uint64_t g_plus_last;          // last Plus press timestamp seen
 static int g_swallow_b;               // keep B from the engine until it is released
 
-// FXAA row texts. The row label alternates between two buffers: the window only redraws a text
+// Submenu row labels. Each row alternates between two buffers: the window only redraws a text
 // node whose string pointer changed. The value strings are looked up in the option table, so the
-// "Type N" strings of the borrowed slot are rewritten while the FXAA row shows.
-static uint32_t g_lbl[2];
+// "Type N" strings of the borrowed slot are rewritten while the Graphics menu shows.
+static uint32_t g_lbl_fx[2], g_lbl_ms[2];
 static int g_lbl_cur;
-static uint32_t g_tbl;                // borrowed slot (Camera Angle), patched while the FXAA row shows
+static uint32_t g_tbl;                // borrowed slot (Camera Angle), patched while the menu shows
 static uint32_t g_tbl_w[16];
 
-// Graphics row label, and the HUD value string it blanks for its own row only.
+// "Graphics" list row label, and the HUD value string blanked for that row only.
 static uint32_t g_gfx_lbl;
 static uint32_t g_blank_addr;
 static uint8_t g_blank_byte;
 static int g_blank;
 
-// The Options pager is shrunk to one row while the FXAA menu shows; remember its shape.
+// The Options pager is shrunk to the two-row Graphics view; remember its shape.
 static int g_saved_rows;
 static uint32_t g_saved_pages;
 static uint32_t g_saved_total;
 static uint32_t g_saved_page, g_saved_row;
 
-static void enter_fxaa(void);
-static void leave_fxaa(void);
+static void enter_menu(void);
+static void leave_menu(void);
+
+static void put(uint32_t a, const char *s)
+{
+    for (uint32_t i = 0; s[i]; i++) ST8(a + i, (uint8_t)s[i]);
+    ST8(a + (uint32_t)strlen(s), 0u);
+}
 
 static void ensure_bufs(void)
 {
-    if (g_lbl[0]) return;
-    g_lbl[0] = hle_alloc(64);
-    g_lbl[1] = hle_alloc(64);
+    if (g_lbl_fx[0]) return;
+    g_lbl_fx[0] = hle_alloc(64);
+    g_lbl_fx[1] = hle_alloc(64);
+    g_lbl_ms[0] = hle_alloc(64);
+    g_lbl_ms[1] = hle_alloc(64);
     g_gfx_lbl = hle_alloc(16);
-    ST32(g_gfx_lbl, 0x70617247u);                // "Grap"
-    ST32(g_gfx_lbl + 4u, 0x73636968u);           // "hics"
-    ST8(g_gfx_lbl + 8u, 0u);
+    put(g_gfx_lbl, "Graphics");
 }
 
 static void restore_tbl(void)
@@ -94,24 +113,34 @@ static void restore_tbl(void)
     g_tbl = 0;
 }
 
+static int msaa_index(int v) { return v >= 8 ? 3 : v >= 4 ? 2 : v >= 2 ? 1 : 0; }
+static int msaa_value(int i) { static const int v[4] = {1, 2, 4, 8}; return v[i & 3]; }
+static const char *msaa_text(int v) { return v >= 8 ? "8x" : v >= 4 ? "4x" : v >= 2 ? "2x" : "Off"; }
+// The shared slot that shows the MSAA value (Off, 2x, 4x, 8x).
+static int msaa_slot(int v) { return v >= 8 ? SLOT_8X : v >= 4 ? SLOT_4X : v >= 2 ? SLOT_2X : SLOT_OFF; }
+
+// Write both submenu labels and the shared value strings into the host buffers and the table.
 static void fill_lbl(void)
 {
     ensure_bufs();
-    uint32_t b = g_lbl[g_lbl_cur];
-    memset(G2H(b), 0, 64);
-    ST32(b, 0x41415846u);                        // "FXAA"
-    ST8(b + 4u, 0u);
-    uint32_t v = g_config.fxaa ? 0x00006e4fu : 0x0066664fu;   // "On\0" / "Off\0"
-    for (int i = 0; i < 5; i++) ST32(b + 13u + (uint32_t)i * 7u, v);
-    if (g_tbl) {                                 // the value texts are looked up there
-        ST32(g_tbl, 0x41415846u);
-        ST8(g_tbl + 4u, 0u);
-        for (int i = 0; i < 5; i++) ST32(g_tbl + 13u + (uint32_t)i * 7u, v);
+    static const char *const slot_text[5] = {"Off", "2x", "On", "4x", "8x"};
+    uint32_t fx = g_lbl_fx[g_lbl_cur], ms = g_lbl_ms[g_lbl_cur];
+    memset(G2H(fx), 0, 64);
+    memset(G2H(ms), 0, 64);
+    put(fx, "FXAA");
+    put(ms, "MSAA");
+    for (int i = 0; i < 5; i++) {
+        put(fx + 13u + (uint32_t)i * 7u, slot_text[i]);
+        put(ms + 13u + (uint32_t)i * 7u, slot_text[i]);
+    }
+    if (g_tbl) {
+        put(g_tbl, "FXAA");                       // the label comes from the host buffer
+        for (int i = 0; i < 5; i++) put(g_tbl + 13u + (uint32_t)i * 7u, slot_text[i]);
     }
 }
 
 static void bar_init(Cpu *c) {
-    if (g_fxaa_menu) leave_fxaa();
+    if (g_gfx_menu) leave_menu();
     fnhook_call_original(c, FN_BAR_INIT);
     uint32_t bar = c->r[0];
     if (bar && LD32(bar) == BAR_VPTR_RT && g_pages) {
@@ -128,8 +157,6 @@ static uint32_t opt_flat(uint32_t w)
     return (uint32_t)LD16(PW_PAGE(w)) * LD8(PW_ROWS(w)) + LD8(PW_ROW(w));
 }
 
-// The input virtual rebuilds the row text before reading the pager; not needed here, but the
-// layout may be driven from opt_update after a text change.
 static void opt_update(Cpu *c)
 {
     fnhook_call_original(c, FN_OPT_UPDATE);
@@ -153,7 +180,8 @@ static void opt_row(Cpu *c)
     int on = g_graphics && is_opt(c);
     uint32_t item = c->r[3];
     uint32_t abs = on ? row_abs(c->r[0], c->r[2], item) : 0u;
-    int gfx_row = 0;
+    int extra_row = 0;
+    int sub_row = -1;
     if (on) {
         if (g_opt_obj != c->r[0]) {           // the window just opened: its opening press is not input
             g_opt_obj = c->r[0];
@@ -161,11 +189,12 @@ static void opt_row(Cpu *c)
             g_b_last = g_b_pressed_ns;
             g_plus_last = g_plus_pressed_ns;
         }
-        if (g_fxaa_menu) {
-            c->r[3] = FXAA_ITEM;
+        if (g_gfx_menu) {
+            sub_row = (int)item;              // 0: FXAA, 1: MSAA
+            c->r[3] = VALUE_ITEM;
         } else if (abs == GRAPHICS_ITEM) {
-            c->r[3] = GFX_ITEM;              // draw the Graphics row from the HUD slot
-            gfx_row = 1;
+            c->r[3] = PLAIN_ITEM;             // draw the Graphics row from the HUD slot
+            extra_row = 1;
         }
     }
     uint32_t out = c->r[1];
@@ -176,16 +205,16 @@ static void opt_row(Cpu *c)
     fnhook_call_original(c, FN_OPT_ROW);
     if (!on || out < 0x0c000000u) return;
     uint32_t src = LD32(out);
-    if (g_fxaa_menu) {
+    if (g_gfx_menu) {
         if (!g_tbl && src >= 0x10000000u && src < 0x1c000000u) {
             g_tbl = src;
             for (int i = 0; i < 16; i++) g_tbl_w[i] = LD32(src + (uint32_t)i * 4u);
         }
         fill_lbl();
-        ST32(out, g_lbl[g_lbl_cur]);
-    } else if (gfx_row) {
+        ST32(out, sub_row == ROW_MSAA ? g_lbl_ms[g_lbl_cur] : g_lbl_fx[g_lbl_cur]);
+    } else if (extra_row) {
         ensure_bufs();
-        ST32(out, g_gfx_lbl);                 // label "Graphics" (always, whatever the stock row was)
+        ST32(out, g_gfx_lbl);
         if (src >= 0x10000000u && src < 0x1c000000u) {
             g_blank_addr = src + 4u;          // value 0 string ("On") -> empty for this row
             g_blank_byte = LD8(g_blank_addr);
@@ -198,8 +227,10 @@ static void opt_row(Cpu *c)
 static void opt_value(Cpu *c)
 {
     if (g_graphics && is_opt(c)) {
-        if (g_fxaa_menu) {
-            c->r[0] = g_config.fxaa ? 1u : 0u;
+        if (g_gfx_menu) {
+            // The value virtual is called with (page, row): row 0 FXAA, row 1 MSAA.
+            if (c->r[2] == ROW_MSAA) c->r[0] = (uint32_t)msaa_slot(g_config.msaa);
+            else c->r[0] = g_config.fxaa ? SLOT_ON : SLOT_OFF;
             return;
         }
         if (row_abs(c->r[0], c->r[1], c->r[2]) == GRAPHICS_ITEM) {
@@ -213,7 +244,7 @@ static void opt_value(Cpu *c)
 static void opt_count(Cpu *c)
 {
     if (g_graphics && is_opt(c)) {
-        c->r[0] = g_fxaa_menu ? 1u : STOCK_ITEMS + 1u;
+        c->r[0] = g_gfx_menu ? GFX_ROWS : STOCK_ITEMS + 1u;
         return;
     }
     fnhook_call_original(c, FN_OPT_COUNT);
@@ -221,14 +252,14 @@ static void opt_count(Cpu *c)
 
 static void param_set(Cpu *c)
 {
-    if (g_fxaa_menu) return;                  // the FXAA row must not apply the borrowed option
+    if (g_gfx_menu) return;                   // the submenu rows must not apply the borrowed option
     fnhook_call_original(c, FN_PARAM_SET);
 }
 
-static void enter_fxaa(void)
+static void enter_menu(void)
 {
-    if (g_fxaa_menu) return;
-    g_fxaa_menu = 1;
+    if (g_gfx_menu) return;
+    g_gfx_menu = 1;
     uint32_t w = g_opt_obj;
     if (w) {
         g_saved_rows = LD8(PW_ROWS(w));
@@ -238,22 +269,22 @@ static void enter_fxaa(void)
         g_saved_row = LD8(PW_ROW(w));
         ST8(PW_ROW(w), 0u);
         ST16(PW_PAGE(w), 0u);
-        ST8(PW_ROWS(w), 1u);
+        ST8(PW_ROWS(w), GFX_ROWS);
         ST16(w + 0x5eu, 1u);
-        ST16(w + 0x60u, 1u);
-        ST32(w + 0x74u, 0u);              // leave the borrowed slot's edit state
+        ST16(w + 0x60u, GFX_ROWS);
+        ST32(w + 0x74u, 0u);                  // leave the borrowed slot's edit state
     }
-    g_lr_last = g_lr_pressed_ns;          // the presses so far are not input for this view
+    g_lr_last = g_lr_pressed_ns;              // the presses so far are not input for this view
     g_b_last = g_b_pressed_ns;
     g_plus_last = g_plus_pressed_ns;
     g_refresh = 1;
-    LOG("[pausepages] Graphics -> FXAA menu\n");
+    LOG("[pausepages] Graphics menu\n");
 }
 
-static void leave_fxaa(void)
+static void leave_menu(void)
 {
-    if (!g_fxaa_menu) return;
-    g_fxaa_menu = 0;
+    if (!g_gfx_menu) return;
+    g_gfx_menu = 0;
     restore_tbl();
     uint32_t w = g_opt_obj;
     if (w) {
@@ -264,23 +295,23 @@ static void leave_fxaa(void)
         ST8(PW_ROW(w), (uint32_t)g_saved_row);
         ST32(w + 0x74u, 0u);
     }
-    g_a_last = g_a_pressed_ns;            // presses made inside the menu are not list input
+    g_a_last = g_a_pressed_ns;                // presses made inside the menu are not list input
     g_b_last = g_b_pressed_ns;
     g_plus_last = g_plus_pressed_ns;
     g_lr_last = g_lr_pressed_ns;
     g_refresh = 1;
-    LOG("[pausepages] FXAA menu -> Options list\n");
+    LOG("[pausepages] Graphics menu -> Options list\n");
 }
 
 void pausepages_input(uint64_t *buttons)
 {
-    if (g_swallow_b) {                    // the B that left the FXAA menu is still held
+    if (g_swallow_b) {                        // the B that left the menu is still held
         if (*buttons & (1ull << BTN_B)) *buttons &= ~(1ull << BTN_B);
         else g_swallow_b = 0;
     }
-    if (g_graphics && !g_fxaa_menu && g_opt_obj) {
+    if (g_graphics && !g_gfx_menu && g_opt_obj) {
         // Options list. B/Plus leave it (let the engine close it) and the window handle is
-        // dropped so the bar's own A presses are never mistaken for the Graphics row.
+        // dropped so the bar's own A presses are never mistaken for the extra row.
         if (g_b_pressed_ns != g_b_last) {
             g_b_last = g_b_pressed_ns;
             g_opt_obj = 0;
@@ -291,43 +322,57 @@ void pausepages_input(uint64_t *buttons)
             g_opt_obj = 0;
             return;
         }
-        // A on the Graphics row opens our menu instead of the stock action (that index runs
+        // A on the Graphics row opens the menu instead of the stock action (that index runs
         // "Reset All Settings"), so the press never reaches the engine.
         if (g_a_pressed_ns != g_a_last) {
             g_a_last = g_a_pressed_ns;
             if (opt_flat(g_opt_obj) == GRAPHICS_ITEM) {
                 *buttons &= ~(1ull << BTN_A);
-                enter_fxaa();
+                enter_menu();
             }
         }
         return;
     }
-    if (!g_fxaa_menu) return;
+    if (!g_gfx_menu) return;
     // Safety net: if the window went away by some path other than B/Plus, stop touching input.
     static int hidden;
     if (g_opt_obj && !LD8(g_opt_obj + 0x18u)) {
-        if (++hidden > 60) { hidden = 0; leave_fxaa(); return; }
+        if (++hidden > 60) { hidden = 0; leave_menu(); return; }
     } else {
         hidden = 0;
     }
-    *buttons &= ~(1ull << BTN_B);           // B belongs to this menu, not to the Options window
+    *buttons &= ~(1ull << BTN_B);             // B belongs to this menu, not to the Options window
     if (g_b_pressed_ns != g_b_last) {
         g_b_last = g_b_pressed_ns;
         g_swallow_b = 1;
-        leave_fxaa();
+        leave_menu();
         return;
     }
     if (g_plus_pressed_ns != g_plus_last) {
         g_plus_last = g_plus_pressed_ns;
-        leave_fxaa();
+        leave_menu();
         return;
     }
     if (g_lr_pressed_ns != g_lr_last) {
         g_lr_last = g_lr_pressed_ns;
-        g_config.fxaa = !g_config.fxaa;
-        g_lbl_cur ^= 1;                   // the label pointer must change for the row to redraw
+        int row = g_opt_obj ? (int)LD8(PW_ROW(g_opt_obj)) : ROW_FXAA;
+        if (row == ROW_MSAA) {
+            int dir = (*buttons & (1ull << BTN_RIGHT)) ? 1 : (*buttons & (1ull << BTN_LEFT)) ? -1 : 0;
+            if (dir) {
+                int i = (msaa_index(g_config.msaa) + (dir > 0 ? 1 : 3)) & 3;
+                g_config.msaa = msaa_value(i);
+                void vk_set_msaa(uint32_t);
+                vk_set_msaa((uint32_t)g_config.msaa);
+                config_save_key("MSAA", msaa_text(g_config.msaa));
+                LOG("[pausepages] MSAA -> %s\n", msaa_text(g_config.msaa));
+            }
+        } else {
+            g_config.fxaa = !g_config.fxaa;
+            config_save_key("FXAA", g_config.fxaa ? "On" : "Off");
+            LOG("[pausepages] FXAA -> %s\n", g_config.fxaa ? "On" : "Off");
+        }
+        g_lbl_cur ^= 1;                       // the label pointer must change for the row to redraw
         g_refresh = 1;
-        LOG("[pausepages] FXAA -> %s\n", g_config.fxaa ? "On" : "Off");
     }
 }
 
@@ -345,5 +390,5 @@ void pausepages_init(void)
     fnhook_set(FN_OPT_VALUE, hle_register("pausepages:opt_value", opt_value));
     fnhook_set(FN_OPT_UPDATE, hle_register("pausepages:opt_update", opt_update));
     fnhook_set(FN_PARAM_SET, hle_register("pausepages:param_set", param_set));
-    LOG("[pausepages] Options: Graphics row (last) + FXAA menu\n");
+    LOG("[pausepages] Options: Graphics row + FXAA/MSAA menu\n");
 }

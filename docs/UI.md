@@ -609,39 +609,44 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   glyph quads into a label node, which needs the quad/atlas format.
 - **Graphics entry in the Options menu (working):** `runtime/hle/pausepages.c` adds a "Graphics"
   row as the **last** entry of the real Options window (`cUIOOptionWindowForGame`). The item-count
-  virtual `f_7e7534` (stock 27) reports 28, so the pager grows one row on its last page. The extra
-  item is drawn from the HUD slot (item 2, a plain On/Off row) with the label "Graphics" and an
-  empty value (its value-0 string is blanked only while that row is built). Note the row virtuals
-  are called with (page, row within that page), so the extra row is page 3 row 3 — absolute item
-  27 is `page * rows_per_page + row`, not the raw item argument. It is placed last on
-  purpose: the game identifies each option by its list index in hardcoded code, so inserting a row
-  in front would make every row below edit the next setting. With the entry at the end, all stock
-  rows keep their index and edit exactly as before.
-- **FXAA submenu:** the input layer intercepts A on that row (that list index runs "Reset All
-  Settings", so the press is masked and never reaches the engine) and switches the same window to a
-  one-row view: item count 1, pager shrunk to one row and one page, the row drawn from the "Camera
-  Angle" slot (item 4, a long label with one value string per value). The label comes from one of
-  two alternating host buffers (`hle_alloc`, `"FXAA"` + `"Off"`/`"On"`) and the values are written
-  over the "Type N" strings, since the window looks value strings up by index. The pager fields are
-  saved and restored around this (row +0xd, rows/page +0xe, page +0x10, page count +0x12, **total
-  items +0x14**) — restoring the total matters: it is what makes the list's last page keep its
-  extra row after coming back. `fxaa_skipped()` in `runtime/nvn/vulkan/exec.c` reads
-  `g_config.fxaa` every frame, so a toggle takes effect immediately.
-- **Row refresh:** a row's text is baked into its nodes at layout and a node whose string pointer did
-  not change is left alone, so changing the bytes in place keeps the old drawing. The label pointer
-  alternates between the two host buffers and the window's layout `f_7e635c` is re-run from the
-  update hook after each toggle; the row then redraws with the current `On`/`Off`.
-- **Input:** the stock behaviour is kept. A opens the value editor (`FXAA ◀ Off ▶`), left/right
-  change it and A confirms; the same left/right presses are timestamped in `runtime/hle/input.c`
-  (`g_lr_pressed_ns`) and flip `g_config.fxaa` exactly once, so the editor moves a hidden stock value
-  while the visible state always follows the port's FXAA flag. The value setters are swallowed while
-  the FXAA view is up, so the borrowed option is never applied. B returns to the Options list (the
-  press is held back from the engine until released), a second B closes Options, and Plus closes the
-  pause menu. Press timestamps are re-based on entry so the press that opened the view is not a
-  toggle.
-- **Scope:** the extra row and the FXAA view are active only while `MHGU_PAUSE_GRAPHICS` is set; the
-  list is restored on B/Plus and whenever a pause menu opens. The stock Options list (hunt, village,
-  chat variants) keeps its own rows and values.
+  virtual `f_7e7534` (stock 27) reports 28, so the pager grows one row on its last page (item 27,
+  page 3 row 3). That row is drawn from the HUD slot (item 2, a plain On/Off row) with its own
+  label and an empty value (the HUD value-0 string is blanked only while that row is built). Note
+  the row virtuals are called with (page, row within that page); the absolute item is
+  `page * rows_per_page + row`, not the raw item argument. It is placed last on purpose: the game
+  identifies each option by its list index in hardcoded code, so inserting a row in front would
+  make every row below edit the next setting. With the entry at the end, all stock rows keep their
+  index and edit exactly as before.
+- **Graphics submenu (two rows):** A on that row is intercepted in the input layer (that list index
+  runs "Reset All Settings", so the press is masked) and switches the same window to a two-row view:
+  item count 2, rows/page 2, one page. Both rows borrow the "Camera Angle" slot (item 4, a long
+  label with five value strings at +13/+20/+27/+34/+41). The labels come from alternating host
+  buffers (`hle_alloc`), and the five table strings are shared between the rows:
+  `0 Off, 1 2x, 2 On, 3 4x, 4 8x` — so FXAA shows slot 0/2 and MSAA shows slot 0/1/3/4, and the two
+  rows never fight over the same text. The pager fields are saved and restored around this (row
+  +0xd, rows/page +0xe, page +0x10, page count +0x12, **total items +0x14**) — restoring the total
+  matters: it is what makes the list's last page keep its extra row after coming back.
+- **Applying the values:** `fxaa_skipped()` in `runtime/nvn/vulkan/exec.c` reads `g_config.fxaa`
+  every frame, so an FXAA toggle takes effect immediately. MSAA sets `g_config.msaa` and calls
+  `vk_set_msaa` (the same path as the F7 key; FSR keeps it off). Left/right adjust the row under the
+  cursor (FXAA flips, MSAA cycles Off → 2x → 4x → 8x wrapping). Both changes rewrite their line in
+  `mhgurecomp.ini` (`config_save_key`, `runtime/config.c`), so the next start boots with the same
+  values.
+- **Row refresh:** a row's text is baked into its nodes at layout and a node whose string pointer
+  did not change is left alone, so changing the bytes in place keeps the old drawing. The row labels
+  alternate between their two host buffers and the window's layout `f_7e635c` is re-run from the
+  update hook after each change; the rows then redraw with the current values.
+- **Input:** the stock behaviour is kept. A opens the value editor on the highlighted row
+  (`FXAA ◀ Off ▶`, `MSAA ◀ 2x ▶`), left/right change it and A confirms; the same left/right presses
+  are timestamped in `runtime/hle/input.c` (`g_lr_pressed_ns`) and change the port setting exactly
+  once, so the editor moves a hidden stock value while the visible state always follows the port's
+  setting. The value setters are swallowed while the submenu is up, so the borrowed option is never
+  applied. B returns to the Options list (the press is held back from the engine until released), a
+  second B closes Options, and Plus closes the pause menu. Press timestamps are re-based on entry so
+  the press that opened the view is not a change.
+- **Scope:** the extra row and submenu are active only while `MHGU_PAUSE_GRAPHICS` is set; the list
+  is restored on B/Plus and whenever a pause menu opens. The stock Options list (hunt, village, chat
+  variants) keeps its own rows and values.
 - Window title: the title is a string at image `0x1827a193` ("Options\0End …"), right-aligned and
   clipped to a fixed width. Writing "Graphics" there shows only "phics", so the title cannot be
   widened without a different text node.
