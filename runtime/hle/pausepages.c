@@ -2,8 +2,8 @@
 // 0x177aeb0, main_107/108.c) past its stock two pages (docs/UI.md 5b).
 //
 // MHGU_PAUSE_GRAPHICS=<0/1>: add a "Graphics" entry at the end of the Options menu
-// (cUIOOptionWindowForGame). It opens a two-row Graphics menu: FXAA (Off/On) and MSAA
-// (Off/2x/4x/8x). The stock options keep their own rows and indices.
+// (cUIOOptionWindowForGame). It opens a three-row Graphics menu: FXAA (Off/On), MSAA
+// (Off/2x/4x/8x) and FSR (Off / FSR 3 / FSR 4). The stock options keep their own rows and indices.
 //
 // The window reports its item count through virtual +0x60 (f_7e7534, stock 27); reporting 28
 // gives the list one extra row on its last page. That row is drawn from the HUD slot (item 2,
@@ -38,12 +38,14 @@
 #define STOCK_ITEMS  27u              // rows of the stock Options list
 #define GRAPHICS_ITEM STOCK_ITEMS     // the extra row (last)
 #define VALUE_ITEM   4u               // "Camera Angle": a long label slot with five value strings
+#define FSR_ITEM     5u               // "Camera Controls": four value strings (Offset/Flip Y/Flip X/Flip X+Y)
 #define PLAIN_ITEM   2u               // "HUD": a plain On/Off slot (draws the extra list row)
 
 // Graphics submenu rows (page 0, rows 0/1).
 #define ROW_FXAA     0
 #define ROW_MSAA     1
-#define GFX_ROWS     2u
+#define ROW_FSR      2
+#define GFX_ROWS     3u
 
 // The borrowed "Camera Angle" slot holds five value strings at +13, +20, +27, +34, +41. Both
 // submenu rows read their value text from there, so the five slots are shared:
@@ -53,6 +55,10 @@
 #define SLOT_ON      2
 #define SLOT_4X      3
 #define SLOT_8X      4
+// Item 5's value strings at +16/+23/+30 (from its label): FSR = Off / FSR 3 / FSR 4.
+#define FSR_OFF      0
+#define FSR_3        1
+#define FSR_4        2
 
 static uint32_t g_pages;              // forced bar page count (MHGU_PAUSE_PAGES; 0: leave alone)
 static int g_graphics;                // 1: Graphics row / menu enabled
@@ -69,10 +75,12 @@ static int g_swallow_b;               // keep B from the engine until it is rele
 // Submenu row labels. Each row alternates between two buffers: the window only redraws a text
 // node whose string pointer changed. The value strings are looked up in the option table, so the
 // "Type N" strings of the borrowed slot are rewritten while the Graphics menu shows.
-static uint32_t g_lbl_fx[2], g_lbl_ms[2];
+static uint32_t g_lbl_fx[2], g_lbl_ms[2], g_lbl_fsr[2];
 static int g_lbl_cur;
 static uint32_t g_tbl;                // borrowed slot (Camera Angle), patched while the menu shows
 static uint32_t g_tbl_w[16];
+static uint32_t g_tbl_fsr;            // borrowed slot (Camera Controls), patched while the menu shows
+static uint32_t g_tbl_fsr_w[16];
 
 // "Graphics" list row label, and the HUD value string blanked for that row only.
 static uint32_t g_gfx_lbl;
@@ -102,16 +110,28 @@ static void ensure_bufs(void)
     g_lbl_fx[1] = hle_alloc(64);
     g_lbl_ms[0] = hle_alloc(64);
     g_lbl_ms[1] = hle_alloc(64);
+    g_lbl_fsr[0] = hle_alloc(64);
+    g_lbl_fsr[1] = hle_alloc(64);
     g_gfx_lbl = hle_alloc(16);
     put(g_gfx_lbl, "Graphics");
 }
 
 static void restore_tbl(void)
 {
-    if (!g_tbl) return;
-    for (int i = 0; i < 16; i++) ST32(g_tbl + (uint32_t)i * 4u, g_tbl_w[i]);
-    g_tbl = 0;
+    if (g_tbl) {
+        for (int i = 0; i < 16; i++) ST32(g_tbl + (uint32_t)i * 4u, g_tbl_w[i]);
+        g_tbl = 0;
+    }
+    if (g_tbl_fsr) {
+        for (int i = 0; i < 16; i++) ST32(g_tbl_fsr + (uint32_t)i * 4u, g_tbl_fsr_w[i]);
+        g_tbl_fsr = 0;
+    }
 }
+
+extern bool g_fsr_on;                 // runtime/nvn/vulkan/fsr.c: FSR started at boot and working
+
+static int fsr_sel(void) { return !g_config.fsr ? FSR_OFF : g_config.fsr_upscaler == FSR_UP_4 ? FSR_4 : FSR_3; }
+static const char *fsr_text(int sel) { return sel == FSR_4 ? "FSR 4" : sel == FSR_3 ? "FSR 3" : "Off"; }
 
 static int msaa_index(int v) { return v >= 8 ? 3 : v >= 4 ? 2 : v >= 2 ? 1 : 0; }
 static int msaa_value(int i) { static const int v[4] = {1, 2, 4, 8}; return v[i & 3]; }
@@ -124,11 +144,13 @@ static void fill_lbl(void)
 {
     ensure_bufs();
     static const char *const slot_text[5] = {"Off", "2x", "On", "4x", "8x"};
-    uint32_t fx = g_lbl_fx[g_lbl_cur], ms = g_lbl_ms[g_lbl_cur];
+    uint32_t fx = g_lbl_fx[g_lbl_cur], ms = g_lbl_ms[g_lbl_cur], fs = g_lbl_fsr[g_lbl_cur];
     memset(G2H(fx), 0, 64);
     memset(G2H(ms), 0, 64);
+    memset(G2H(fs), 0, 64);
     put(fx, "FXAA");
     put(ms, "MSAA");
+    put(fs, "FSR");
     for (int i = 0; i < 5; i++) {
         put(fx + 13u + (uint32_t)i * 7u, slot_text[i]);
         put(ms + 13u + (uint32_t)i * 7u, slot_text[i]);
@@ -136,6 +158,12 @@ static void fill_lbl(void)
     if (g_tbl) {
         put(g_tbl, "FXAA");                       // the label comes from the host buffer
         for (int i = 0; i < 5; i++) put(g_tbl + 13u + (uint32_t)i * 7u, slot_text[i]);
+    }
+    if (g_tbl_fsr) {                              // "Camera Controls" -> Off / FSR 3 / FSR 4
+        put(g_tbl_fsr, "FSR");
+        put(g_tbl_fsr + 16u, "Off");
+        put(g_tbl_fsr + 23u, "FSR 3");
+        put(g_tbl_fsr + 30u, "FSR 4");
     }
 }
 
@@ -190,8 +218,8 @@ static void opt_row(Cpu *c)
             g_plus_last = g_plus_pressed_ns;
         }
         if (g_gfx_menu) {
-            sub_row = (int)item;              // 0: FXAA, 1: MSAA
-            c->r[3] = VALUE_ITEM;
+            sub_row = (int)item;              // 0: FXAA, 1: MSAA, 2: FSR
+            c->r[3] = sub_row == ROW_FSR ? FSR_ITEM : VALUE_ITEM;
         } else if (abs == GRAPHICS_ITEM) {
             c->r[3] = PLAIN_ITEM;             // draw the Graphics row from the HUD slot
             extra_row = 1;
@@ -206,12 +234,20 @@ static void opt_row(Cpu *c)
     if (!on || out < 0x0c000000u) return;
     uint32_t src = LD32(out);
     if (g_gfx_menu) {
-        if (!g_tbl && src >= 0x10000000u && src < 0x1c000000u) {
-            g_tbl = src;
-            for (int i = 0; i < 16; i++) g_tbl_w[i] = LD32(src + (uint32_t)i * 4u);
+        if (src >= 0x10000000u && src < 0x1c000000u) {
+            if (sub_row == ROW_FSR) {
+                if (!g_tbl_fsr) {
+                    g_tbl_fsr = src;
+                    for (int i = 0; i < 16; i++) g_tbl_fsr_w[i] = LD32(src + (uint32_t)i * 4u);
+                }
+            } else if (!g_tbl) {
+                g_tbl = src;
+                for (int i = 0; i < 16; i++) g_tbl_w[i] = LD32(src + (uint32_t)i * 4u);
+            }
         }
         fill_lbl();
-        ST32(out, sub_row == ROW_MSAA ? g_lbl_ms[g_lbl_cur] : g_lbl_fx[g_lbl_cur]);
+        ST32(out, sub_row == ROW_FSR ? g_lbl_fsr[g_lbl_cur]
+                 : sub_row == ROW_MSAA ? g_lbl_ms[g_lbl_cur] : g_lbl_fx[g_lbl_cur]);
     } else if (extra_row) {
         ensure_bufs();
         ST32(out, g_gfx_lbl);
@@ -229,7 +265,8 @@ static void opt_value(Cpu *c)
     if (g_graphics && is_opt(c)) {
         if (g_gfx_menu) {
             // The value virtual is called with (page, row): row 0 FXAA, row 1 MSAA.
-            if (c->r[2] == ROW_MSAA) c->r[0] = (uint32_t)msaa_slot(g_config.msaa);
+            if (c->r[2] == ROW_FSR) c->r[0] = (uint32_t)fsr_sel();
+            else if (c->r[2] == ROW_MSAA) c->r[0] = (uint32_t)msaa_slot(g_config.msaa);
             else c->r[0] = g_config.fxaa ? SLOT_ON : SLOT_OFF;
             return;
         }
@@ -303,6 +340,28 @@ static void leave_menu(void)
     LOG("[pausepages] Graphics menu -> Options list\n");
 }
 
+// The FSR upscaler (and the render resolution it works from) is built at start-up when FSR is on.
+// The setting is always written to the INI; live, FSR can be switched off and back on when it was
+// started at boot, but enabling it from a non-FSR boot (or changing 3 <-> 4) needs the next start.
+static int g_fsr_boot = -1, g_fsr_boot_up = -1;
+
+static void fsr_apply(int sel)
+{
+    if (g_fsr_boot < 0) { g_fsr_boot = g_fsr_on; g_fsr_boot_up = g_config.fsr_upscaler; }
+    g_config.fsr = sel != FSR_OFF;
+    g_config.fsr_upscaler = sel == FSR_4 ? FSR_UP_4 : FSR_UP_3;
+    config_save_key("FSR", g_config.fsr ? "On" : "Off");
+    config_save_key("Upscaler", sel == FSR_4 ? "FSR4" : "FSR3");
+    if (!g_config.fsr) {
+        g_fsr_on = false;
+    } else if (g_fsr_boot && g_fsr_boot_up == g_config.fsr_upscaler) {
+        g_fsr_on = true;                  // the upscaler built at start-up is used again
+    } else {
+        LOG("[pausepages] FSR %s takes effect on the next start (the upscaler is built at start-up)\n", fsr_text(sel));
+    }
+    LOG("[pausepages] FSR -> %s\n", fsr_text(sel));
+}
+
 void pausepages_input(uint64_t *buttons)
 {
     if (g_swallow_b) {                        // the B that left the menu is still held
@@ -356,7 +415,13 @@ void pausepages_input(uint64_t *buttons)
     if (g_lr_pressed_ns != g_lr_last) {
         g_lr_last = g_lr_pressed_ns;
         int row = g_opt_obj ? (int)LD8(PW_ROW(g_opt_obj)) : ROW_FXAA;
-        if (row == ROW_MSAA) {
+        if (row == ROW_FSR) {
+            int dir = (*buttons & (1ull << BTN_RIGHT)) ? 1 : (*buttons & (1ull << BTN_LEFT)) ? -1 : 0;
+            if (dir) {
+                int i = (fsr_sel() + (dir > 0 ? 1 : 2)) % 3;
+                fsr_apply(i);
+            }
+        } else if (row == ROW_MSAA) {
             int dir = (*buttons & (1ull << BTN_RIGHT)) ? 1 : (*buttons & (1ull << BTN_LEFT)) ? -1 : 0;
             if (dir) {
                 int i = (msaa_index(g_config.msaa) + (dir > 0 ? 1 : 3)) & 3;
