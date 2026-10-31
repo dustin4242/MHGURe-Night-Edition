@@ -2,15 +2,15 @@
 // 0x177aeb0, main_107/108.c) past its stock two pages (docs/UI.md 5b).
 //
 // MHGU_PAUSE_GRAPHICS=<0/1>: add a "Graphics" entry at the end of the Options menu
-// (cUIOOptionWindowForGame). It opens a five-row Graphics menu: FXAA (Off/On), MSAA
-// (Off/2x/4x/8x), FSR (Off/FSR 3/FSR 4), FSR Quality (NativeAA/Quality/Balanced/Perf/UltraPerf)
-// and FSR Sharpness (0.1..1.0).
+// (cUIOOptionWindowForGame). It opens a seven-row Graphics menu: FXAA (Off/On), MSAA
+// (Off/2x/4x/8x), FSR (Off/FSR 3/FSR 4), FSR Quality (NativeAA/Quality/Balanced/Perf/UltraPerf),
+// FSR Sharpness (0.1..1.0), Framerate (30..240) and VSync (Off/On).
 // The stock options keep their own rows and indices.
 //
 // The window reports its item count through virtual +0x60 (f_7e7534, stock 27); reporting 28
 // gives the list one extra row on its last page. That row is drawn from the HUD slot (item 2,
 // a plain On/Off row) with the label "Graphics" and an empty value. Selecting it switches this
-// same window to the five-row Graphics view.
+// same window to the seven-row Graphics view.
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -49,7 +49,9 @@
 #define ROW_FSR      2
 #define ROW_FSRQ     3
 #define ROW_SHARP    4
-#define GFX_ROWS     5u
+#define ROW_FPS      5
+#define ROW_VSYNC    6
+#define GFX_ROWS     7u
 
 // The borrowed "Camera Angle" slot holds five value strings at +13, +20, +27, +34, +41. The
 // window copies the value text when it builds a row, so the five slots are rewritten with the
@@ -60,8 +62,11 @@ static const char *const g_row_texts[GFX_ROWS][5] = {
     {"Off", "FSR 3", "FSR 4", NULL, NULL},
     {NULL, NULL, NULL, NULL, NULL},        // FSR Quality: the current label goes into two slots
     {NULL, NULL, NULL, NULL, NULL},        // FSR Sharpness: the current value goes into two slots
+    {NULL, NULL, NULL, NULL, NULL},        // Framerate: the current value goes into two slots
+    {"Off", "On", NULL, NULL, NULL},       // VSync
 };
-static const char *const g_row_names[GFX_ROWS] = {"FXAA", "MSAA", "FSR", "FSR Quality", "FSR Sharpness"};
+static const char *const g_row_names[GFX_ROWS] = {"FXAA", "MSAA", "FSR", "FSR Quality", "FSR Sharpness",
+                                                  "Framerate", "VSync"};
 static const char *const g_fsrq_ini[5] = {"NativeAA", "Quality", "Balanced", "Performance", "UltraPerformance"};
 static const char *const g_fsrq_lbl[5] = {"NativeAA", "Quality", "Balanced", "Perf", "UltraPerf"};
 
@@ -84,6 +89,7 @@ static int g_lbl_cur;
 static uint32_t g_tbl;                // borrowed slot (Camera Angle), patched while the menu shows
 static uint32_t g_tbl_w[16];
 static int g_fsrq_disp;               // which of the two value strings the FSR Quality row shows
+static int g_fps_disp;                // which of the two value strings the Framerate row shows
 
 // "Graphics" list row label, and the HUD value string blanked for that row only.
 static uint32_t g_gfx_lbl;
@@ -109,7 +115,7 @@ static void put(uint32_t a, const char *s)
 static void ensure_bufs(void)
 {
     if (g_lbl[0][0]) return;
-    for (int r = 0; r < ROW_SHARP + 1; r++) {
+    for (int r = 0; r < (int)GFX_ROWS; r++) {
         g_lbl[r][0] = hle_alloc(64);
         g_lbl[r][1] = hle_alloc(64);
     }
@@ -144,6 +150,26 @@ static const char *sharp_text(void)
     return g_sharp_buf;
 }
 
+// Framerate (the INI allows any 30..240; the menu offers these eight). The row shows the actual
+// setting, so a value loaded from the INI that is not in the list is still visible; stepping
+// snaps to the nearest listed rate first.
+static const int g_fps_vals[8] = {30, 40, 60, 72, 120, 144, 165, 240};
+static char g_fps_buf[8];
+static int fps_index(void)
+{
+    int best = 0, bd = 1 << 30;
+    for (int i = 0; i < 8; i++) {
+        int d = g_config.fps > g_fps_vals[i] ? g_config.fps - g_fps_vals[i] : g_fps_vals[i] - g_config.fps;
+        if (d < bd) bd = d, best = i;
+    }
+    return best;
+}
+static const char *fps_text(void)
+{
+    snprintf(g_fps_buf, sizeof g_fps_buf, "%d", g_config.fps);
+    return g_fps_buf;
+}
+
 static int fsr_sel(void) { return !g_config.fsr ? 0 : g_config.fsr_upscaler == FSR_UP_4 ? 2 : 1; }
 static const char *fsr_text(int sel) { return sel == 2 ? "FSR 4" : sel == 1 ? "FSR 3" : "Off"; }
 
@@ -162,6 +188,16 @@ static void fill_row(int row)
         if (g_tbl) {
             put(g_tbl + 13u, t);
             put(g_tbl + 41u, t);
+        }
+        return;
+    }
+    if (row == ROW_FPS) {
+        // Eight rates do not fit five value strings: the row reports 0 or 1 and both slots hold
+        // the current text, so every change swaps the string pointer and redraws the row.
+        const char *t = fps_text();
+        if (g_tbl) {
+            put(g_tbl + 13u, t);
+            put(g_tbl + 20u, t);
         }
         return;
     }
@@ -275,6 +311,8 @@ static void opt_value(Cpu *c)
             case ROW_FSR: c->r[0] = (uint32_t)fsr_sel(); break;
             case ROW_FSRQ: c->r[0] = (uint32_t)g_fsrq_disp; break;
             case ROW_SHARP: c->r[0] = (uint32_t)g_sharp_disp; break;
+            case ROW_FPS: c->r[0] = (uint32_t)g_fps_disp; break;
+            case ROW_VSYNC: c->r[0] = g_config.vsync ? 1u : 0u; break;
             default: c->r[0] = g_config.fxaa ? 1u : 0u; break;
             }
             return;
@@ -460,6 +498,26 @@ void pausepages_input(uint64_t *buttons)
             fsrq_apply(i);
             break;
         }
+        case ROW_FPS: {
+            void vi_set_framerate(int);
+            int i = (fps_index() + (dir > 0 ? 1 : 7)) % 8;
+            char buf[8];
+            g_config.fps = g_fps_vals[i];
+            vi_set_framerate(g_config.fps);
+            g_fps_disp ^= 1;
+            snprintf(buf, sizeof buf, "%d", g_config.fps);
+            config_save_key("FPS", buf);
+            LOG("[pausepages] Framerate -> %s\n", buf);
+            break;
+        }
+        case ROW_VSYNC: {
+            void vk_set_vsync(int);
+            g_config.vsync = !g_config.vsync;
+            vk_set_vsync(g_config.vsync);
+            config_save_key("VSync", g_config.vsync ? "On" : "Off");
+            LOG("[pausepages] VSync -> %s\n", g_config.vsync ? "On" : "Off");
+            break;
+        }
         case ROW_SHARP: {
             int i = (sharp_index() + (dir > 0 ? 1 : 9)) % 10;
             g_config.fsr_sharpness = sharp_value(i);   // read by the FSR dispatch every frame
@@ -493,5 +551,5 @@ void pausepages_init(void)
     fnhook_set(FN_OPT_VALUE, hle_register("pausepages:opt_value", opt_value));
     fnhook_set(FN_OPT_UPDATE, hle_register("pausepages:opt_update", opt_update));
     fnhook_set(FN_PARAM_SET, hle_register("pausepages:param_set", param_set));
-    LOG("[pausepages] Options: Graphics row + FXAA/MSAA/FSR/FSR Quality/FSR Sharpness menu\n");
+    LOG("[pausepages] Options: Graphics row + FXAA/MSAA/FSR/FSR Quality/FSR Sharpness/Framerate/VSync menu\n");
 }

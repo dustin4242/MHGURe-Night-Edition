@@ -20,16 +20,27 @@ uint32_t g_native_window;
 // 60 and ~135 fps. The settings' FPS (mhgurecomp.ini: 30..240, default 60); MHGU_FRAMERATE overrides it. Above the
 // monitor's refresh rate the settings' VSync must be Off (immediate present): FIFO / mailbox wait for the display.
 #define FPS_OBJ_GLOBAL 0x2326764u
+static float g_fps = -1;
 static float framerate(void) {
-    static float f = -1;
-    if (f < 0) {
+    if (g_fps < 0) {
         const char *e = getenv("MHGU_FRAMERATE");
-        f = e ? (float)atof(e) : (float)g_config.fps;
-        if (!(f >= 30.0f)) f = 30.0f;
-        if (f > 240.0f) f = 240.0f;
-        LOG("[vi] frame rate target %.0f\n", f);
+        g_fps = e ? (float)atof(e) : (float)g_config.fps;
+        if (!(g_fps >= 30.0f)) g_fps = 30.0f;
+        if (g_fps > 240.0f) g_fps = 240.0f;
+        LOG("[vi] frame rate target %.0f\n", g_fps);
     }
-    return f;
+    return g_fps;
+}
+// The settings' Framerate row: write the new target into the engine's limiter now (the game resets
+// the field to 30 at some transitions; vi_apply_framerate puts the current value back).
+void vi_set_framerate(int fps) {
+    float f = (float)fps;
+    if (!(f >= 30.0f)) f = 30.0f;
+    if (f > 240.0f) f = 240.0f;
+    g_fps = f;
+    uint32_t obj = LD32(FPS_OBJ_GLOBAL);
+    if (obj >= HEAP_BASE && obj < HEAP_BASE + HEAP_MAX) STF(obj + 0x3c, f);
+    LOG("[vi] frame rate target %.0f\n", f);
 }
 void vi_apply_framerate(void) {  // (also called per presented frame: runtime/nvn/vulkan/device.c)
     float want = framerate();
@@ -42,10 +53,10 @@ void vi_apply_framerate(void) {  // (also called per presented frame: runtime/nv
 // The display's vsync event: 60 Hz, or the frame rate target when that is higher (the game waits for it per frame).
 static void *vsync_thread(void *arg) {
     (void)arg;
-    float fr = framerate();
-    const uint64_t period = (uint64_t)(1e9 / (fr > 60.0f ? fr : 60.0f));
     uint64_t next = plat_now_ns();
     for (;;) {
+        float fr = framerate();  // (the menu can change it while running)
+        const uint64_t period = (uint64_t)(1e9 / (fr > 60.0f ? fr : 60.0f));
         next += period;
         plat_sleep_until_ns(next);
         uint64_t now = plat_now_ns();

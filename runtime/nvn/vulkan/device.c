@@ -393,6 +393,12 @@ static void recreate_swapchain(void) {
     create_swapchain();
 }
 
+// VSync is a swapchain present-mode choice (present_mode() reads it), so switching it means a
+// new swapchain. The menu only requests it here; the next frame rebuilds it on the render
+// thread, the same path a window resize takes.
+static volatile int g_sc_recreate;
+void vk_set_vsync(int on) { g_config.vsync = on; g_sc_recreate = 1; }
+
 VkRenderPass vk_window_pass(void) { return sc_pass; }
 
 // ================================================================== frames
@@ -418,6 +424,7 @@ static bool frame_begin(void) {
     int w, h;
     SDL_GetWindowSizeInPixels(ui_window(), &w, &h);
     if (!w || !h) return false;  // minimised
+    if (g_sc_recreate) { g_sc_recreate = 0; recreate_swapchain(); }
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
     if (!g_vk.swapchain) return false;
     slot = (slot + 1) % FRAMES;

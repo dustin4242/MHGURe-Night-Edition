@@ -6,15 +6,15 @@ another row. It is the working note behind `docs/UI.md` §5c; the code lives in
 `runtime/hle/pausepages.c`.
 
 Short version: the submenu is not a new window. It is the stock Options window
-(`cUIOOptionWindowForGame`) made to report five items instead of 27, with its row/value
-virtuals overridden so the five rows draw our labels and values, its pager shrunk to one
+(`cUIOOptionWindowForGame`) made to report seven items instead of 27, with its row/value
+virtuals overridden so the seven rows draw our labels and values, its pager shrunk to one
 page, and all input for the borrowed option masked. The borrowed option's string block is
 patched in place so the rows show our values.
 
 Everything is runtime HLE — no romfs, exefs or game-code edits.
 
 - Enable with `MHGU_PAUSE_GRAPHICS=1` (in the INI or environment); see `runtime/hle/pausepages.c`.
-- The existing rows: `FXAA`, `MSAA`, `FSR`, `FSR Quality`, `FSR Sharpness`.
+- The existing rows: `FXAA`, `MSAA`, `FSR`, `FSR Quality`, `FSR Sharpness`, `Framerate`, `VSync`.
 - Build: `make -j4 FFMPEG=system`, binary `build/mhgurecomp`.
 
 ---
@@ -175,7 +175,7 @@ static void enter_menu(void)
         ST16(PW_PAGE(w), 0);
         ST8 (PW_ROWS(w), GFX_ROWS);   // 5
         ST16(w + 0x5e, 1);            // one page
-        ST16(w + 0x60, GFX_ROWS);     // five items
+        ST16(w + 0x60, GFX_ROWS);     // seven items
         ST32(w + 0x74, 0);            // make sure no editor state leaks in
     }
     g_lr_last = g_lr_pressed_ns;      // re-base input
@@ -221,13 +221,14 @@ While `g_gfx_menu` is set, `opt_row` forces every row's item argument to `VALUE_
 
 ```c
 if (g_gfx_menu) {
-    sub_row = (int)item;      // 0 FXAA, 1 MSAA, 2 FSR, 3 FSR Quality, 4 FSR Sharpness
+    sub_row = (int)item;      // 0 FXAA, 1 MSAA, 2 FSR, 3 FSR Quality, 4 FSR Sharpness,
+                              // 5 Framerate, 6 VSync
     c->r[3] = VALUE_ITEM;     // let the engine lay out a stock multi-value row
 }
 ```
 
 `item` (the third argument) is the row within the page, which for the one-page submenu is
-the row number 0..4.
+the row number 0..6.
 
 ### 4.2 Labels
 
@@ -243,12 +244,12 @@ buffers. Two buffers are used because of the "pointer must change" rule: `g_lbl_
 flipped after each value change, so the next layout sees a different label pointer and
 redraws the row.
 
-The buffers must stay exactly 64 bytes or larger; `ensure_bufs()` allocates them once. The
-current loop bound is `ROW_SHARP + 1` — update it when adding a row.
+The buffers must stay exactly 64 bytes or larger; `ensure_bufs()` allocates them once, looping
+over `GFX_ROWS` — it needs no change when a row is appended.
 
 ### 4.3 Values: borrowing the Camera Angle slot
 
-The five rows do not have their own option records; they borrow the string block of item 4,
+The seven rows do not have their own option records; they borrow the string block of item 4,
 "Camera Angle". Its block starts with the 13-byte label and then five value strings in
 7-byte slots at `+13, +20, +27, +34, +41` (the stock values are `Type 1`…`Type 5`). The
 engine reads the value text from this block at row-build time.
@@ -265,7 +266,7 @@ static const char *const g_row_texts[GFX_ROWS][5] = {
     {"Off", "On"},                 // FXAA
     {"Off", "2x", "4x", "8x"},     // MSAA
     {"Off", "FSR 3", "FSR 4"},     // FSR
-    /* FSR Quality and FSR Sharpness are special-cased, see 4.5 */
+    /* FSR Quality, FSR Sharpness and Framerate are special-cased, see 4.5 */
 };
 ```
 
@@ -309,6 +310,8 @@ alternates between those two slots. The pointer change is what redraws the row.
   slots 0 and 4 (`+13` and `+41`, 28 bytes apart), report `g_fsrq_disp` = 0 or 4.
 - **FSR Sharpness** (10 values): write the current `0.1`..`1.0` text to slots 0 and 1
   (`+13` and `+20`), report `g_sharp_disp` = 0 or 1.
+- **Framerate** (8 values): write the current rate (`30`..`240`) to slots 0 and 1, report
+  `g_fps_disp` = 0 or 1.
 
 Because only the current text has to be correct, overlapping the other slots does not
 matter; the rest of the block is restored on exit.
@@ -406,6 +409,31 @@ the value of an existing line in place (the key must already exist in the INI).
   frame (`runtime/nvn/vulkan/fsr.c`: `.sharpness`, `di.sharpness`,
   `di.enableSharpening`), so the value applies while FSR is running.
 
+### Framerate — row 5
+
+- Values: `30`, `40`, `60`, `72`, `120`, `144`, `165`, `240` (eight steps, indices 0..7).
+- Display: current text in slots 0 and 1, alternating the reported index (§4.5). The row shows
+  the actual `g_config.fps`, so a rate loaded from the INI that is not one of the eight (say
+  `100`) is still displayed; the first step snaps to the nearest listed rate.
+- Apply: `g_config.fps = rate`, `vi_set_framerate(rate)`, then `FPS = rate` in the INI.
+  `vi_set_framerate()` (`runtime/hle/vi.c`) clamps to 30..240, updates the cached target and
+  writes it into the engine's frame limiter (`+0x3c` of the main system object at
+  `0x2326764`), the same field the 60 fps cheat codes use. `vi_apply_framerate()` keeps putting
+  the target back when the game resets the field to 30.
+- Live: yes. The timing thread re-reads the target each tick, so the vsync event and frame
+  pacing follow a change made in the menu. Note that with VSync on the display still caps the
+  result at its refresh rate.
+
+### VSync — row 6
+
+- Values: `Off`, `On` (indices 0, 1).
+- Apply: `g_config.vsync` toggled, `vk_set_vsync(on)`, then `VSync = On/Off` in the INI.
+- Live: yes, with a swapchain rebuild. The present mode is chosen when the swapchain is
+  created, so `vk_set_vsync()` (`runtime/nvn/vulkan/device.c`) only sets `g_config.vsync` and
+  raises a flag; the next frame (on the render thread, under the Vulkan lock) rebuilds the
+  swapchain, the same path a window resize takes. The log shows `[vk] swapchain ...` after
+  the toggle.
+
 ---
 
 ## 6. Adding another row
@@ -418,8 +446,7 @@ the value of an existing line in place (the key must already exist in the INI).
    #define ROW_MYROW  5
    #define GFX_ROWS   6u
    ```
-   `ensure_bufs()` allocates labels up to `ROW_SHARP + 1` — change that bound to the new last
-   row (or to `GFX_ROWS`).
+   `ensure_bufs()` loops over `GFX_ROWS`, so it picks up the new row automatically.
 3. **Add the name** to `g_row_names`, and the value texts to `g_row_texts` if the row has at
    most five values, each at most six characters:
    ```c
@@ -506,8 +533,12 @@ assuming the code failed.
 - **The label pointer must change to redraw.** Flipping `g_lbl_cur` and re-running the layout
   is mandatory after every change.
 - **`+0x60` is the total item count**, and the pager fields must be restored on exit.
-- **FSR/FSR Quality are start-up settings** (device features, upscaler, render scale); only
-  FXAA, MSAA and sharpness apply truly live.
+- **FSR/FSR Quality are start-up settings** (device features, upscaler, render scale); FXAA,
+  MSAA, sharpness, framerate and VSync apply live.
+- **Framerate lives in the engine's limiter field** (`+0x3c`); the timing thread re-reads it
+  each tick. Do not set it below 30 — the game's frame delta assumes 30 as the baseline.
+- **VSync needs a swapchain rebuild**, so it is applied on the next frame, not in the input
+  handler, to keep it on the render thread.
 
 ---
 
@@ -519,7 +550,8 @@ Files:
 - `runtime/hle/input.c` / `input.h` — press timestamps, calls `pausepages_input`.
 - `runtime/config.c` / `config.h` — INI parsing and `config_save_key`.
 - `runtime/nvn/vulkan/exec.c` — `fxaa_skipped()`.
-- `runtime/nvn/vulkan/device.c` — `vk_set_msaa`, FSR device features.
+- `runtime/nvn/vulkan/device.c` — `vk_set_msaa`, `vk_set_vsync`, FSR device features.
+- `runtime/hle/vi.c` — frame rate target, `vi_set_framerate`, timing thread.
 - `runtime/nvn/vulkan/fsr.c` — `g_fsr_on`, per-frame FSR dispatch and sharpness.
 - `generated/main/main_102.c` — the Options window virtuals and layout.
 
@@ -542,6 +574,6 @@ total `+0x60`; edit state `+0x74`.
 Borrowed slot: item 4 ("Camera Angle"), block start `g_tbl`, value slots at
 `+13, +20, +27, +34, +41` (7 bytes each), 64 bytes saved/restored.
 
-INI keys: `FXAA`, `MSAA`, `FSR`, `Upscaler`, `FSRQuality`, `Sharpness`.
+INI keys: `FXAA`, `MSAA`, `FSR`, `Upscaler`, `FSRQuality`, `Sharpness`, `FPS`, `VSync`.
 
 Enable: `MHGU_PAUSE_GRAPHICS=1`.
