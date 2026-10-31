@@ -617,23 +617,37 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   identifies each option by its list index in hardcoded code, so inserting a row in front would
   make every row below edit the next setting. With the entry at the end, all stock rows keep their
   index and edit exactly as before.
-- **Graphics submenu (seven rows):** A on that row is intercepted in the input layer (that list
-  index runs "Reset All Settings", so the press is masked) and switches the same window to a
-  seven-row view: item count 7, rows/page 7, one page. The rows are `FXAA`, `MSAA`, `FSR`,
-  `FSR Quality`, `FSR Sharpness`, `Framerate` and `VSync`. All seven borrow the "Camera Angle"
+- **Graphics submenu (eight rows):** A on that row is intercepted in the input layer (that list
+  index runs "Reset All Settings", so the press is masked) and switches the same window to an
+  eight-row view: item count 8, rows/page 8, one page. The rows are `Resolution`, `FXAA`, `MSAA`,
+  `FSR`, `FSR Quality`, `FSR Sharpness`, `Framerate` and `VSync`. The top row has no value and
+  opens a nested two-row **Resolution** view (see below). All eight borrow the "Camera Angle"
   slot (item 4, five value strings at +13/+20/+27/+34/+41). The window copies a row's value text
   while it builds that row, so the five value strings are rewritten with the current row's texts
   just before the row is built: each row has its own list on the same slot (`FXAA Off/On`,
   `MSAA Off/2x/4x/8x`, `FSR Off/FSR 3/FSR 4`, `FSR Quality
   NativeAA/Quality/Balanced/Perf/UltraPerf`, `VSync Off/On`). FSR Quality's names are longer than
   the slot's seven-byte strings, FSR Sharpness has ten steps (0.1..1.0) and Framerate has eight
-  rates (30/40/60/72/120/144/165/240), none of which fit the five strings. Those three rows
-  instead write only the *current* text, into two strings far enough apart not to overlap, and
-  report 0 or 4 (Quality) / 0 or 1 (Sharpness) / 0 or 1 (Framerate) alternately, so each change
-  swaps the string pointer and the row redraws. The labels come from alternating host buffers
-  (`hle_alloc`). The borrowed block is saved and restored around the menu. The pager fields are
-  saved and restored too (row +0xd, rows/page +0xe, page +0x10, page count +0x12, **total items
-  +0x14**).
+  rates (30/40/60/72/120/144/165/240), none of which fit the five strings. Those rows instead
+  write only the *current* text, into two strings far enough apart not to overlap, and report
+  0 or 4 (Quality) / 0 or 1 (everything else) alternately, so each change swaps the string pointer
+  and the row redraws. The labels come from alternating host buffers (`hle_alloc`). The borrowed
+  block is saved and restored around the menu. The pager fields are saved and restored too (row
+  +0xd, rows/page +0xe, page +0x10, page count +0x12, **total items +0x14**).
+- **Resolution submenu (nested):** A on the top `Resolution` row (masked, like the Graphics row)
+  shrinks the same window again to two rows on one page: `Aspect Ratio` (4:3, 3:2, 16:10, 16:9,
+  21:9, 32:9) and `Resolution`. The aspect row cycles its six ratios; the `Resolution` row is a
+  typed height: A on it starts a four-digit entry shown in the row itself with a blinking `|`
+  cursor (`runtime/textinput.c` with `textinput_digits_only`, so letters are ignored and only four
+  digits fit). Enter applies it, Escape or B cancels, A confirms; the accepted range is 240..4320.
+  Either change recomputes the pair as one size —
+  `width = round(height * aspect)`, rounded up to even — and writes `Resolution = WxH` plus the
+  matching `AspectRatio` (so the rounded width cannot drift the shape). The two values are read
+  back from `Resolution`/`AspectRatio` when the view opens (Auto derives the aspect from the
+  window), and the row shows the actual height if the INI has one outside the six choices. The
+  pager of the Graphics view is saved and restored, so B returns to the eight-row menu and a
+  second B to the Options list. Changing the resolution rebuilds the window, swapchain and game
+  render targets, so it takes effect on the next start — the log says so.
 - **Applying the values:** `fxaa_skipped()` reads `g_config.fxaa` every frame (FXAA applies
   immediately); MSAA sets `g_config.msaa` and calls `vk_set_msaa` (the F7-key path; FSR keeps it
   off). FSR writes `FSR = On/Off` and `Upscaler = FSR3/FSR4` to the INI exactly as selected (Off
@@ -664,7 +678,7 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   update hook after each change; the rows then redraw with the current values.
 - **Input:** the stock behaviour is kept. A opens the value editor on the highlighted row
   (`FXAA ◀ Off ▶`, `MSAA ◀ 2x ▶`, `FSR ◀ FSR 3 ▶`, `FSR Quality ◀ Quality ▶`, `FSR Sharpness ◀ 0.8 ▶`,
-  `Framerate ◀ 60 ▶`, `VSync ◀ On ▶`),
+  `Framerate ◀ 60 ▶`, `VSync ◀ On ▶`, `Aspect Ratio ◀ 16:9 ▶`, `Resolution ◀ 1080 ▶`),
   left/right change it and A confirms. The left/right presses are timestamped in
   `runtime/hle/input.c` (`g_lr_pressed_ns`) and change the port setting exactly once. They are also
   **masked from the engine** while the submenu is up (like B): the row/value virtuals only change

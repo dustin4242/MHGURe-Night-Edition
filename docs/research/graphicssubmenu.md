@@ -6,15 +6,16 @@ another row. It is the working note behind `docs/UI.md` §5c; the code lives in
 `runtime/hle/pausepages.c`.
 
 Short version: the submenu is not a new window. It is the stock Options window
-(`cUIOOptionWindowForGame`) made to report seven items instead of 27, with its row/value
-virtuals overridden so the seven rows draw our labels and values, its pager shrunk to one
+(`cUIOOptionWindowForGame`) made to report eight items instead of 27, with its row/value
+virtuals overridden so the eight rows draw our labels and values, its pager shrunk to one
 page, and all input for the borrowed option masked. The borrowed option's string block is
 patched in place so the rows show our values.
 
 Everything is runtime HLE — no romfs, exefs or game-code edits.
 
 - Enable with `MHGU_PAUSE_GRAPHICS=1` (in the INI or environment); see `runtime/hle/pausepages.c`.
-- The existing rows: `FXAA`, `MSAA`, `FSR`, `FSR Quality`, `FSR Sharpness`, `Framerate`, `VSync`.
+- The existing rows: `Resolution` (a nested submenu), `FXAA`, `MSAA`, `FSR`, `FSR Quality`,
+  `FSR Sharpness`, `Framerate`, `VSync`.
 - Build: `make -j4 FFMPEG=system`, binary `build/mhgurecomp`.
 
 ---
@@ -175,7 +176,7 @@ static void enter_menu(void)
         ST16(PW_PAGE(w), 0);
         ST8 (PW_ROWS(w), GFX_ROWS);   // 5
         ST16(w + 0x5e, 1);            // one page
-        ST16(w + 0x60, GFX_ROWS);     // seven items
+        ST16(w + 0x60, GFX_ROWS);     // eight items
         ST32(w + 0x74, 0);            // make sure no editor state leaks in
     }
     g_lr_last = g_lr_pressed_ns;      // re-base input
@@ -221,14 +222,14 @@ While `g_gfx_menu` is set, `opt_row` forces every row's item argument to `VALUE_
 
 ```c
 if (g_gfx_menu) {
-    sub_row = (int)item;      // 0 FXAA, 1 MSAA, 2 FSR, 3 FSR Quality, 4 FSR Sharpness,
-                              // 5 Framerate, 6 VSync
+    sub_row = (int)item;      // 0 Resolution, 1 FXAA, 2 MSAA, 3 FSR, 4 FSR Quality,
+                              // 5 FSR Sharpness, 6 Framerate, 7 VSync
     c->r[3] = VALUE_ITEM;     // let the engine lay out a stock multi-value row
 }
 ```
 
 `item` (the third argument) is the row within the page, which for the one-page submenu is
-the row number 0..6.
+the row number 0..7.
 
 ### 4.2 Labels
 
@@ -249,7 +250,7 @@ over `GFX_ROWS` — it needs no change when a row is appended.
 
 ### 4.3 Values: borrowing the Camera Angle slot
 
-The seven rows do not have their own option records; they borrow the string block of item 4,
+The eight rows do not have their own option records; they borrow the string block of item 4,
 "Camera Angle". Its block starts with the 13-byte label and then five value strings in
 7-byte slots at `+13, +20, +27, +34, +41` (the stock values are `Type 1`…`Type 5`). The
 engine reads the value text from this block at row-build time.
@@ -312,6 +313,8 @@ alternates between those two slots. The pointer change is what redraws the row.
   (`+13` and `+20`), report `g_sharp_disp` = 0 or 1.
 - **Framerate** (8 values): write the current rate (`30`..`240`) to slots 0 and 1, report
   `g_fps_disp` = 0 or 1.
+- **Aspect Ratio / Resolution** (6 values each, in the nested view): the current ratio name or
+  height goes into slots 0 and 1, alternating the reported index.
 
 Because only the current text has to be correct, overlapping the other slots does not
 matter; the rest of the block is restored on exit.
@@ -329,7 +332,8 @@ All submenu input is handled in `pausepages_input`, using the raw press timestam
 | Plus | `leave_menu()` | closes the pause menu by the stock path |
 | Left/Right | masked, own change | see below |
 | Up/Down | passed through | moves the stock row cursor; we read it from the pager |
-| A | passed through | opens the stock value editor on the row |
+| A | passed through, except on `Resolution` | opens the stock value editor; the Resolution row is masked and enters the nested view |
+| B (nested view) | masked, `leave_res_menu()` | returns to the eight-row Graphics view |
 
 The left/right case deserves its own note. The row/value virtuals only change *drawing*; the
 window's edit path still targets the stock item under its own cursor. Since the submenu
@@ -361,7 +365,36 @@ The B that leaves the menu is held back from the engine until it is released
 All INI writes go through `config_save_key(key, value)` in `runtime/config.c`; it rewrites
 the value of an existing line in place (the key must already exist in the INI).
 
-### FXAA — row 0
+### Resolution — row 0 (nested submenu)
+
+- The row has no value (its value string is blanked in `fill_row`); A on it is masked and
+  opens a second view instead of the stock editor.
+- The nested view is the same window shrunk again: item count 2, rows/page 2, one page, rows
+  `Aspect Ratio` and `Resolution`. `enter_res_menu()` saves the *Graphics* pager shape (rows,
+  page count, total, page, row) in `g_res_saved_*`; `leave_res_menu()` restores it. The
+  Options-list shape is already saved in `g_saved_*`, so the stack is two levels deep.
+- Values: aspect `4:3, 3:2, 16:10, 16:9, 21:9, 32:9` (cycled with left/right); the height row is
+  a typed field. A on `Resolution` starts a four-digit entry (`textinput_begin(NULL, 4)` with
+  `textinput_digits_only(true)`), the row shows the digits plus a blinking `|` (500 ms), Enter
+  applies (240..4320), Escape or B cancels, A also confirms. The entry is shown through the same
+  two-slot method, using `g_num_disp` as the reported index and forcing a relayout on every
+  keystroke/blink.
+- Either change calls `res_apply(aspect, height)`, which computes
+  `width = round(height * aspect)` (rounded up to even), then writes both
+  `Resolution = WxH` and `AspectRatio = <name>` to the INI and updates `g_config`. The aspect
+  is read back from `g_config.aspect_ratio` (or the window's shape when it is Auto) and the
+  height from `g_config.height`, so the rows always reflect the INI; a height outside the six
+  choices is displayed as-is and snaps to the nearest listed height on the first step.
+- Live: no for the size itself — the window, swapchain and game render targets are created at
+  start-up (the same class of limit as FSR quality). The INI is authoritative for the next
+  launch and the log says so.
+- Typing details: while the entry is active the game receives no input (`pausepages_input` clears
+  the button word), and the physical keyboard types into `runtime/textinput.c`; gamepad B cancels,
+  A confirms, Plus cancels and leaves.
+- Note the list area keeps the full Options-window height: with only two rows the lower slots
+  are empty. The window's own height is not driven by the pager, so this is cosmetic.
+
+### FXAA — row 1
 
 - Values: `Off`, `On` (indices 0, 1).
 - State: `g_config.fxaa`.
@@ -369,7 +402,7 @@ the value of an existing line in place (the key must already exist in the INI).
   frame, so the change is visible immediately.
 - INI: `FXAA = On/Off`.
 
-### MSAA — row 1
+### MSAA — row 2
 
 - Values: `Off`, `2x`, `4x`, `8x` (indices 0..3).
 - Mapping: `msaa_index(v)` / `msaa_value(i)` convert between the sampled count and the index.
@@ -379,7 +412,7 @@ the value of an existing line in place (the key must already exist in the INI).
 - Live: yes.
 - INI: `MSAA = Off/2x/4x/8x`.
 
-### FSR — row 2
+### FSR — row 3
 
 - Values: `Off`, `FSR 3`, `FSR 4` (indices 0..2).
 - Mapping: Off → `FSR = Off, Upscaler = FSR3`; FSR 3 → `FSR = On, Upscaler = FSR3`;
@@ -390,7 +423,7 @@ the value of an existing line in place (the key must already exist in the INI).
   only if the upscaler built at boot is the same choice; enabling from a non-FSR boot or
   changing 3 ↔ 4 logs `takes effect on the next start`.
 
-### FSR Quality — row 3
+### FSR Quality — row 4
 
 - Values: `NativeAA`, `Quality`, `Balanced`, `Perf`, `UltraPerf` (indices 0..4).
 - INI: full names `NativeAA / Quality / Balanced / Performance / UltraPerformance`.
@@ -400,7 +433,7 @@ the value of an existing line in place (the key must already exist in the INI).
 - Live: no. The quality chooses the render scale, which is fixed when the game's render
   targets are created at start-up. The INI is authoritative for the next launch.
 
-### FSR Sharpness — row 4
+### FSR Sharpness — row 5
 
 - Values: `0.1` … `1.0` in 0.1 steps (ten steps, indices 0..9).
 - Display: current text in slots 0 and 1, alternating the reported index (§4.5).
@@ -409,7 +442,7 @@ the value of an existing line in place (the key must already exist in the INI).
   frame (`runtime/nvn/vulkan/fsr.c`: `.sharpness`, `di.sharpness`,
   `di.enableSharpening`), so the value applies while FSR is running.
 
-### Framerate — row 5
+### Framerate — row 6
 
 - Values: `30`, `40`, `60`, `72`, `120`, `144`, `165`, `240` (eight steps, indices 0..7).
 - Display: current text in slots 0 and 1, alternating the reported index (§4.5). The row shows
@@ -424,7 +457,7 @@ the value of an existing line in place (the key must already exist in the INI).
   pacing follow a change made in the menu. Note that with VSync on the display still caps the
   result at its refresh rate.
 
-### VSync — row 6
+### VSync — row 7
 
 - Values: `Off`, `On` (indices 0, 1).
 - Apply: `g_config.vsync` toggled, `vk_set_vsync(on)`, then `VSync = On/Off` in the INI.
@@ -533,8 +566,11 @@ assuming the code failed.
 - **The label pointer must change to redraw.** Flipping `g_lbl_cur` and re-running the layout
   is mandatory after every change.
 - **`+0x60` is the total item count**, and the pager fields must be restored on exit.
-- **FSR/FSR Quality are start-up settings** (device features, upscaler, render scale); FXAA,
-  MSAA, sharpness, framerate and VSync apply live.
+- **FSR/FSR Quality and Resolution are start-up settings** (device features, upscaler, render
+  scale, window/render-target size); FXAA, MSAA, sharpness, framerate and VSync apply live.
+- **The nested Resolution view keeps the tall window** (two rows plus empty slots); the window
+  height is not pager-driven. Shrinking it would mean resizing the window node, which is not
+  done.
 - **Framerate lives in the engine's limiter field** (`+0x3c`); the timing thread re-reads it
   each tick. Do not set it below 30 — the game's frame delta assumes 30 as the baseline.
 - **VSync needs a swapchain rebuild**, so it is applied on the next frame, not in the input
@@ -574,6 +610,7 @@ total `+0x60`; edit state `+0x74`.
 Borrowed slot: item 4 ("Camera Angle"), block start `g_tbl`, value slots at
 `+13, +20, +27, +34, +41` (7 bytes each), 64 bytes saved/restored.
 
-INI keys: `FXAA`, `MSAA`, `FSR`, `Upscaler`, `FSRQuality`, `Sharpness`, `FPS`, `VSync`.
+INI keys: `Resolution`, `AspectRatio`, `FXAA`, `MSAA`, `FSR`, `Upscaler`, `FSRQuality`,
+`Sharpness`, `FPS`, `VSync`.
 
 Enable: `MHGU_PAUSE_GRAPHICS=1`.

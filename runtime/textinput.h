@@ -9,6 +9,7 @@ enum { TI_NONE, TI_CHANGED, TI_ENTER, TI_CANCEL };
 
 // game side (any thread)
 void textinput_begin(const char *initial, int max_chars);  // the game shows a text entry (max_chars <= 0: no limit)
+void textinput_digits_only(bool on);                        // typing keeps 0-9 only (the Graphics height field)
 void textinput_end(void);                                  // it is gone (decided, or closed by the game)
 int textinput_poll(char *out, size_t size, int *chars);    // TI_*: what happened since the last poll; the text now
 

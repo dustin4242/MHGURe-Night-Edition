@@ -18,6 +18,7 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool g_active, g_window_on;
 static char g_text[TEXT_MAX + 4];
 static int g_max_chars, g_event;  // g_event: TI_* waiting for the game's next poll (ENTER / CANCEL win over CHANGED)
+static bool g_digits;             // keep only 0-9 (the Graphics resolution height entry)
 
 static int utf8_chars(const char *s) {
     int n = 0;
@@ -38,6 +39,12 @@ void textinput_begin(const char *initial, int max_chars) {
     pthread_mutex_unlock(&g_lock);
     LOG("[textinput] text entry (up to %d characters, \"%s\"): type, Enter confirms, Escape cancels\n", max_chars,
         initial ? initial : "");
+}
+
+void textinput_digits_only(bool on) {
+    pthread_mutex_lock(&g_lock);
+    g_digits = on;
+    pthread_mutex_unlock(&g_lock);
 }
 
 void textinput_end(void) {
@@ -69,7 +76,8 @@ void textinput_type(const char *s) {
             size_t n = 1;  // one character (its UTF-8 bytes)
             while (s[n] && ((unsigned char)s[n] & 0xC0) == 0x80) n++;
             bool control = (unsigned char)*s < 0x20 || *s == 0x7f;  // (pasted line breaks, tabs)
-            if (!control) {
+            bool rejected = g_digits && !(*s >= '0' && *s <= '9');
+            if (!control && !rejected) {
                 if ((g_max_chars > 0 && chars >= g_max_chars) || len + n > TEXT_MAX) break;
                 memcpy(g_text + len, s, n);
                 g_text[len += n] = 0;
