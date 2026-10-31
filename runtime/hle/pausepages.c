@@ -1,17 +1,16 @@
 // MHGU_PAUSE_PAGES=<n>: grow the in-hunt pause tab bar (uUIQuestStartMenu, class table
 // 0x177aeb0, main_107/108.c) past its stock two pages (docs/UI.md 5b).
 //
-// MHGU_PAUSE_GRAPHICS=<0/1>: add a "Graphics" entry at the end of the Options menu
-// (cUIOOptionWindowForGame). It opens an eight-row Graphics menu: Resolution (a submenu with
-// Aspect Ratio / Resolution), FXAA (Off/On), MSAA (Off/2x/4x/8x), FSR (Off/FSR 3/FSR 4),
-// FSR Quality (NativeAA/Quality/Balanced/Perf/UltraPerf), FSR Sharpness (0.1..1.0), Framerate
-// (30..240) and VSync (Off/On).
-// The stock options keep their own rows and indices.
+// The "Graphics" entry at the end of the Options menu (cUIOOptionWindowForGame) is always
+// present. It opens a six-row Graphics menu: Display (a submenu with Aspect Ratio / Resolution /
+// Framerate / VSync), FXAA (Off/On), MSAA (Off/2x/4x/8x), FSR (Off/FSR 3/FSR 4), FSR Quality
+// (NativeAA/Quality/Balanced/Perf/UltraPerf) and FSR Sharpness (0.1..1.0). The stock options keep
+// their own rows and indices.
 //
 // The window reports its item count through virtual +0x60 (f_7e7534, stock 27); reporting 28
 // gives the list one extra row on its last page. That row is drawn from the HUD slot (item 2,
 // a plain On/Off row) with the label "Graphics" and an empty value. Selecting it switches this
-// same window to the eight-row Graphics view, and from there to a two-row Resolution view.
+// same window to the six-row Graphics view, and from there to the four-row Display view.
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -47,38 +46,36 @@
 #define PLAIN_ITEM   2u               // "HUD": a plain On/Off slot (draws the extra list row)
 
 // Graphics menu rows (page 0).
-#define ROW_RES_MENU 0
+#define ROW_DISPLAY  0
 #define ROW_FXAA     1
 #define ROW_MSAA     2
 #define ROW_FSR      3
 #define ROW_FSRQ     4
 #define ROW_SHARP    5
-#define ROW_FPS      6
-#define ROW_VSYNC    7
-#define GFX_ROWS     8u
+#define GFX_ROWS     6u
 
-// Resolution submenu rows (its own one-page view).
-#define RES_ASPECT   0
-#define RES_VERT     1
-#define RES_ROWS     2u
+// Display submenu rows (its own one-page view).
+#define DISP_ASPECT  0
+#define DISP_VERT    1
+#define DISP_FPS     2
+#define DISP_VSYNC   3
+#define DISP_ROWS    4u
 
 // The borrowed "Camera Angle" slot holds five value strings at +13, +20, +27, +34, +41. The
 // window copies the value text when it builds a row, so the five slots are rewritten with the
 // current row's texts just before that row is built — each row has its own list.
 static const char *const g_row_texts[GFX_ROWS][5] = {
-    {NULL, NULL, NULL, NULL, NULL},        // Resolution: opens the nested menu, no value
+    {NULL, NULL, NULL, NULL, NULL},        // Display: opens the nested menu, no value
     {"Off", "On", NULL, NULL, NULL},       // FXAA
     {"Off", "2x", "4x", "8x", NULL},       // MSAA
     {"Off", "FSR 3", "FSR 4", NULL, NULL}, // FSR
     {NULL, NULL, NULL, NULL, NULL},        // FSR Quality: the current label goes into two slots
     {NULL, NULL, NULL, NULL, NULL},        // FSR Sharpness: the current value goes into two slots
-    {NULL, NULL, NULL, NULL, NULL},        // Framerate: the current value goes into two slots
-    {"Off", "On", NULL, NULL, NULL},       // VSync
 };
-static const char *const g_row_names[GFX_ROWS] = {"Resolution", "FXAA", "MSAA", "FSR", "FSR Quality",
-                                                  "FSR Sharpness", "Framerate", "VSync"};
-static const char *const g_res_names[RES_ROWS] = {"Aspect Ratio", "Resolution"};
-// Aspect ratios and vertical resolutions for the Resolution submenu. The width is computed from
+static const char *const g_row_names[GFX_ROWS] = {"Display", "FXAA", "MSAA", "FSR", "FSR Quality",
+                                                  "FSR Sharpness"};
+static const char *const g_disp_names[DISP_ROWS] = {"Aspect Ratio", "Resolution", "Framerate", "VSync"};
+// Aspect ratios and vertical resolutions for the Display submenu. The width is computed from
 // the two: width = round(height * ratio), made even.
 static const char *const g_aspect_lbl[6] = {"4:3", "3:2", "16:10", "16:9", "21:9", "32:9"};
 static const float g_aspect_val[6] = {4.0f / 3.0f, 3.0f / 2.0f, 16.0f / 10.0f, 16.0f / 9.0f, 21.0f / 9.0f, 32.0f / 9.0f};
@@ -87,9 +84,8 @@ static const char *const g_fsrq_ini[5] = {"NativeAA", "Quality", "Balanced", "Pe
 static const char *const g_fsrq_lbl[5] = {"NativeAA", "Quality", "Balanced", "Perf", "UltraPerf"};
 
 static uint32_t g_pages;              // forced bar page count (MHGU_PAUSE_PAGES; 0: leave alone)
-static int g_graphics;                // 1: Graphics row / menu enabled
 static int g_gfx_menu;                // 1: the Graphics menu is the current view
-static int g_res_menu;                // 1: the Resolution submenu is the current view
+static int g_disp_menu;                // 1: the Display submenu is the current view
 static uint32_t g_opt_obj;            // the Options window
 static int g_refresh;                 // rebuild the row nodes on the next update
 
@@ -102,13 +98,13 @@ static int g_swallow_b;               // keep B from the engine until it is rele
 // Submenu row labels. Each row alternates between two buffers: the window only redraws a text
 // node whose string pointer changed.
 static uint32_t g_lbl[GFX_ROWS][2];
-static uint32_t g_res_lbl[RES_ROWS][2];
+static uint32_t g_disp_lbl[DISP_ROWS][2];
 static int g_lbl_cur;
 static uint32_t g_tbl;                // borrowed slot (Camera Angle), patched while the menu shows
 static uint32_t g_tbl_w[16];
 static int g_fsrq_disp;               // which of the two value strings the FSR Quality row shows
 static int g_fps_disp;                // which of the two value strings the Framerate row shows
-static int g_ar_disp, g_rh_disp;      // the same, for the Resolution submenu's two rows
+static int g_ar_disp, g_rh_disp;      // the same, for the Display submenu's rows
 static int g_num_edit;                // typing the Resolution height in the row
 static char g_num_buf[8];
 static uint64_t g_num_blink;
@@ -126,9 +122,9 @@ static uint32_t g_saved_pages;
 static uint32_t g_saved_total;
 static uint32_t g_saved_page, g_saved_row;
 
-// The resolution view saves the Graphics view's pager (the Options pager is already saved above).
-static int g_res_saved_rows;
-static uint32_t g_res_saved_pages, g_res_saved_total, g_res_saved_page, g_res_saved_row;
+// The Display view saves the Graphics view's pager (the Options pager is already saved above).
+static int g_disp_saved_rows;
+static uint32_t g_disp_saved_pages, g_disp_saved_total, g_disp_saved_page, g_disp_saved_row;
 
 static void enter_menu(void);
 static void leave_menu(void);
@@ -146,9 +142,9 @@ static void ensure_bufs(void)
         g_lbl[r][0] = hle_alloc(64);
         g_lbl[r][1] = hle_alloc(64);
     }
-    for (int r = 0; r < (int)RES_ROWS; r++) {
-        g_res_lbl[r][0] = hle_alloc(64);
-        g_res_lbl[r][1] = hle_alloc(64);
+    for (int r = 0; r < (int)DISP_ROWS; r++) {
+        g_disp_lbl[r][0] = hle_alloc(64);
+        g_disp_lbl[r][1] = hle_alloc(64);
     }
     g_gfx_lbl = hle_alloc(16);
     put(g_gfx_lbl, "Graphics");
@@ -286,22 +282,28 @@ static void num_apply(void)
 }
 
 // Write the row's label (host buffer) and its value strings (borrowed table).
-static void fill_row(int res_menu, int row)
+static void fill_row(int disp_menu, int row)
 {
     ensure_bufs();
-    uint32_t b = (res_menu ? g_res_lbl : g_lbl)[row][g_lbl_cur];
+    uint32_t b = (disp_menu ? g_disp_lbl : g_lbl)[row][g_lbl_cur];
     memset(G2H(b), 0, 64);
-    put(b, res_menu ? g_res_names[row] : g_row_names[row]);
-    if (res_menu) {
-        // Both rows have six values, so they use the current-text/two-slot method.
+    put(b, disp_menu ? g_disp_names[row] : g_row_names[row]);
+    if (disp_menu) {
+        // Four rows with six/eight/three values: only the current text is written, into two slots.
         const char *t;
-        if (row == RES_ASPECT) {
+        if (row == DISP_ASPECT) {
             t = g_aspect_lbl[aspect_index()];
-        } else if (g_num_edit) {
-            snprintf(g_vert_buf, sizeof g_vert_buf, "%s%s", g_num_buf, g_num_cursor ? "|" : "");
-            t = g_vert_buf;
+        } else if (row == DISP_VERT) {
+            if (g_num_edit) {
+                snprintf(g_vert_buf, sizeof g_vert_buf, "%s%s", g_num_buf, g_num_cursor ? "|" : "");
+                t = g_vert_buf;
+            } else {
+                t = vert_text();
+            }
+        } else if (row == DISP_FPS) {
+            t = fps_text();
         } else {
-            t = vert_text();
+            t = g_config.vsync ? "On" : "Off";
         }
         if (g_tbl) {
             put(g_tbl + 13u, t);
@@ -309,7 +311,7 @@ static void fill_row(int res_menu, int row)
         }
         return;
     }
-    if (row == ROW_RES_MENU) {
+    if (row == ROW_DISPLAY) {
         if (g_tbl) put(g_tbl + 13u, "");   // the row opens a submenu and shows no value
         return;
     }
@@ -321,16 +323,6 @@ static void fill_row(int res_menu, int row)
         if (g_tbl) {
             put(g_tbl + 13u, t);
             put(g_tbl + 41u, t);
-        }
-        return;
-    }
-    if (row == ROW_FPS) {
-        // Eight rates do not fit five value strings: the row reports 0 or 1 and both slots hold
-        // the current text, so every change swaps the string pointer and redraws the row.
-        const char *t = fps_text();
-        if (g_tbl) {
-            put(g_tbl + 13u, t);
-            put(g_tbl + 20u, t);
         }
         return;
     }
@@ -412,7 +404,7 @@ static uint32_t row_abs(uint32_t w, uint32_t page, uint32_t row)
 
 static void opt_row(Cpu *c)
 {
-    int on = g_graphics && is_opt(c);
+    int on = is_opt(c);
     uint32_t item = c->r[3];
     uint32_t abs = on ? row_abs(c->r[0], c->r[2], item) : 0u;
     int extra_row = 0, sub_row = -1;
@@ -423,7 +415,7 @@ static void opt_row(Cpu *c)
             g_b_last = g_b_pressed_ns;
             g_plus_last = g_plus_pressed_ns;
         }
-        if (g_res_menu) {
+        if (g_disp_menu) {
             sub_row = (int)item;              // 0 Aspect Ratio, 1 Resolution
             c->r[3] = VALUE_ITEM;
         } else if (g_gfx_menu) {
@@ -442,18 +434,18 @@ static void opt_row(Cpu *c)
     fnhook_call_original(c, FN_OPT_ROW);
     if (!on || out < 0x0c000000u) return;
     uint32_t src = LD32(out);
-    if (g_res_menu || g_gfx_menu) {
+    if (g_disp_menu || g_gfx_menu) {
         if (!g_tbl && src >= 0x10000000u && src < 0x1c000000u) {
             g_tbl = src;
             for (int i = 0; i < 16; i++) g_tbl_w[i] = LD32(src + (uint32_t)i * 4u);
         }
-        if (g_res_menu) {
-            if (sub_row < 0 || sub_row >= (int)RES_ROWS) sub_row = RES_ASPECT;
+        if (g_disp_menu) {
+            if (sub_row < 0 || sub_row >= (int)DISP_ROWS) sub_row = DISP_ASPECT;
         } else if (sub_row < 0 || sub_row >= (int)GFX_ROWS) {
-            sub_row = ROW_RES_MENU;
+            sub_row = ROW_DISPLAY;
         }
-        fill_row(g_res_menu, sub_row);         // its texts before the caller builds the value node
-        ST32(out, (g_res_menu ? g_res_lbl : g_lbl)[sub_row][g_lbl_cur]);
+        fill_row(g_disp_menu, sub_row);         // its texts before the caller builds the value node
+        ST32(out, (g_disp_menu ? g_disp_lbl : g_lbl)[sub_row][g_lbl_cur]);
     } else if (extra_row) {
         ensure_bufs();
         ST32(out, g_gfx_lbl);
@@ -468,20 +460,23 @@ static void opt_row(Cpu *c)
 
 static void opt_value(Cpu *c)
 {
-    if (g_graphics && is_opt(c)) {
-        if (g_res_menu) {
-            c->r[0] = (uint32_t)(c->r[2] == RES_ASPECT ? g_ar_disp : g_num_edit ? g_num_disp : g_rh_disp);
+    if (is_opt(c)) {
+        if (g_disp_menu) {
+            switch (c->r[2]) {
+            case DISP_ASPECT: c->r[0] = (uint32_t)g_ar_disp; break;
+            case DISP_VERT: c->r[0] = (uint32_t)(g_num_edit ? g_num_disp : g_rh_disp); break;
+            case DISP_FPS: c->r[0] = (uint32_t)g_fps_disp; break;
+            default: c->r[0] = g_config.vsync ? 1u : 0u; break;
+            }
             return;
         }
         if (g_gfx_menu) {
             switch (c->r[2]) {                // the row is the item argument
-            case ROW_RES_MENU: c->r[0] = 0u; break;
+            case ROW_DISPLAY: c->r[0] = 0u; break;
             case ROW_MSAA: c->r[0] = (uint32_t)msaa_index(g_config.msaa); break;
             case ROW_FSR: c->r[0] = (uint32_t)fsr_sel(); break;
             case ROW_FSRQ: c->r[0] = (uint32_t)g_fsrq_disp; break;
             case ROW_SHARP: c->r[0] = (uint32_t)g_sharp_disp; break;
-            case ROW_FPS: c->r[0] = (uint32_t)g_fps_disp; break;
-            case ROW_VSYNC: c->r[0] = g_config.vsync ? 1u : 0u; break;
             default: c->r[0] = g_config.fxaa ? 1u : 0u; break;
             }
             return;
@@ -496,8 +491,8 @@ static void opt_value(Cpu *c)
 
 static void opt_count(Cpu *c)
 {
-    if (g_graphics && is_opt(c)) {
-        c->r[0] = g_res_menu ? RES_ROWS : g_gfx_menu ? GFX_ROWS : STOCK_ITEMS + 1u;
+    if (is_opt(c)) {
+        c->r[0] = g_disp_menu ? DISP_ROWS : g_gfx_menu ? GFX_ROWS : STOCK_ITEMS + 1u;
         return;
     }
     fnhook_call_original(c, FN_OPT_COUNT);
@@ -509,22 +504,22 @@ static void param_set(Cpu *c)
     fnhook_call_original(c, FN_PARAM_SET);
 }
 
-static void enter_res_menu(void)
+static void enter_disp_menu(void)
 {
-    if (g_res_menu) return;
-    g_res_menu = 1;
+    if (g_disp_menu) return;
+    g_disp_menu = 1;
     uint32_t w = g_opt_obj;
     if (w) {
-        g_res_saved_rows = LD8(PW_ROWS(w));
-        g_res_saved_pages = LD16(w + 0x5eu);
-        g_res_saved_total = LD16(w + 0x60u);
-        g_res_saved_page = LD16(PW_PAGE(w));
-        g_res_saved_row = LD8(PW_ROW(w));
+        g_disp_saved_rows = LD8(PW_ROWS(w));
+        g_disp_saved_pages = LD16(w + 0x5eu);
+        g_disp_saved_total = LD16(w + 0x60u);
+        g_disp_saved_page = LD16(PW_PAGE(w));
+        g_disp_saved_row = LD8(PW_ROW(w));
         ST8(PW_ROW(w), 0u);
         ST16(PW_PAGE(w), 0u);
-        ST8(PW_ROWS(w), RES_ROWS);
+        ST8(PW_ROWS(w), DISP_ROWS);
         ST16(w + 0x5eu, 1u);
-        ST16(w + 0x60u, RES_ROWS);
+        ST16(w + 0x60u, DISP_ROWS);
         ST32(w + 0x74u, 0u);
     }
     g_lr_last = g_lr_pressed_ns;
@@ -532,21 +527,21 @@ static void enter_res_menu(void)
     g_b_last = g_b_pressed_ns;
     g_plus_last = g_plus_pressed_ns;
     g_refresh = 1;
-    LOG("[pausepages] Resolution menu\n");
+    LOG("[pausepages] Display menu\n");
 }
 
-static void leave_res_menu(void)
+static void leave_disp_menu(void)
 {
-    if (!g_res_menu) return;
+    if (!g_disp_menu) return;
     num_end();
-    g_res_menu = 0;
+    g_disp_menu = 0;
     uint32_t w = g_opt_obj;
     if (w) {
-        ST8(PW_ROWS(w), g_res_saved_rows ? (uint32_t)g_res_saved_rows : GFX_ROWS);
-        ST16(w + 0x5eu, g_res_saved_pages ? g_res_saved_pages : 1u);
-        ST16(w + 0x60u, g_res_saved_total ? g_res_saved_total : GFX_ROWS);
-        ST16(PW_PAGE(w), g_res_saved_page);
-        ST8(PW_ROW(w), (uint32_t)g_res_saved_row);
+        ST8(PW_ROWS(w), g_disp_saved_rows ? (uint32_t)g_disp_saved_rows : GFX_ROWS);
+        ST16(w + 0x5eu, g_disp_saved_pages ? g_disp_saved_pages : 1u);
+        ST16(w + 0x60u, g_disp_saved_total ? g_disp_saved_total : GFX_ROWS);
+        ST16(PW_PAGE(w), g_disp_saved_page);
+        ST8(PW_ROW(w), (uint32_t)g_disp_saved_row);
         ST32(w + 0x74u, 0u);
     }
     g_lr_last = g_lr_pressed_ns;
@@ -554,7 +549,7 @@ static void leave_res_menu(void)
     g_b_last = g_b_pressed_ns;
     g_plus_last = g_plus_pressed_ns;
     g_refresh = 1;
-    LOG("[pausepages] Resolution menu -> Graphics menu\n");
+    LOG("[pausepages] Display menu -> Graphics menu\n");
 }
 
 static void enter_menu(void)
@@ -587,7 +582,7 @@ static void leave_menu(void)
     if (!g_gfx_menu) return;
     num_end();
     g_gfx_menu = 0;
-    g_res_menu = 0;
+    g_disp_menu = 0;
     restore_tbl();
     uint32_t w = g_opt_obj;
     if (w) {
@@ -644,7 +639,7 @@ void pausepages_input(uint64_t *buttons)
         if (*buttons & (1ull << BTN_B)) *buttons &= ~(1ull << BTN_B);
         else g_swallow_b = 0;
     }
-    if (g_graphics && !g_gfx_menu && g_opt_obj) {
+    if (!g_gfx_menu && g_opt_obj) {
         // Options list. B/Plus leave it (let the engine close it) and the window handle is
         // dropped so the bar's own A presses are never mistaken for the extra row.
         if (g_b_pressed_ns != g_b_last) {
@@ -701,7 +696,7 @@ void pausepages_input(uint64_t *buttons)
     if (g_b_pressed_ns != g_b_last) {
         g_b_last = g_b_pressed_ns;
         g_swallow_b = 1;
-        if (g_res_menu) leave_res_menu();
+        if (g_disp_menu) leave_disp_menu();
         else leave_menu();
         return;
     }
@@ -710,22 +705,22 @@ void pausepages_input(uint64_t *buttons)
         leave_menu();
         return;
     }
-    if (g_res_menu && g_a_pressed_ns != g_a_last) {
+    if (g_disp_menu && g_a_pressed_ns != g_a_last) {
         g_a_last = g_a_pressed_ns;
-        int row = g_opt_obj ? (int)LD8(PW_ROW(g_opt_obj)) : RES_ASPECT;
-        if (row == RES_VERT) {
+        int row = g_opt_obj ? (int)LD8(PW_ROW(g_opt_obj)) : DISP_ASPECT;
+        if (row == DISP_VERT) {
             *buttons &= ~(1ull << BTN_A);
             num_start();
             return;
         }
     }
-    // A on the Resolution row opens the nested view; on the other rows it stays the stock editor.
-    if (!g_res_menu && g_a_pressed_ns != g_a_last) {
+    // A on the Display row opens the nested view; on the other rows it stays the stock editor.
+    if (!g_disp_menu && g_a_pressed_ns != g_a_last) {
         g_a_last = g_a_pressed_ns;
-        int row = g_opt_obj ? (int)LD8(PW_ROW(g_opt_obj)) : ROW_RES_MENU;
-        if (row == ROW_RES_MENU) {
+        int row = g_opt_obj ? (int)LD8(PW_ROW(g_opt_obj)) : ROW_DISPLAY;
+        if (row == ROW_DISPLAY) {
             *buttons &= ~(1ull << BTN_A);
-            enter_res_menu();
+            enter_disp_menu();
             return;
         }
     }
@@ -735,17 +730,31 @@ void pausepages_input(uint64_t *buttons)
     *buttons &= ~((1ull << BTN_LEFT) | (1ull << BTN_RIGHT));
     if (g_lr_pressed_ns != g_lr_last) {
         g_lr_last = g_lr_pressed_ns;
-        int row = g_opt_obj ? (int)LD8(PW_ROW(g_opt_obj)) : ROW_RES_MENU;
+        int row = g_opt_obj ? (int)LD8(PW_ROW(g_opt_obj)) : ROW_DISPLAY;
         if (!dir) return;
-        if (g_res_menu) {
-            if (row == RES_ASPECT) {
+        if (g_disp_menu) {
+            if (row == DISP_ASPECT) {
                 int a = (aspect_index() + (dir > 0 ? 1 : 5)) % 6;
                 res_apply(a, g_vert_vals[vert_index()]);
                 g_ar_disp ^= 1;
+            } else if (row == DISP_FPS) {
+                void vi_set_framerate(int);
+                int i = (fps_index() + (dir > 0 ? 1 : 7)) % 8;
+                char buf[8];
+                g_config.fps = g_fps_vals[i];
+                vi_set_framerate(g_config.fps);
+                g_fps_disp ^= 1;
+                snprintf(buf, sizeof buf, "%d", g_config.fps);
+                config_save_key("FPS", buf);
+                LOG("[pausepages] Framerate -> %s\n", buf);
+            } else if (row == DISP_VSYNC) {
+                void vk_set_vsync(int);
+                g_config.vsync = !g_config.vsync;
+                vk_set_vsync(g_config.vsync);
+                config_save_key("VSync", g_config.vsync ? "On" : "Off");
+                LOG("[pausepages] VSync -> %s\n", g_config.vsync ? "On" : "Off");
             } else {
-                int h = (vert_index() + (dir > 0 ? 1 : 5)) % 6;
-                res_apply(aspect_index(), g_vert_vals[h]);
-                g_rh_disp ^= 1;
+                return;                        // Resolution is typed, not stepped
             }
             g_lbl_cur ^= 1;
             g_refresh = 1;
@@ -772,26 +781,6 @@ void pausepages_input(uint64_t *buttons)
             fsrq_apply(i);
             break;
         }
-        case ROW_FPS: {
-            void vi_set_framerate(int);
-            int i = (fps_index() + (dir > 0 ? 1 : 7)) % 8;
-            char buf[8];
-            g_config.fps = g_fps_vals[i];
-            vi_set_framerate(g_config.fps);
-            g_fps_disp ^= 1;
-            snprintf(buf, sizeof buf, "%d", g_config.fps);
-            config_save_key("FPS", buf);
-            LOG("[pausepages] Framerate -> %s\n", buf);
-            break;
-        }
-        case ROW_VSYNC: {
-            void vk_set_vsync(int);
-            g_config.vsync = !g_config.vsync;
-            vk_set_vsync(g_config.vsync);
-            config_save_key("VSync", g_config.vsync ? "On" : "Off");
-            LOG("[pausepages] VSync -> %s\n", g_config.vsync ? "On" : "Off");
-            break;
-        }
         case ROW_SHARP: {
             int i = (sharp_index() + (dir > 0 ? 1 : 9)) % 10;
             g_config.fsr_sharpness = sharp_value(i);   // read by the FSR dispatch every frame
@@ -815,15 +804,13 @@ void pausepages_init(void)
 {
     const char *e = getenv("MHGU_PAUSE_PAGES");
     if (e && *e) g_pages = (uint32_t)strtoul(e, NULL, 10);
-    const char *g = getenv("MHGU_PAUSE_GRAPHICS");
-    if (g && *g) g_graphics = strcmp(g, "0") ? 1 : 0;
-    if (!g_graphics && !g_pages) return;
+    // The Graphics row/menu is always enabled; the bar-init hook is needed so a pause rebuild
+    // drops the Graphics view (MHGU_PAUSE_PAGES only grows the bar's page count).
     fnhook_set(FN_BAR_INIT, hle_register("pausepages:bar_init", bar_init));
-    if (!g_graphics) return;
     fnhook_set(FN_OPT_COUNT, hle_register("pausepages:opt_count", opt_count));
     fnhook_set(FN_OPT_ROW, hle_register("pausepages:opt_row", opt_row));
     fnhook_set(FN_OPT_VALUE, hle_register("pausepages:opt_value", opt_value));
     fnhook_set(FN_OPT_UPDATE, hle_register("pausepages:opt_update", opt_update));
     fnhook_set(FN_PARAM_SET, hle_register("pausepages:param_set", param_set));
-    LOG("[pausepages] Options: Graphics row + Resolution/FXAA/MSAA/FSR/FSR Quality/FSR Sharpness/Framerate/VSync menu\n");
+    LOG("[pausepages] Options: Graphics row + Display/FXAA/MSAA/FSR/FSR Quality/FSR Sharpness menu\n");
 }

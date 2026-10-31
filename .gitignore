@@ -4,6 +4,9 @@
 /obj/
 /build-linux/
 /obj-linux/
+/build_windows/
+/obj_windows/
+/build_dep/
 /run/
 /game/
 /save/

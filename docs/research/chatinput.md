@@ -1,7 +1,7 @@
 # In-game chat / text entry (how it works, and reusing it)
 
 This note traces the chat text entry you get with **ZR + MINUS** and Enter, and what it would take to
-reuse that input for something else (the plan is a typed resolution height in the Graphics menu).
+reuse that input for something else (the plan is a typed resolution height in the Display submenu).
 Code: `runtime/hle/swkbd.c`, `runtime/textinput.c`, `runtime/host_input.c`; game side in
 `generated/main/main_139.c`.
 
@@ -115,7 +115,7 @@ Consequences for "type the height in that overlay":
    row's value instead of the (invisible) chat box. Same visuals as option 3, but through the game's
    chat input manager.
 
-**Implemented: option 3.** The Resolution height row starts `textinput_begin(NULL, 4)` with
+**Implemented: option 3.** The Display > Resolution height row starts `textinput_begin(NULL, 4)` with
 `textinput_digits_only(true)` (a filter added to `runtime/textinput.c` that drops anything outside
 0-9), shows the digits and a blinking `|` in the row, applies on Enter (240..4320) and cancels on
 Escape/B. The chat manager/window is not involved, so there is no chat message and no crash.
