@@ -620,6 +620,9 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   Controls, 6 for Graphics and 4 for Display. The four menu rows are drawn from the HUD slot
   (item 2) with their own labels and empty values. One shared stock-submenu path (`g_sub`) does
   the pager save/restore, row/value remap and editor remap for Audio, Gameplay and Controls.
+  The A press that opens a view is masked until it is released (`g_swallow_a`), so the held
+  button cannot produce a second press that immediately opens the first row's editor; the next
+  fresh A press after release still opens it normally.
 - **Remapping moved stock rows:** the game keys each option by its list index in hardcoded code,
   so a moved row must still edit its original entry. The row virtual `f_7e7558` and value virtual
   `f_7e7d34` receive the displayed (page, row); the hooks translate that to the original stock

@@ -548,6 +548,10 @@ assuming the code failed.
 - **A on index 27 is "Reset All Settings".** Keep it masked.
 - **Left/right must be masked in the submenu.** Otherwise they edit Music Volume (the stock
   item under row 0) in addition to our row.
+- **Mask A until it is released on entry.** The A press that opens a submenu is hidden from the
+  engine for that frame; if the button is still held on the next frame the engine sees a fresh
+  press and opens the first row's editor. `g_swallow_a` masks it until release (the same pattern
+  as `g_swallow_b` for the B that leaves a menu).
 - **The help line is stock-indexed.** The window derives its description from the stock list
   index of the row under its cursor, and only refreshes it while it consumes a direction press.
   The update hook therefore re-runs the stock pass with the cursor one row/page before the

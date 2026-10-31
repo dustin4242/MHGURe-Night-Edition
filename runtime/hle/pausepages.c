@@ -138,6 +138,7 @@ static uint64_t g_lr_last;            // last left/right press timestamp seen
 static uint64_t g_b_last;             // last B press timestamp seen
 static uint64_t g_plus_last;          // last Plus press timestamp seen
 static int g_swallow_b;               // keep B from the engine until it is released
+static int g_swallow_a;               // keep the entry A from the engine until it is released
 
 // Submenu row labels. Each row alternates between two buffers: the window only redraws a text
 // node whose string pointer changed.
@@ -685,6 +686,7 @@ static void opt_row(Cpu *c)
             g_b_last = g_b_pressed_ns;
             g_plus_last = g_plus_pressed_ns;
             g_custom_cur = -1;
+            g_swallow_a = 1;                  // do not let the opening press click the first row
         }
         if (is_sub()) {
             if (!g_remap_pass) orig = sub_orig(abs);
@@ -819,6 +821,7 @@ static void enter_stock_menu(int which)
     }
     g_lr_last = g_lr_pressed_ns;
     g_a_last = g_a_pressed_ns;
+    g_swallow_a = 1;                          // A opened this view; hide it until released
     g_b_last = g_b_pressed_ns;
     g_plus_last = g_plus_pressed_ns;
     g_help_item = -1;
@@ -877,6 +880,7 @@ static void enter_disp_menu(void)
     }
     g_lr_last = g_lr_pressed_ns;
     g_a_last = g_a_pressed_ns;
+    g_swallow_a = 1;                          // A opened this view; hide it until released
     g_b_last = g_b_pressed_ns;
     g_plus_last = g_plus_pressed_ns;
     g_refresh = 1;
@@ -924,6 +928,8 @@ static void enter_menu(void)
         ST32(w + 0x74u, 0u);                  // leave the borrowed slot's edit state
     }
     g_lr_last = g_lr_pressed_ns;              // the presses so far are not input for this view
+    g_a_last = g_a_pressed_ns;
+    g_swallow_a = 1;                          // A opened this view; hide it until released
     g_b_last = g_b_pressed_ns;
     g_plus_last = g_plus_pressed_ns;
     g_help_item = -1;
@@ -1000,6 +1006,10 @@ void pausepages_input(uint64_t *buttons)
 {
     g_btn_now = *buttons;
     g_nav_btn = g_btn_now & ((1ull << BTN_LEFT) | (1ull << BTN_RIGHT) | (1ull << BTN_UP) | (1ull << BTN_DOWN));
+    if (g_swallow_a) {                        // the A that opened the view is still held
+        if (*buttons & (1ull << BTN_A)) *buttons &= ~(1ull << BTN_A);
+        else g_swallow_a = 0;
+    }
     if (g_swallow_b) {                        // the B that left the menu is still held
         if (*buttons & (1ull << BTN_B)) *buttons &= ~(1ull << BTN_B);
         else g_swallow_b = 0;
