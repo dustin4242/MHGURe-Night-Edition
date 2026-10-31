@@ -653,11 +653,11 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   update hook after each change; the rows then redraw with the current values.
 - **Input:** the stock behaviour is kept. A opens the value editor on the highlighted row
   (`FXAA ◀ Off ▶`, `MSAA ◀ 2x ▶`, `FSR ◀ FSR 3 ▶`, `FSR Quality ◀ Quality ▶`, `FSR Sharpness ◀ 0.8 ▶`),
-  left/right change it and
-  A confirms; the same
-  left/right presses are timestamped in `runtime/hle/input.c` (`g_lr_pressed_ns`) and change the
-  port setting exactly once, so the editor moves a hidden stock value while the visible state always
-  follows the port's setting. The value setters are swallowed while the submenu is up, so the
+  left/right change it and A confirms. The left/right presses are timestamped in
+  `runtime/hle/input.c` (`g_lr_pressed_ns`) and change the port setting exactly once. They are also
+  **masked from the engine** while the submenu is up (like B): the row/value virtuals only change
+  how a row is drawn, while the window's own edit path still targets the stock item under its
+  cursor, so row 0 would otherwise change Music Volume. The value setters are swallowed too, so the
   borrowed option is never applied. B returns to the Options list (the press is held back from the
   engine until released), a second B closes Options, and Plus closes the pause menu. Press
   timestamps are re-based on entry so the press that opened the view is not a change.

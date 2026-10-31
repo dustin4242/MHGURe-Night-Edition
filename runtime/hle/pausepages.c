@@ -431,10 +431,13 @@ void pausepages_input(uint64_t *buttons)
         leave_menu();
         return;
     }
+    int dir = (*buttons & (1ull << BTN_RIGHT)) ? 1 : (*buttons & (1ull << BTN_LEFT)) ? -1 : 0;
+    // The stock window still edits the item under its own cursor (row 0 is Music Volume) when
+    // left/right arrives, even though the row virtual draws our rows; consume the press like B.
+    *buttons &= ~((1ull << BTN_LEFT) | (1ull << BTN_RIGHT));
     if (g_lr_pressed_ns != g_lr_last) {
         g_lr_last = g_lr_pressed_ns;
         int row = g_opt_obj ? (int)LD8(PW_ROW(g_opt_obj)) : ROW_FXAA;
-        int dir = (*buttons & (1ull << BTN_RIGHT)) ? 1 : (*buttons & (1ull << BTN_LEFT)) ? -1 : 0;
         if (!dir) return;
         switch (row) {
         case ROW_MSAA: {
