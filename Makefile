@@ -251,7 +251,37 @@ bundle: $(EXE) $(if $(GEN_SRC),$(GAMELIB))
 	@$(PY) tools/bundle_dlls.py "$$(cygpath -m "$$(dirname "$$(command -v $(CC))")")" $(B) $^ \
 	    --licenses $(B)/licenses --with $(LICENSE_PKGS)
 
-data: $(B)/data/.complete
+# High-res texture packs in addons/pp4/: when the folder is present, its HD Textures v4 and English/HD UI v4
+# romfs trees are merged into $(B)/data/romfs (hard links where possible) so they are part of the native
+# romfs. The pause/equipment menus' HD textures only exist in English/Layout, so one variant is baked in as
+# well: PP4_UI (Switch buttons + HD icons by default). The rest of Layout stays out for the hot-swappable
+# layout project; set PP4_UI= (empty) to use the stock menus. Delete $(B)/data/.pp4 to merge again.
+PP4_DIR  := addons/pp4
+PP4_UI   ?= 2-NS/HDI
+ifneq ($(wildcard $(PP4_DIR)),)
+PP4_STAMP := $(B)/data/.pp4
+PP4_DEPS  := $(PP4_STAMP)
+endif
+
+data: $(B)/data/.complete $(PP4_DEPS)
+$(PP4_STAMP): $(PP4_DIR) Makefile | $(B)/data/.complete
+	@if [ -d "$(B)/data/romfs" ]; then \
+	    for p in "$(PP4_DIR)/HD Textures v4/romfs" "$(PP4_DIR)/English/HD UI v4/romfs"; do \
+	        if [ -d "$$p" ]; then \
+	            echo "data: pp4 pack $$p"; \
+	            cp -rlf "$$p/." "$(B)/data/romfs/" 2>/dev/null || { \
+	                echo "data: no hard links here, copying $$p"; \
+	                cp -rf "$$p/." "$(B)/data/romfs/"; } || exit 1; \
+	        fi; \
+	    done; \
+	    if [ -n "$(PP4_UI)" ] && [ -d "$(PP4_DIR)/English/Layout/$(PP4_UI)" ]; then \
+	        echo "data: pp4 UI $(PP4_UI) (pause/equipment menus)"; \
+	        for f in resident_eng.arc quest_eng.arc; do \
+	            cp -rlf "$(PP4_DIR)/English/Layout/$(PP4_UI)/$$f" "$(B)/data/romfs/nativeNX/eng/arc/$$f" 2>/dev/null || \
+	                cp -rf "$(PP4_DIR)/English/Layout/$(PP4_UI)/$$f" "$(B)/data/romfs/nativeNX/eng/arc/$$f" || exit 1; \
+	        done; \
+	    fi && touch $@; \
+	else echo "data: no game romfs yet, pp4 packs not merged"; fi
 $(B)/data/.complete:
 	@if [ ! -f "$(GAME)/exefs/main" ] || [ ! -d "$(GAME)/romfs" ]; then \
 	    echo "data: no game files in $(GAME) (make GAME=<folder with exefs/ and romfs/>): $(B)/data left empty"; \

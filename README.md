@@ -209,6 +209,14 @@ to `obj\`):
 - the MSYS2 DLLs they need;
 - `data\exefs` and `data\romfs`, hard links to your game files, so they take no extra disk space.
 
+If `addons\pp4\` is present in the repository, `make` also merges its `HD Textures v4` and `English\HD UI v4`
+romfs trees into `data\romfs` (hard links). The pause/equipment menus' HD textures are only in `English\Layout`,
+so one variant is baked in as well: `PP4_UI=2-NS/HDI` by default (Switch buttons, HD icons). The rest of Layout
+stays out for the hot-swappable project; build with `PP4_UI=` for the stock menus, or another
+`<1-PS|2-NS|3-XB>/<CI|HDI>` path. They all load as part of the native RomFS, with no mod folder needed. To merge
+again after adding or removing pack files (or changing `PP4_UI`), delete `build\data\.pp4` and run `make data`.
+Since releases leave out `data\`, this only affects builds made with the folder present.
+
 To play from another folder, copy the contents of `build\` there; to update that folder, copy them over it (`data\`
 can be skipped when it is already there). The build never contains settings, caches, mods or logs, so your
 `mhgurecomp.ini` and the rest stay as they are. Or start `run-game.bat`: it runs `build\mhgurecomp.exe` with the
@@ -219,6 +227,7 @@ Useful targets and options:
 
 - `make test-lift`: checks the recompiler against the Unicorn CPU emulator on thousands of the game's instructions.
 - `make clean`: removes the compiled files (`obj\` and the program files in `build\`). It keeps `build\data`.
+- `make data`: links the game files into `build\data` and, when `addons\pp4\` exists, merges its texture packs.
 - `GENARCH=-march=x86-64-v2`: compiles the game code without AVX2, for older CPUs. Untested.
 - `FFMPEG=system`: links the system's FFmpeg libraries instead of building them (see below).
 
