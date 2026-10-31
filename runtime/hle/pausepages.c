@@ -22,6 +22,7 @@
 #include "../platform.h"
 #include "../textinput.h"
 #include "input.h"
+#include "../ui_icons.h"
 
 #define FN_BAR_INIT     0x877d0cu     // uUIQuestStartMenu init virtual (fills the paging struct)
 #define BAR_VPTR_RT     0x197aeb8u    // uUIQuestStartMenu object vptr (class table 0x177aeb0 + 8)
@@ -43,11 +44,12 @@
 #define PW_PAGE(w)  ((w) + 0x5cu)
 
 #define STOCK_ITEMS  27u              // rows of the stock Options list
-#define MAIN_ROWS    6u               // Gameplay, Audio, Controls, Graphics, Default Settings, Reset
+#define MAIN_ROWS    7u               // Gameplay, Audio, Controls, Graphics, Icons, Default Settings, Reset
 #define GAMEPLAY_ITEM 0u              // the Gameplay row in the compact list
 #define AUDIO_ITEM   1u               // the Audio row in the compact list
 #define CTRL_ITEM    2u               // the Controls row in the compact list
 #define GRAPHICS_ITEM 3u              // the Graphics row in the compact list
+#define ICONS_ITEM   4u               // the controller-glyph row in the compact list
 #define CTRL_ROWS    19u              // control-related stock entries, in the Controls submenu
 #define AUDIO_ROWS   2u               // Music Volume, SFX Volume
 #define GAMEPLAY_ROWS 4u              // HUD, Map, Melody Effect Display, Lens Flares
@@ -92,11 +94,16 @@ static const int g_vert_vals[6] = {480, 720, 960, 1080, 1440, 2160};
 // Compact Options list (non-control stock items, in stock order) and the Controls submenu's
 // stock items. The mapping is applied to the row/value virtuals and around the editor update, so
 // the engine still edits the original entry behind a moved row.
-static const int8_t g_main_map[MAIN_ROWS] = {-1, -1, -1, -1, 25, 26};
+static uint32_t main_rows(void) { return icons_available() ? MAIN_ROWS : MAIN_ROWS - 1u; }
+static uint32_t main_last_menu(void) { return icons_available() ? ICONS_ITEM : GRAPHICS_ITEM; }
 static const uint8_t g_ctrl_map[CTRL_ROWS] = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24};
 static const uint8_t g_audio_map[AUDIO_ROWS] = {0, 1};
 static const uint8_t g_gameplay_map[GAMEPLAY_ROWS] = {2, 3, 15, 19};
-static int main_orig(uint32_t f) { return f < MAIN_ROWS ? g_main_map[f] : -1; }
+static int main_orig(uint32_t f)
+{
+    if (icons_available()) return f == 5u ? 25 : f == 6u ? 26 : -1;
+    return f == 4u ? 25 : f == 5u ? 26 : -1;   // no Icons row
+}
 
 enum { SUB_NONE, SUB_CTRL, SUB_AUDIO, SUB_GAMEPLAY };
 static int g_sub;                     // the stock-entry submenu currently open (SUB_*)
@@ -157,6 +164,8 @@ static int g_num_cursor = 1, g_num_disp;
 
 // The menu rows' labels, and the HUD value string blanked while they are built.
 static uint32_t g_gfx_lbl, g_ctrl_lbl, g_audio_lbl, g_gameplay_lbl;
+static uint32_t g_icons_lbl[2];
+static int g_icons_lbl_cur;
 static uint32_t g_blank_addr;
 static uint8_t g_blank_byte;
 static int g_blank;
@@ -184,6 +193,15 @@ static void put(uint32_t a, const char *s)
     ST8(a + (uint32_t)strlen(s), 0u);
 }
 
+static void icon_label_refresh(void)
+{
+    if (!g_icons_lbl[0]) return;
+    char buf[32];
+    snprintf(buf, sizeof buf, "Icons: %s", icons_name(g_config.icons));
+    g_icons_lbl_cur ^= 1;
+    put(g_icons_lbl[g_icons_lbl_cur], buf);
+}
+
 static void ensure_bufs(void)
 {
     if (g_lbl[0][0]) return;
@@ -203,6 +221,9 @@ static void ensure_bufs(void)
     put(g_audio_lbl, "Audio");
     g_gameplay_lbl = hle_alloc(16);
     put(g_gameplay_lbl, "Gameplay");
+    g_icons_lbl[0] = hle_alloc(32);
+    g_icons_lbl[1] = hle_alloc(32);
+    icon_label_refresh();
 }
 
 static void restore_tbl(void)
@@ -418,7 +439,7 @@ static uint32_t opt_flat(uint32_t w)
 // Descriptions for the rows the stock option tables cannot describe: the two menu rows and the
 // custom Graphics/Display rows. These are fillers; edit the strings to change the help box text.
 enum {
-    CH_MAIN_AUDIO, CH_MAIN_GAMEPLAY, CH_MAIN_CTRL, CH_MAIN_GFX,
+    CH_MAIN_AUDIO, CH_MAIN_GAMEPLAY, CH_MAIN_CTRL, CH_MAIN_GFX, CH_MAIN_ICONS,
     CH_GFX_DISPLAY, CH_GFX_FXAA, CH_GFX_MSAA, CH_GFX_FSR, CH_GFX_FSRQ, CH_GFX_SHARP,
     CH_DSP_ASPECT, CH_DSP_RES, CH_DSP_FPS, CH_DSP_VSYNC, CH_COUNT
 };
@@ -427,6 +448,7 @@ static const char *const g_custom_help[CH_COUNT] = {
     "Custom Gameplay Description",
     "Custom Controls Description",
     "Custom Graphics Description",
+    "Choose the controller button icons.",
     "Custom Display Description",
     "Custom FXAA Description",
     "Custom MSAA Description",
@@ -482,6 +504,7 @@ static int custom_help_index(uint32_t w)
     if (flat == GAMEPLAY_ITEM) return CH_MAIN_GAMEPLAY;
     if (flat == CTRL_ITEM) return CH_MAIN_CTRL;
     if (flat == GRAPHICS_ITEM) return CH_MAIN_GFX;
+    if (flat == ICONS_ITEM && icons_available()) return CH_MAIN_ICONS;
     return -1;
 }
 
@@ -686,6 +709,8 @@ static void opt_row(Cpu *c)
             g_b_last = g_b_pressed_ns;
             g_plus_last = g_plus_pressed_ns;
             g_custom_cur = -1;
+            g_lr_last = g_lr_pressed_ns;
+            icon_label_refresh();
             g_swallow_a = 1;                  // do not let the opening press click the first row
         }
         if (is_sub()) {
@@ -696,7 +721,7 @@ static void opt_row(Cpu *c)
         } else if (g_gfx_menu) {
             sub_row = (int)item;              // 0 Display, 1 FXAA ... 5 FSR Sharpness
             c->r[3] = VALUE_ITEM;
-        } else if (!g_remap_pass && abs <= GRAPHICS_ITEM) {
+        } else if (!g_remap_pass && abs <= main_last_menu()) {
             c->r[2] = 0u;                     // item 2 (HUD): a plain one-line row
             c->r[3] = PLAIN_ITEM;
             menu_row = (int)abs;
@@ -731,7 +756,8 @@ static void opt_row(Cpu *c)
     } else if (menu_row >= 0) {
         ensure_bufs();
         ST32(out, menu_row == AUDIO_ITEM ? g_audio_lbl : menu_row == GAMEPLAY_ITEM ? g_gameplay_lbl
-                     : menu_row == CTRL_ITEM ? g_ctrl_lbl : g_gfx_lbl);
+                     : menu_row == CTRL_ITEM ? g_ctrl_lbl : menu_row == ICONS_ITEM ? g_icons_lbl[g_icons_lbl_cur]
+                     : g_gfx_lbl);
         if (src >= 0x10000000u && src < 0x1c000000u) {
             g_blank_addr = src + 4u;          // value 0 string ("On") -> empty for this row
             g_blank_byte = LD8(g_blank_addr);
@@ -774,7 +800,7 @@ static void opt_value(Cpu *c)
         }
         uint32_t flat = row_abs(c->r[0], c->r[1], c->r[2]);
         if (!g_remap_pass) {
-            if (flat <= GRAPHICS_ITEM) {
+            if (flat <= main_last_menu()) {
                 c->r[0] = 0u;                 // the menu rows show no value
                 return;
             }
@@ -788,7 +814,7 @@ static void opt_value(Cpu *c)
 static void opt_count(Cpu *c)
 {
     if (is_opt(c)) {
-        c->r[0] = is_sub() ? sub_rows() : g_disp_menu ? DISP_ROWS : g_gfx_menu ? GFX_ROWS : MAIN_ROWS;
+        c->r[0] = is_sub() ? sub_rows() : g_disp_menu ? DISP_ROWS : g_gfx_menu ? GFX_ROWS : main_rows();
         return;
     }
     fnhook_call_original(c, FN_OPT_COUNT);
@@ -842,7 +868,7 @@ static void leave_stock_menu(void)
     if (w) {
         ST8(PW_ROWS(w), g_sub_saved_rows ? (uint32_t)g_sub_saved_rows : 8u);
         ST16(w + 0x5eu, g_sub_saved_pages ? g_sub_saved_pages : 1u);
-        ST16(w + 0x60u, g_sub_saved_total ? g_sub_saved_total : MAIN_ROWS);
+        ST16(w + 0x60u, g_sub_saved_total ? g_sub_saved_total : main_rows());
         ST16(PW_PAGE(w), g_sub_saved_page);
         ST8(PW_ROW(w), (uint32_t)g_sub_saved_row);
         ST32(w + 0x74u, 0u);
@@ -1045,8 +1071,22 @@ void pausepages_input(uint64_t *buttons)
             } else if (flat == GRAPHICS_ITEM) {
                 *buttons &= ~(1ull << BTN_A);
                 enter_menu();
+            } else if (flat == ICONS_ITEM && icons_available()) {
+                *buttons &= ~(1ull << BTN_A);   // no stock editor; left/right switches the set
             } else if (main_orig(flat) >= 0 && (!g_opt_obj || LD32(g_opt_obj + 0x74u) != 2u)) {
                 g_open_remap = 1;
+            }
+        }
+        if (g_lr_pressed_ns != g_lr_last) {
+            g_lr_last = g_lr_pressed_ns;
+            uint32_t flat = opt_flat(g_opt_obj);
+            int dir = (*buttons & (1ull << BTN_RIGHT)) ? 1 : (*buttons & (1ull << BTN_LEFT)) ? -1 : 0;
+            if (flat == ICONS_ITEM && icons_available() && dir) {
+                *buttons &= ~((1ull << BTN_LEFT) | (1ull << BTN_RIGHT));
+                icons_set((g_config.icons + (dir > 0 ? 1 : 2)) % 3);
+                icon_label_refresh();
+                g_refresh = 1;
+                return;
             }
         }
         return;

@@ -99,7 +99,8 @@ Everything is in `mhgurecomp.ini`; each setting is explained in the file itself.
   UltraPerformance), `Sharpness`, and `Upscaler` (FSR3, the default, or FSR4: needs an AMD RDNA 4 GPU and its driver, and an exe built with `make FSR4_DRIVER_PATCH=1`;
   falls back to FSR 3.1). FSR replaces MSAA and FXAA while it is on. Details: `docs/FSR-PORT.md`, `docs/FSR4-PORT.md`
 - `[Performance]`: `FPS` (30 to 240), `VSync` (On / Off; above your monitor's refresh rate, turn VSync off)
-- `[Controls]`: `FaceButtons` (Position / Label), `BackgroundInput` (On / Off: the controller keeps working while
+- `[Controls]`: `FaceButtons` (Position / Label), `Icons` (Switch / Xbox / Playstation: the controller glyphs
+  used by the UI; Switch by default, also switchable in-game under Options), `BackgroundInput` (On / Off: the controller keeps working while
   the game's window is in the background, such as with a wiki in front of it; default On)
 - `[Mouse]`: `MouseSensitivity` (1 = default, 0.1 to 10)
 - `[Multiplayer]`: `Port`, `Join` (addresses of hosts outside your LAN), `SyncSmallMonsters`
@@ -213,7 +214,11 @@ If `addons\pp4\` is present in the repository, `make` also merges its `HD Textur
 romfs trees into `data\romfs` (hard links). The pause/equipment menus' HD textures are only in `English\Layout`,
 so one variant is baked in as well: `PP4_UI=2-NS/HDI` by default (Switch buttons, HD icons). The rest of Layout
 stays out for the hot-swappable project; build with `PP4_UI=` for the stock menus, or another
-`<1-PS|2-NS|3-XB>/<CI|HDI>` path. They all load as part of the native RomFS, with no mod folder needed. To merge
+`<1-PS|2-NS|3-XB>/<CI|HDI>` path. The selected variant's shared `loc/arc/resident.arc` (the
+button fonts the menus actually draw) and `title_eng.arc` are merged too, and the build extracts
+all three variants' glyph atlases into `data\pp4_icons` so Options -> `Icons` can switch them live. Without
+`addons\pp4` the row is omitted (and a release's `data\` does not carry the glyph sets). They all load as part of the native RomFS, with no mod
+folder needed. To merge
 again after adding or removing pack files (or changing `PP4_UI`), delete `build\data\.pp4` and run `make data`.
 Since releases leave out `data\`, this only affects builds made with the folder present.
 

@@ -104,7 +104,7 @@ No new window and no new page: the same list is compacted and given two extra ro
 
 The 27 stock entries are split into:
 
-- **main list** (6 rows, one page): `Gameplay`, `Audio`, `Controls`, `Graphics`, `Default
+- **main list** (7 rows, one page): `Gameplay`, `Audio`, `Controls`, `Graphics`, `Icons`, `Default
   Settings`, `Reset All Settings`.
 - **Audio** (2 rows): Music Volume, SFX Volume.
 - **Gameplay** (4 rows): HUD, Map, Melody Effect Display, Lens Flares.
@@ -114,7 +114,7 @@ The 27 stock entries are split into:
   Camera, Control Type, + Button Controls, L/R Button Controls, R Stick Controls, L Stick
   Controls (stock order).
 
-`opt_count` (`f_7e7534`) returns 6/2/4/19/6/4 for the main list, Audio, Gameplay, Controls,
+`opt_count` (`f_7e7534`) returns 7/2/4/19/6/4 for the main list, Audio, Gameplay, Controls,
 Graphics and Display. The four menu rows are drawn from the HUD slot (item 2) with host labels
 and empty values.
 

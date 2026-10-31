@@ -61,6 +61,9 @@ typedef struct NvnTexture {
     void *backend;  // renderer-side texture
     uint64_t debug_id;
     char label[64];
+    int icon;  // ui_icons.c: 0 unknown, 1..5 glyph texture id, -1 not a glyph texture
+    uint64_t icon_hash;  // the glyph set currently in its storage (0: unknown)
+    uint8_t icon_tries;  // scans before a same-size texture is written off as not a glyph atlas
 } NvnTexture;
 
 typedef struct {
@@ -171,6 +174,9 @@ void backend_execute(uint64_t handle);            // run a recorded command list
 void backend_present(NvnTexture *tex);            // show a texture in the window
 void backend_texture_destroyed(NvnTexture *tex);
 void backend_pool_written(uint64_t addr, uint64_t size);
+void nvn_texture_dump(void);             // debug (control file: texdump)
+void nvn_textures_visit(void (*fn)(NvnTexture *, void *), void *arg);
+void backend_texture_dirty(NvnTexture *t);
 void renderer_sync(void);
 uint64_t renderer_fence_seq(void);
 void renderer_wait_seq(uint64_t seq);

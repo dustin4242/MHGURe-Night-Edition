@@ -16,7 +16,7 @@
 #include "config.h"
 #include "rt.h"
 
-Config g_config = {DISPLAY_BORDERLESS, 1920, 1080, 0, 0, 60, 1, 1, 1, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3};
+Config g_config = {DISPLAY_BORDERLESS, 1920, 1080, 0, 0, 60, 1, 1, 1, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, ICONS_SWITCH};
 uint32_t g_render_size[2] = {1920, 1080};
 float g_render_aspect = 16.0f / 9.0f;
 float g_fov_scale = 1.0f;
@@ -111,6 +111,11 @@ static const char DEFAULT_INI[] =
     "; Position, Label\n"
     "; Default: Position\n"
     "FaceButtons = Position\n"
+    "\n"
+    "; Controller glyphs in the UI (hot-swapped when changed in the Options menu)\n"
+    "; Switch, Xbox, Playstation\n"
+    "; Default: Switch\n"
+    "Icons = Switch\n"
     "\n"
     "; Controller input is also registered if the window is out of focus\n"
     "; Default: On\n"
@@ -331,6 +336,11 @@ static void set_key(const char *key, char *val, int line) {
         else if (!strcmp(v, "label") || !strcmp(v, "labels") || !strcmp(v, "xbox"))
             g_config.face_buttons = FACE_LABEL;
         else ok = false;
+    } else if (!strcmp(k, "icons")) {
+        if (!strcmp(v, "switch") || !strcmp(v, "nintendo") || !strcmp(v, "2-NS")) g_config.icons = ICONS_SWITCH;
+        else if (!strcmp(v, "xbox") || !strcmp(v, "3-XB")) g_config.icons = ICONS_XBOX;
+        else if (!strcmp(v, "playstation") || !strcmp(v, "ps") || !strcmp(v, "1-PS")) g_config.icons = ICONS_PLAYSTATION;
+        else ok = false;
     } else if (!strcmp(k, "mousesensitivity")) {
         float f = strtof(v, NULL);
         if ((ok = f >= 0.1f && f <= 10.0f)) g_config.mouse_sensitivity = f;
@@ -432,7 +442,16 @@ void config_save_key(const char *key, const char *value)
         if (!eol) break;
         p = eol + 1;
     }
-    if (!found) { free(buf); return; }
+    if (!found) {  // an older INI without this key: append it (the parser accepts it at the end)
+        f = fopen(path, "ab");
+        if (f) {
+            fprintf(f, "\n%s = %s\n", key, value);
+            fclose(f);
+            LOG("[config] %s: added %s = %s\n", path, key, value);
+        }
+        free(buf);
+        return;
+    }
 
     char line[256];
     int ll = snprintf(line, sizeof line, "%s = %s", key, value);

@@ -9,6 +9,35 @@
 
 static uint64_t next_debug_id = 1;
 
+// Live texture registry (the icon hot-swap scans these; nvn.h exposes a read-only snapshot).
+static NvnTexture **g_textures;
+static int g_ntex, g_texcap;
+static pthread_mutex_t g_texlock = PTHREAD_MUTEX_INITIALIZER;
+
+static void tex_track(NvnTexture *t)
+{
+    pthread_mutex_lock(&g_texlock);
+    if (g_ntex == g_texcap) {
+        int n = g_texcap ? g_texcap * 2 : 256;
+        NvnTexture **p = realloc(g_textures, (size_t)n * sizeof *p);
+        if (p) { g_textures = p; g_texcap = n; }
+    }
+    if (g_ntex < g_texcap) g_textures[g_ntex++] = t;
+    pthread_mutex_unlock(&g_texlock);
+}
+
+static void tex_untrack(NvnTexture *t)
+{
+    pthread_mutex_lock(&g_texlock);
+    for (int i = 0; i < g_ntex; i++) {
+        if (g_textures[i] == t) {
+            g_textures[i] = g_textures[--g_ntex];
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_texlock);
+}
+
 // ================================================================== device
 static uint32_t device_integer(uint32_t which) {
     static const uint32_t v[] = {
@@ -331,6 +360,7 @@ static NvnTexture *texture_from_builder(uint64_t b) {
     t->addr = t->pool ? t->pool->storage + t->pool_offset : 0;
     builder_layout(b, &t->layout);
     t->debug_id = next_debug_id++;
+    tex_track(t);
     return t;
 }
 
@@ -345,7 +375,7 @@ NVN(nvnTextureInitialize) {
 }
 NVN(nvnTextureFinalize) {
     NvnTexture *t = HOST(NvnTexture, A(0));
-    if (t) { backend_texture_destroyed(t); free(t); }
+    if (t) { tex_untrack(t); backend_texture_destroyed(t); free(t); }
     SET_HOST(A(0), 0);
 }
 NVN(nvnTextureSetDebugLabel) {
@@ -402,6 +432,39 @@ NVN(nvnTextureViewGetSwizzle) {
 NVN(nvnTextureViewGetDepthStencilMode) { NvnTextureView *v = (NvnTextureView *)AP(0); *(uint32_t *)AP(1) = v->ds_mode; RET(!!(v->setmask & 16)); }
 NVN(nvnTextureViewGetTarget) { NvnTextureView *v = (NvnTextureView *)AP(0); *(uint32_t *)AP(1) = v->target; RET(!!(v->setmask & 32)); }
 NVN(nvnTextureViewCompare) { RET(memcmp(AP(0), AP(1), 0x1C) == 0); }
+
+// Debug: dump live textures with a hash of their guest storage (control file: texdump).
+static uint64_t texhash(const uint8_t *p, uint64_t n)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (uint64_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ull; }
+    return h;
+}
+
+void nvn_textures_visit(void (*fn)(NvnTexture *, void *), void *arg)
+{
+    pthread_mutex_lock(&g_texlock);
+    for (int i = 0; i < g_ntex; i++) fn(g_textures[i], arg);
+    pthread_mutex_unlock(&g_texlock);
+}
+
+void nvn_texture_dump(void)
+{
+    pthread_mutex_lock(&g_texlock);
+    for (int i = 0; i < g_ntex; i++) {
+        NvnTexture *t = g_textures[i];
+        if (!t || !t->addr) continue;
+        uint64_t total = tegra_total_size(&t->layout);
+        if (total < 0x10000) continue;
+        const uint8_t *m = (const uint8_t *)G2H((uint32_t)t->addr);
+        LOG("[texdump] %08x %ux%ux%u fmt %#x flags %#x lv %u bh %u stride %llu total %llu hash %016llx first",
+            (unsigned)t->addr, t->width, t->height, t->depth, t->format, t->flags, t->levels, (unsigned)t->layout.block_height_log2,
+            (unsigned long long)t->stride, (unsigned long long)total, (unsigned long long)texhash(m, total));
+        for (int k = 0; k < 8; k++) LOG(" %02x", m[k]);
+        LOG("\n");
+    }
+    pthread_mutex_unlock(&g_texlock);
+}
 
 NVN(nvnTextureWriteTexels) {  // (texture, view, region, data): linear data into block-linear storage
     NvnTexture *t = HOST(NvnTexture, A(0));

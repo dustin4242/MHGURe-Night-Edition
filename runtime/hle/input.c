@@ -31,6 +31,7 @@ void input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry)
     if (down & (1ull << BTN_PLUS)) g_plus_pressed_ns = plat_now_ns();
     if (down & ((1ull << BTN_LEFT) | (1ull << BTN_RIGHT))) g_lr_pressed_ns = plat_now_ns();
     pausepages_input(&buttons);
+    { void icons_tick(void); icons_tick(); }
     g_buttons = buttons;
     g_sticks[0] = lx, g_sticks[1] = ly, g_sticks[2] = rx, g_sticks[3] = ry;
 }

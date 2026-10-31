@@ -13,6 +13,7 @@ void backend_present(NvnTexture *tex) {
     plat_sleep_until_ns(plat_now_ns() + 16666667);
 }
 void backend_texture_destroyed(NvnTexture *tex) { (void)tex; }
+void backend_texture_dirty(NvnTexture *tex) { (void)tex; }
 void backend_pool_written(uint64_t addr, uint64_t size) { (void)addr; (void)size; }
 void renderer_sync(void) {}
 uint64_t renderer_fence_seq(void) { return 0; }

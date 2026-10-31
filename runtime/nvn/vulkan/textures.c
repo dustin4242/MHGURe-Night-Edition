@@ -9,6 +9,7 @@
 
 #include "vk.h"
 #include "../astc.h"
+#include "../../ui_icons.h"
 
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
@@ -355,6 +356,13 @@ static TexBackend *tex_backend(NvnTexture *t) {
     return b;
 }
 
+void backend_texture_dirty(NvnTexture *t) {
+    vk_lock();
+    TexBackend *b = t ? t->backend : NULL;
+    if (b) { b->uploaded = false; b->dynamic = true; b->data_hash = 0; b->sample_hash = 0; }
+    vk_unlock();
+}
+
 void backend_texture_destroyed(NvnTexture *t) {
     vk_lock();
     TexBackend *b = t->backend;
@@ -482,6 +490,11 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
         if (sh == b->sample_hash) return;
     }
     uint64_t h = hash_full(mem, total);
+    uint64_t ih = h;
+    if (icons_texture(t, mem, total, &ih) && ih != h) {
+        mem = (const uint8_t *)G2H((uint32_t)t->addr);
+        h = ih;
+    }
     b->full_frame = frame;
     b->sample_hash = fnv_sample(mem, total);
     if (b->uploaded && h == b->data_hash) return;

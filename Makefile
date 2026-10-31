@@ -253,18 +253,21 @@ bundle: $(EXE) $(if $(GEN_SRC),$(GAMELIB))
 
 # High-res texture packs in addons/pp4/: when the folder is present, its HD Textures v4 and English/HD UI v4
 # romfs trees are merged into $(B)/data/romfs (hard links where possible) so they are part of the native
-# romfs. The pause/equipment menus' HD textures only exist in English/Layout, so one variant is baked in as
-# well: PP4_UI (Switch buttons + HD icons by default). The rest of Layout stays out for the hot-swappable
-# layout project; set PP4_UI= (empty) to use the stock menus. Delete $(B)/data/.pp4 to merge again.
+# romfs. The pause/equipment menus' HD textures and the shared loc/arc/resident.arc button fonts only exist
+# in English/Layout, so one variant is baked in as well: PP4_UI (Switch buttons + HD icons by default). The
+# rest of Layout stays out for the hot-swappable layout project; set PP4_UI= (empty) to use the stock menus.
+# Delete $(B)/data/.pp4 to merge again.
 PP4_DIR  := addons/pp4
 PP4_UI   ?= 2-NS/HDI
+PP4_VARIANT := $(firstword $(subst /, ,$(PP4_UI)))
 ifneq ($(wildcard $(PP4_DIR)),)
 PP4_STAMP := $(B)/data/.pp4
 PP4_DEPS  := $(PP4_STAMP)
 endif
 
 data: $(B)/data/.complete $(PP4_DEPS)
-$(PP4_STAMP): $(PP4_DIR) Makefile | $(B)/data/.complete
+ifneq ($(wildcard $(PP4_DIR)),)
+$(PP4_STAMP): $(PP4_DIR) Makefile tools/pp4_icons.py | $(B)/data/.complete
 	@if [ -d "$(B)/data/romfs" ]; then \
 	    for p in "$(PP4_DIR)/HD Textures v4/romfs" "$(PP4_DIR)/English/HD UI v4/romfs"; do \
 	        if [ -d "$$p" ]; then \
@@ -280,8 +283,23 @@ $(PP4_STAMP): $(PP4_DIR) Makefile | $(B)/data/.complete
 	            cp -rlf "$(PP4_DIR)/English/Layout/$(PP4_UI)/$$f" "$(B)/data/romfs/nativeNX/eng/arc/$$f" 2>/dev/null || \
 	                cp -rf "$(PP4_DIR)/English/Layout/$(PP4_UI)/$$f" "$(B)/data/romfs/nativeNX/eng/arc/$$f" || exit 1; \
 	        done; \
+	        if [ -f "$(PP4_DIR)/English/Layout/$(PP4_VARIANT)/loc/arc/resident.arc" ]; then \
+	            echo "data: pp4 shared UI fonts ($(PP4_VARIANT))"; \
+	            mkdir -p "$(B)/data/romfs/nativeNX/loc/arc"; \
+	            cp -rlf "$(PP4_DIR)/English/Layout/$(PP4_VARIANT)/loc/arc/resident.arc" "$(B)/data/romfs/nativeNX/loc/arc/resident.arc" 2>/dev/null || \
+	                cp -rf "$(PP4_DIR)/English/Layout/$(PP4_VARIANT)/loc/arc/resident.arc" "$(B)/data/romfs/nativeNX/loc/arc/resident.arc" || exit 1; \
+	        fi; \
+	        if [ -f "$(PP4_DIR)/English/Layout/$(PP4_VARIANT)/title_eng.arc" ]; then \
+	            cp -rlf "$(PP4_DIR)/English/Layout/$(PP4_VARIANT)/title_eng.arc" "$(B)/data/romfs/nativeNX/eng/arc/title_eng.arc" 2>/dev/null || \
+	                cp -rf "$(PP4_DIR)/English/Layout/$(PP4_VARIANT)/title_eng.arc" "$(B)/data/romfs/nativeNX/eng/arc/title_eng.arc" || exit 1; \
+	        fi; \
+	    fi; \
+	    if [ -d "$(PP4_DIR)/English/Layout" ]; then \
+	        echo "data: pp4 icon variants (Switch/Xbox/Playstation)"; \
+	        $(PY) tools/pp4_icons.py "$(PP4_DIR)/English/Layout" "$(B)/data/pp4_icons" || exit 1; \
 	    fi && touch $@; \
 	else echo "data: no game romfs yet, pp4 packs not merged"; fi
+endif
 $(B)/data/.complete:
 	@if [ ! -f "$(GAME)/exefs/main" ] || [ ! -d "$(GAME)/romfs" ]; then \
 	    echo "data: no game files in $(GAME) (make GAME=<folder with exefs/ and romfs/>): $(B)/data left empty"; \
