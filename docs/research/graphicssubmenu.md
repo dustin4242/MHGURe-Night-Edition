@@ -41,8 +41,8 @@ The window embeds a paging/setup param at `obj + 0x4c`. The fields we read and w
 `obj + 0x60` is the **total item count**, not the last index. It has to be restored when
 leaving the submenu, otherwise the engine recomputes the pages and the extra row vanishes.
 
-The stock list has 27 items at 8 rows/page: 4 pages, last page 3 rows. The Graphics entry is
-item 27 (page 3, row 3) — see §2.
+The stock list has 27 items at 8 rows/page: 4 pages, last page 3 rows. The list is compacted
+and the two menu rows are added in §2.
 
 ### 1.2 The virtuals we hook
 
@@ -96,63 +96,66 @@ the string pointer between two alternating slots so the window notices the chang
 
 ---
 
-## 2. Adding the `Graphics` row to the Options list
+## 2. Compacting the Options list and adding the menu rows
 
-No new window and no new page: the entry is the **last** row of the existing list.
+No new window and no new page: the same list is compacted and given two extra rows.
 
-### 2.1 Count and position
+### 2.1 The layout
 
-`opt_count` overrides `f_7e7534` to return `STOCK_ITEMS + 1` (28) while the list is shown.
-With 8 rows/page the engine grows the last page to four rows, so item 27 is valid.
+The 27 stock entries are split into:
 
-**It must be last.** The game identifies each option by its list index in hardcoded code
-(its `f_7e7d34`/setter switches are index-based). Inserting a row anywhere before the end
-would make row *N* edit option *N+1*. Keeping the entry at the end leaves every stock index
-and value untouched.
+- **main list** (6 rows, one page): `Gameplay`, `Audio`, `Controls`, `Graphics`, `Default
+  Settings`, `Reset All Settings`.
+- **Audio** (2 rows): Music Volume, SFX Volume.
+- **Gameplay** (4 rows): HUD, Map, Melody Effect Display, Lens Flares.
+- **Controls** (19 rows, 3 pages of 8): Camera Angle, Camera Controls, Camera Speed, Scope
+  Controls, Bowgun Controls, Quick Aim Controls, Quick Aim Camera, Reticle Speed, Orientation,
+  Bow Controls, Bow Aim Mode Cancel, Target Cam Controls, Target Cam Behavior, Terrain-savvy
+  Camera, Control Type, + Button Controls, L/R Button Controls, R Stick Controls, L Stick
+  Controls (stock order).
 
-The same reason makes A on this row dangerous: index 27 is "Reset All Settings" in the stock
-switch. The press is therefore intercepted before the engine sees it (§2.3).
+`opt_count` (`f_7e7534`) returns 6/2/4/19/6/4 for the main list, Audio, Gameplay, Controls,
+Graphics and Display. The four menu rows are drawn from the HUD slot (item 2) with host labels
+and empty values.
 
-### 2.2 Drawing the row
+### 2.2 Remapping moved rows
 
-`opt_row` (the `+0x68` hook) computes the absolute item:
+The game identifies each option by its list index in hardcoded code (the `f_7e7d34` value and
+`f_7e87d0`/update switches are index-based), so a moved row must still edit its original entry.
+The window hands the row/value virtuals the *displayed* (page, row). The hooks translate that
+through `g_main_map` / `g_audio_map` / `g_gameplay_map` / `g_ctrl_map` to the original stock
+(page, row) before calling the
+originals, so labels, values, ranges and help text are the stock ones:
 
 ```c
-static uint32_t row_abs(uint32_t w, uint32_t page, uint32_t row)
-{
-    uint32_t rows = LD8(w + 0x5au);
-    return page * (rows ? rows : 1u) + row;
-}
+static const uint8_t g_main_map[8] = {0, 1, 2, 3, 15, 19, 25, 26};
+static const uint8_t g_ctrl_map[CTRL_ROWS] = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+                                              16, 17, 18, 20, 21, 22, 23, 24};
 ```
 
-When the absolute item is `GRAPHICS_ITEM` (27), it swaps the row's item argument to
-`PLAIN_ITEM` (2 = "HUD", a plain On/Off row) so the engine lays out a normal one-line row,
-and then:
+Editing is applied inside the window's per-frame update, which reads the pager. While
+`obj+0x74 == 2` (an editor is open), `opt_update` saves the compact pager shape, sets the
+stock shape (rows/page 8, 4 pages, total 27) and the original entry's (page, row), runs the
+original update (which applies the change), then restores the compact shape and forces a
+relayout. The layout inside that call runs with `g_remap_pass` set, so the row/value hooks
+pass the stock coordinates through instead of remapping them again. Verified by displaying
+Camera Angle on row 0 and confirming an edit changed Camera Angle, not Music Volume.
 
-- replaces `out[0]` (the label pointer) with a host buffer containing `"Graphics"`;
-- blanks the *value-0 string* of the HUD slot (`src + 4`) for the duration of that one row
-  build, and restores it at the start of the next `opt_row` call. The HUD slot's "On" string
-  is only hidden while the Graphics row is built.
+The row mapping computes the absolute item as `page * rows_per_page + row` (`row_abs`), which
+is also the flat index into the maps.
 
-`opt_value` also returns `0` for the Graphics row so it has no value text.
+### 2.3 Input
 
-### 2.3 Entering, leaving, and input
+- **Main list**: A on `Controls` (flat 8) enters the Controls view; A on `Graphics` (flat 9)
+  enters the Graphics view; both presses are masked. B/Plus drop the window handle and let the
+  engine close the list (B first cancels an open editor, which is passed through). Everything
+  else is stock.
+- **Controls**: A, left/right and up/down all pass to the engine (the stock editor); the update
+  hook does the remap. B cancels an editor or returns to the compact list; Plus returns and
+  closes the pause menu.
 
-The input hook (`pausepages_input`, called from `runtime/hle/input.c`) runs after the
-timestamps in `input.c` are updated (`g_a_pressed_ns`, `g_b_pressed_ns`, `g_lr_pressed_ns`,
-etc.), so masking a button bit does not lose the press for our own logic.
-
-While the stock list is shown:
-
-- **B / Plus**: drop the window handle (`g_opt_obj = 0`) and let the engine close the list.
-  Dropping the handle prevents the bar's own A presses from being mistaken for the extra row.
-- **A on the Graphics row**: clear the A bit (`*buttons &= ~(1ull << BTN_A)`) and call
-  `enter_menu()`. The engine never sees the press, so "Reset All Settings" never runs.
-- **A elsewhere**: left alone (stock behaviour).
-
-The window handle is captured lazily in `opt_row` (the first row build after opening). On
-that first sighting the A/B/Plus timestamps are rebased, so the press that opened the Options
-window is not treated as input.
+The window handle is captured lazily in `opt_row`; the A/B/Plus timestamps are rebased on that
+first sighting so the press that opened Options is not treated as input.
 
 ---
 
@@ -539,14 +542,22 @@ assuming the code failed.
   strings into the label buffer corrupts the label (it overwrites the label's NUL).
 - **The borrowed block is saved and restored as 64 bytes.** If a new row writes beyond
   `+63`, enlarge `g_tbl_w` and `restore_tbl`.
-- **Rows must stay last in the Options list.** Index-based stock code means inserting earlier
-  breaks every option below.
+- **Moved stock rows need the remap.** The index-based stock code means a moved row edits the
+  wrong entry unless the row/value virtuals and the editor update are translated (see 2.2). The
+  four custom menu rows do not need it (they have no stock editor).
 - **A on index 27 is "Reset All Settings".** Keep it masked.
 - **Left/right must be masked in the submenu.** Otherwise they edit Music Volume (the stock
   item under row 0) in addition to our row.
-- **The help line is still the stock one** ("Set the volume of the background music."). It is
-  produced by the window from the row under its cursor; fixing it means overriding the help
-  text virtual/node, which has not been done.
+- **The help line is stock-indexed.** The window derives its description from the stock list
+  index of the row under its cursor, and only refreshes it while it consumes a direction press.
+  The update hook therefore re-runs the stock pass with the cursor one row/page before the
+  original entry, so the consumed press lands on that entry and its description is shown. Entry
+  frames (and row 0/7 or page 0/3 boundaries, where the held direction cannot land on the
+  target) arm a one-frame synthetic `Down`/`Up` bit in the pad state (`g_pad_force`, consumed
+  once by `fillstate`); the compact pager is restored afterwards. `A` is likewise translated
+  before the update so the editor opens on the original entry and shows that entry's editor
+  description. The two custom menu rows borrow a nearby stock description (Controls -> item 5,
+  Graphics -> item 19); the Graphics/Display rows have no stock text to borrow.
 - **The label pointer must change to redraw.** Flipping `g_lbl_cur` and re-running the layout
   is mandatory after every change.
 - **`+0x60` is the total item count**, and the pager fields must be restored on exit.

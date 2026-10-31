@@ -9,6 +9,7 @@
 #include "../net/net.h"
 
 static volatile uint64_t g_buttons;
+volatile uint64_t g_pad_force;
 volatile uint64_t g_lr_pressed_ns;
 static volatile int32_t g_sticks[4];  // lx, ly, rx, ry (-32767..32767, y up)
 static int64_t sampling;
@@ -50,7 +51,8 @@ static void fill_state(Cpu *c) {
     int64_t n = __atomic_add_fetch(&sampling, 1, __ATOMIC_RELAXED);
     memcpy(s, &n, 8);
     if (id != 0) return;  // docked: only player 1
-    uint64_t b = g_buttons;
+    uint64_t b = g_buttons | g_pad_force;
+    g_pad_force = 0;  // one-shot: the menu's help refresh is consumed by this query
     int32_t lx = g_sticks[0], ly = g_sticks[1], rx = g_sticks[2], ry = g_sticks[3];
     // stick directions also appear as buttons (bits 16-23)
     if (lx < -16000) b |= 1ull << 16;

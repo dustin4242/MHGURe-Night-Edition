@@ -1,16 +1,18 @@
 // MHGU_PAUSE_PAGES=<n>: grow the in-hunt pause tab bar (uUIQuestStartMenu, class table
 // 0x177aeb0, main_107/108.c) past its stock two pages (docs/UI.md 5b).
 //
-// The "Graphics" entry at the end of the Options menu (cUIOOptionWindowForGame) is always
-// present. It opens a six-row Graphics menu: Display (a submenu with Aspect Ratio / Resolution /
-// Framerate / VSync), FXAA (Off/On), MSAA (Off/2x/4x/8x), FSR (Off/FSR 3/FSR 4), FSR Quality
-// (NativeAA/Quality/Balanced/Perf/UltraPerf) and FSR Sharpness (0.1..1.0). The stock options keep
-// their own rows and indices.
+// The Options menu (cUIOOptionWindowForGame) is compacted into a one-page list: Gameplay, Audio,
+// Controls, Graphics, Default Settings and Reset All Settings. The row/value virtuals remap each displayed row to its original
+// stock entry, and the per-frame update moves the pager to that entry while an editor is open,
+// so the engine still edits the right setting.
 //
-// The window reports its item count through virtual +0x60 (f_7e7534, stock 27); reporting 28
-// gives the list one extra row on its last page. That row is drawn from the HUD slot (item 2,
-// a plain On/Off row) with the label "Graphics" and an empty value. Selecting it switches this
-// same window to the six-row Graphics view, and from there to the four-row Display view.
+// Audio holds Music Volume and SFX Volume. Gameplay holds HUD, Map, Melody Effect Display and
+// Lens Flares. Controls
+// holds the 19 control-related entries in their stock order (3 pages). Graphics is the custom
+// six-row menu: Display (Aspect Ratio / Resolution / Framerate / VSync), FXAA, MSAA, FSR, FSR
+// Quality and FSR Sharpness. The count virtual (+0x60) reports 6 for the main list, 2 for Audio,
+// 4 for Gameplay, 19 for Controls, 6 for Graphics and 4 for Display; the menu rows are drawn
+// from the HUD slot (item 2) with their own labels.
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -41,9 +43,16 @@
 #define PW_PAGE(w)  ((w) + 0x5cu)
 
 #define STOCK_ITEMS  27u              // rows of the stock Options list
-#define GRAPHICS_ITEM STOCK_ITEMS     // the extra list row (last)
+#define MAIN_ROWS    6u               // Gameplay, Audio, Controls, Graphics, Default Settings, Reset
+#define GAMEPLAY_ITEM 0u              // the Gameplay row in the compact list
+#define AUDIO_ITEM   1u               // the Audio row in the compact list
+#define CTRL_ITEM    2u               // the Controls row in the compact list
+#define GRAPHICS_ITEM 3u              // the Graphics row in the compact list
+#define CTRL_ROWS    19u              // control-related stock entries, in the Controls submenu
+#define AUDIO_ROWS   2u               // Music Volume, SFX Volume
+#define GAMEPLAY_ROWS 4u              // HUD, Map, Melody Effect Display, Lens Flares
 #define VALUE_ITEM   4u               // "Camera Angle": a long label slot with five value strings
-#define PLAIN_ITEM   2u               // "HUD": a plain On/Off slot (draws the extra list row)
+#define PLAIN_ITEM   2u               // "HUD": a plain On/Off slot (draws the two menu rows)
 
 // Graphics menu rows (page 0).
 #define ROW_DISPLAY  0
@@ -80,11 +89,46 @@ static const char *const g_disp_names[DISP_ROWS] = {"Aspect Ratio", "Resolution"
 static const char *const g_aspect_lbl[6] = {"4:3", "3:2", "16:10", "16:9", "21:9", "32:9"};
 static const float g_aspect_val[6] = {4.0f / 3.0f, 3.0f / 2.0f, 16.0f / 10.0f, 16.0f / 9.0f, 21.0f / 9.0f, 32.0f / 9.0f};
 static const int g_vert_vals[6] = {480, 720, 960, 1080, 1440, 2160};
+// Compact Options list (non-control stock items, in stock order) and the Controls submenu's
+// stock items. The mapping is applied to the row/value virtuals and around the editor update, so
+// the engine still edits the original entry behind a moved row.
+static const int8_t g_main_map[MAIN_ROWS] = {-1, -1, -1, -1, 25, 26};
+static const uint8_t g_ctrl_map[CTRL_ROWS] = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24};
+static const uint8_t g_audio_map[AUDIO_ROWS] = {0, 1};
+static const uint8_t g_gameplay_map[GAMEPLAY_ROWS] = {2, 3, 15, 19};
+static int main_orig(uint32_t f) { return f < MAIN_ROWS ? g_main_map[f] : -1; }
+
+enum { SUB_NONE, SUB_CTRL, SUB_AUDIO, SUB_GAMEPLAY };
+static int g_sub;                     // the stock-entry submenu currently open (SUB_*)
+static int is_sub(void) { return g_sub != SUB_NONE; }
+static uint32_t sub_rows(void)
+{
+    return g_sub == SUB_CTRL ? CTRL_ROWS : g_sub == SUB_AUDIO ? AUDIO_ROWS : g_sub == SUB_GAMEPLAY ? GAMEPLAY_ROWS : 0u;
+}
+static int sub_orig(uint32_t f)
+{
+    if (g_sub == SUB_CTRL) return f < CTRL_ROWS ? g_ctrl_map[f] : -1;
+    if (g_sub == SUB_AUDIO) return f < AUDIO_ROWS ? g_audio_map[f] : -1;
+    if (g_sub == SUB_GAMEPLAY) return f < GAMEPLAY_ROWS ? g_gameplay_map[f] : -1;
+    return -1;
+}
+static const char *sub_name(void) { return g_sub == SUB_CTRL ? "Controls" : g_sub == SUB_AUDIO ? "Audio" : "Gameplay"; }
+
 static const char *const g_fsrq_ini[5] = {"NativeAA", "Quality", "Balanced", "Performance", "UltraPerformance"};
 static const char *const g_fsrq_lbl[5] = {"NativeAA", "Quality", "Balanced", "Perf", "UltraPerf"};
 
 static uint32_t g_pages;              // forced bar page count (MHGU_PAUSE_PAGES; 0: leave alone)
 static int g_gfx_menu;                // 1: the Graphics menu is the current view
+static int g_remap_pass;              // inside the engine's stock-coordinate pass
+static uint64_t g_nav_btn;            // the direction bits held this frame
+static uint64_t g_btn_now;            // all bits the player holds this frame
+// A one-frame synthetic direction used to make the engine refresh the description on view entry.
+static int g_open_remap;              // A is opening a stock editor on the compact list
+static int g_help_pend = -1;
+static int g_help_pend_start;
+static uint32_t g_help_pend_page, g_help_pend_row, g_help_pend_rows, g_help_pend_pages, g_help_pend_total;
+static int g_help_item = -1;          // original item whose help is on screen
+static void hk_helpbox(Cpu *c);
 static int g_disp_menu;                // 1: the Display submenu is the current view
 static uint32_t g_opt_obj;            // the Options window
 static int g_refresh;                 // rebuild the row nodes on the next update
@@ -110,8 +154,8 @@ static char g_num_buf[8];
 static uint64_t g_num_blink;
 static int g_num_cursor = 1, g_num_disp;
 
-// "Graphics" list row label, and the HUD value string blanked for that row only.
-static uint32_t g_gfx_lbl;
+// The menu rows' labels, and the HUD value string blanked while they are built.
+static uint32_t g_gfx_lbl, g_ctrl_lbl, g_audio_lbl, g_gameplay_lbl;
 static uint32_t g_blank_addr;
 static uint8_t g_blank_byte;
 static int g_blank;
@@ -121,6 +165,10 @@ static int g_saved_rows;
 static uint32_t g_saved_pages;
 static uint32_t g_saved_total;
 static uint32_t g_saved_page, g_saved_row;
+
+// The controls view saves the compact Options list's pager.
+static int g_sub_saved_rows;
+static uint32_t g_sub_saved_pages, g_sub_saved_total, g_sub_saved_page, g_sub_saved_row;
 
 // The Display view saves the Graphics view's pager (the Options pager is already saved above).
 static int g_disp_saved_rows;
@@ -148,6 +196,12 @@ static void ensure_bufs(void)
     }
     g_gfx_lbl = hle_alloc(16);
     put(g_gfx_lbl, "Graphics");
+    g_ctrl_lbl = hle_alloc(16);
+    put(g_ctrl_lbl, "Controls");
+    g_audio_lbl = hle_alloc(16);
+    put(g_audio_lbl, "Audio");
+    g_gameplay_lbl = hle_alloc(16);
+    put(g_gameplay_lbl, "Gameplay");
 }
 
 static void restore_tbl(void)
@@ -360,9 +414,225 @@ static uint32_t opt_flat(uint32_t w)
     return (uint32_t)LD16(PW_PAGE(w)) * LD8(PW_ROWS(w)) + LD8(PW_ROW(w));
 }
 
+// Descriptions for the rows the stock option tables cannot describe: the two menu rows and the
+// custom Graphics/Display rows. These are fillers; edit the strings to change the help box text.
+enum {
+    CH_MAIN_AUDIO, CH_MAIN_GAMEPLAY, CH_MAIN_CTRL, CH_MAIN_GFX,
+    CH_GFX_DISPLAY, CH_GFX_FXAA, CH_GFX_MSAA, CH_GFX_FSR, CH_GFX_FSRQ, CH_GFX_SHARP,
+    CH_DSP_ASPECT, CH_DSP_RES, CH_DSP_FPS, CH_DSP_VSYNC, CH_COUNT
+};
+static const char *const g_custom_help[CH_COUNT] = {
+    "Custom Audio Description",
+    "Custom Gameplay Description",
+    "Custom Controls Description",
+    "Custom Graphics Description",
+    "Custom Display Description",
+    "Custom FXAA Description",
+    "Custom MSAA Description",
+    "Custom FSR Description",
+    "Custom FSR Quality Description",
+    "Custom FSR Sharpness Description",
+    "Custom Aspect Ratio Description",
+    "Custom Resolution Description",
+    "Custom Framerate Description",
+    "Custom VSync Description",
+};
+static uint32_t g_custom_guest[CH_COUNT];
+static uint32_t g_help_obj;            // the pause help box (captured from its text setter)
+static int g_custom_cur = -1;
+
+static int custom_help_alloc(Cpu *c)
+{
+    if (g_custom_guest[0]) return 1;
+    uint32_t total = 0;
+    for (int i = 0; i < CH_COUNT; i++) total += (uint32_t)strlen(g_custom_help[i]) + 1u;
+    uint32_t s0 = c->r[0], s1 = c->r[1], s2 = c->r[2], s3 = c->r[3], s12 = c->r[12], s14 = c->r[14];
+    c->r[0] = total;
+    guest_call(c, guest_sym("malloc"));
+    uint32_t p = c->r[0];
+    c->r[0] = s0; c->r[1] = s1; c->r[2] = s2; c->r[3] = s3; c->r[12] = s12; c->r[14] = s14;
+    if (!p) return 0;
+    char *d = (char *)G2H(p);
+    uint32_t off = 0;
+    for (int i = 0; i < CH_COUNT; i++) {
+        uint32_t n = (uint32_t)strlen(g_custom_help[i]) + 1u;
+        g_custom_guest[i] = p + off;
+        memcpy(d + off, g_custom_help[i], n);
+        off += n;
+    }
+    LOG("[pausepages] custom help strings at %08x\n", p);
+    return 1;
+}
+
+static int custom_help_index(uint32_t w)
+{
+    if (!w) return -1;
+    if (g_disp_menu) {
+        uint32_t r = LD8(PW_ROW(w));
+        return r < 4u ? CH_DSP_ASPECT + (int)r : -1;
+    }
+    if (g_gfx_menu) {
+        uint32_t r = LD8(PW_ROW(w));
+        return r < 6u ? CH_GFX_DISPLAY + (int)r : -1;
+    }
+    if (is_sub()) return -1;
+    uint32_t flat = opt_flat(w);
+    if (flat == AUDIO_ITEM) return CH_MAIN_AUDIO;
+    if (flat == GAMEPLAY_ITEM) return CH_MAIN_GAMEPLAY;
+    if (flat == CTRL_ITEM) return CH_MAIN_CTRL;
+    if (flat == GRAPHICS_ITEM) return CH_MAIN_GFX;
+    return -1;
+}
+
 static void opt_update(Cpu *c)
 {
-    fnhook_call_original(c, FN_OPT_UPDATE);
+    int remapped = 0;
+    uint32_t w = c->r[0];
+    // While an entry is being edited, the engine applies the change to the item under its own
+    // cursor. Move the pager to the original stock entry for the call, then put the compact
+    // shape back; the row/value virtuals draw the same entry again at its new position.
+    int editing = w && LD32(w + 0x74u) == 2u;
+    if (g_help_pend >= 0 && !g_remap_pass) {
+        int orig = g_help_pend;
+        int start = g_help_pend_start;
+        g_help_pend = -1;
+        g_pad_force = 0;
+        if (w && LD32(w) == OPT_VPTR_RT && !editing && g_btn_now == 0) {
+            ST8(PW_ROWS(w), 8u);
+            ST16(w + 0x5eu, 4u);
+            ST16(w + 0x60u, STOCK_ITEMS);
+            ST16(PW_PAGE(w), (uint32_t)start / 8u);
+            ST8(PW_ROW(w), (uint32_t)start % 8u);
+            g_remap_pass = 1;
+            fnhook_call_original(c, FN_OPT_UPDATE);   // consumes the synthetic press, lands on orig
+            g_remap_pass = 0;
+            ST8(PW_ROWS(w), (uint8_t)g_help_pend_rows);
+            ST16(w + 0x5eu, g_help_pend_pages);
+            ST16(w + 0x60u, g_help_pend_total);
+            ST16(PW_PAGE(w), g_help_pend_page);
+            ST8(PW_ROW(w), (uint8_t)g_help_pend_row);
+            g_help_item = orig;
+            g_refresh = 1;
+            remapped = 1;
+        }
+    }
+    if (!g_remap_pass && w && LD32(w) == OPT_VPTR_RT && (is_sub() || (!g_gfx_menu && !g_disp_menu)) && editing) {
+        uint32_t page = LD16(PW_PAGE(w)), rows = LD8(PW_ROWS(w)), pages = LD16(w + 0x5eu), total = LD16(w + 0x60u);
+        uint8_t row = LD8(PW_ROW(w));
+        uint32_t flat = page * (rows ? rows : 1u) + row;
+        int orig = is_sub() ? sub_orig(flat) : main_orig(flat);
+        if (orig >= 0) {
+            ST8(PW_ROWS(w), 8u);
+            ST16(w + 0x5eu, 4u);
+            ST16(w + 0x60u, STOCK_ITEMS);
+            ST16(PW_PAGE(w), (uint32_t)orig / 8u);
+            ST8(PW_ROW(w), (uint32_t)orig % 8u);
+            g_remap_pass = 1;
+
+            fnhook_call_original(c, FN_OPT_UPDATE);
+            g_remap_pass = 0;
+            ST8(PW_ROWS(w), rows);
+            ST16(w + 0x5eu, pages);
+            ST16(w + 0x60u, total);
+            ST16(PW_PAGE(w), page);
+            ST8(PW_ROW(w), row);
+            remapped = 1;
+            if (editing || orig != g_help_item) {   // refresh the help (and the editor) only when needed
+                g_help_item = orig;
+                g_refresh = 1;
+            }
+        }
+    }
+    if (!remapped && g_open_remap && !editing && !g_remap_pass && w && LD32(w) == OPT_VPTR_RT &&
+        (is_sub() || (!g_gfx_menu && !g_disp_menu))) {
+        uint32_t flat = opt_flat(w);
+        int orig = is_sub() ? sub_orig(flat) : main_orig(flat);
+        g_open_remap = 0;
+        if (orig >= 0) {
+            uint32_t page = LD16(PW_PAGE(w)), rows = LD8(PW_ROWS(w)), pages = LD16(w + 0x5eu), total = LD16(w + 0x60u);
+            uint8_t row = LD8(PW_ROW(w));
+            ST8(PW_ROWS(w), 8u);
+            ST16(w + 0x5eu, 4u);
+            ST16(w + 0x60u, STOCK_ITEMS);
+            ST16(PW_PAGE(w), (uint32_t)orig / 8u);
+            ST8(PW_ROW(w), (uint32_t)orig % 8u);
+            g_remap_pass = 1;
+            fnhook_call_original(c, FN_OPT_UPDATE);   // the editor opens on the original entry
+            g_remap_pass = 0;
+            ST8(PW_ROWS(w), rows);
+            ST16(w + 0x5eu, pages);
+            ST16(w + 0x60u, total);
+            ST16(PW_PAGE(w), page);
+            ST8(PW_ROW(w), row);
+            g_help_item = orig;
+            g_refresh = 1;
+            remapped = 1;
+        }
+    }
+    if (!remapped) fnhook_call_original(c, FN_OPT_UPDATE);
+    // The engine keys the help text to the stock list index and only refreshes it while it
+    // consumes a direction press. Run that stock step with the cursor one row/page before the
+    // entry we actually show, so the press lands on it: the description then matches the row.
+    if (!remapped && !g_remap_pass && w && LD32(w) == OPT_VPTR_RT &&
+        (is_sub() || (!g_gfx_menu && !g_disp_menu)) && !editing) {
+        uint32_t flat = opt_flat(w);
+        int src = is_sub() ? sub_orig(flat) : main_orig(flat);
+        if (src >= 0 && src != g_help_item) {
+            uint32_t page = LD16(PW_PAGE(w)), rows = LD8(PW_ROWS(w)), pages = LD16(w + 0x5eu), total = LD16(w + 0x60u);
+            uint8_t row = LD8(PW_ROW(w));
+            int start = -1, can_now = 0;
+            if (g_nav_btn & (1ull << BTN_DOWN))       { if ((src % 8u) > 0u) { start = src - 1; can_now = 1; } }
+            else if (g_nav_btn & (1ull << BTN_UP))    { if ((src % 8u) < 7u) { start = src + 1; can_now = 1; } }
+            else if (g_nav_btn & (1ull << BTN_RIGHT)) { if (src >= 8) { start = src - 8; can_now = 1; } }
+            else if (g_nav_btn & (1ull << BTN_LEFT))  { if (src + 8 < STOCK_ITEMS) { start = src + 8; can_now = 1; } }
+            if (can_now) {                            // reuse the held press for the stock help step
+                ST8(PW_ROWS(w), 8u);
+                ST16(w + 0x5eu, 4u);
+                ST16(w + 0x60u, STOCK_ITEMS);
+                ST16(PW_PAGE(w), (uint32_t)start / 8u);
+                ST8(PW_ROW(w), (uint32_t)start % 8u);
+                g_remap_pass = 1;
+                fnhook_call_original(c, FN_OPT_UPDATE);
+                g_remap_pass = 0;
+                ST8(PW_ROWS(w), rows);
+                ST16(w + 0x5eu, pages);
+                ST16(w + 0x60u, total);
+                ST16(PW_PAGE(w), page);
+                ST8(PW_ROW(w), row);
+                g_help_item = src;
+                g_refresh = 1;
+            } else if (g_btn_now == 0 && g_help_pend < 0) {
+                // A boundary step (row 0/7, page 0/3, or a freshly opened view): arm one synthetic
+                // row press for the next frame's pad read and run the stock help pass then.
+                int s = (src % 8u) > 0u ? src - 1 : src + 1;
+                if (s >= 0 && s < STOCK_ITEMS) {
+                    g_help_pend = src;
+                    g_help_pend_start = s;
+                    g_help_pend_page = page;
+                    g_help_pend_row = row;
+                    g_help_pend_rows = rows;
+                    g_help_pend_pages = pages;
+                    g_help_pend_total = total;
+                    g_pad_force = 1ull << ((src % 8u) > 0u ? BTN_DOWN : BTN_UP);
+                }
+            }
+        }
+    }
+    // Rows without stock descriptions get our own text, set through the pause help box's setter.
+    if (!remapped && !g_remap_pass && w && LD32(w) == OPT_VPTR_RT && !editing) {
+        int ci = custom_help_index(w);
+        if (ci < 0) {
+            g_custom_cur = -1;
+        } else if (ci != g_custom_cur && g_help_obj && custom_help_alloc(c)) {
+            g_custom_cur = ci;
+            uint32_t s0 = c->r[0], s1 = c->r[1], s2 = c->r[2], s3 = c->r[3], s12 = c->r[12], s14 = c->r[14];
+            c->r[0] = g_help_obj;
+            c->r[1] = g_custom_guest[ci];
+            c->r[2] = 0;
+            guest_call(c, 0x8431bcu);
+            c->r[0] = s0; c->r[1] = s1; c->r[2] = s2; c->r[3] = s3; c->r[12] = s12; c->r[14] = s14;
+        }
+    }
     if (g_num_edit) {
         char buf[32];
         int chars;
@@ -407,27 +677,37 @@ static void opt_row(Cpu *c)
     int on = is_opt(c);
     uint32_t item = c->r[3];
     uint32_t abs = on ? row_abs(c->r[0], c->r[2], item) : 0u;
-    int extra_row = 0, sub_row = -1;
+    int menu_row = -1, sub_row = -1, orig = -1;
     if (on) {
         if (g_opt_obj != c->r[0]) {           // the window just opened: its opening press is not input
             g_opt_obj = c->r[0];
             g_a_last = g_a_pressed_ns;
             g_b_last = g_b_pressed_ns;
             g_plus_last = g_plus_pressed_ns;
+            g_custom_cur = -1;
         }
-        if (g_disp_menu) {
-            sub_row = (int)item;              // 0 Aspect Ratio, 1 Resolution
+        if (is_sub()) {
+            if (!g_remap_pass) orig = sub_orig(abs);
+        } else if (g_disp_menu) {
+            sub_row = (int)item;              // 0 Aspect Ratio, 1 Resolution, 2 Framerate, 3 VSync
             c->r[3] = VALUE_ITEM;
         } else if (g_gfx_menu) {
-            sub_row = (int)item;              // 0 Resolution ... 7 VSync
+            sub_row = (int)item;              // 0 Display, 1 FXAA ... 5 FSR Sharpness
             c->r[3] = VALUE_ITEM;
-        } else if (abs == GRAPHICS_ITEM) {
-            c->r[3] = PLAIN_ITEM;             // draw the Graphics row from the HUD slot
-            extra_row = 1;
+        } else if (!g_remap_pass && abs <= GRAPHICS_ITEM) {
+            c->r[2] = 0u;                     // item 2 (HUD): a plain one-line row
+            c->r[3] = PLAIN_ITEM;
+            menu_row = (int)abs;
+        } else if (!g_remap_pass) {
+            orig = main_orig(abs);
+        }
+        if (orig >= 0) {                      // draw the original stock entry behind this row
+            c->r[2] = (uint32_t)orig / 8u;
+            c->r[3] = (uint32_t)orig % 8u;
         }
     }
     uint32_t out = c->r[1];
-    if (g_blank) {                            // the previous row was the Graphics row
+    if (g_blank) {                            // the previous row was one of the menu rows
         ST8(g_blank_addr, g_blank_byte);
         g_blank = 0;
     }
@@ -446,9 +726,10 @@ static void opt_row(Cpu *c)
         }
         fill_row(g_disp_menu, sub_row);         // its texts before the caller builds the value node
         ST32(out, (g_disp_menu ? g_disp_lbl : g_lbl)[sub_row][g_lbl_cur]);
-    } else if (extra_row) {
+    } else if (menu_row >= 0) {
         ensure_bufs();
-        ST32(out, g_gfx_lbl);
+        ST32(out, menu_row == AUDIO_ITEM ? g_audio_lbl : menu_row == GAMEPLAY_ITEM ? g_gameplay_lbl
+                     : menu_row == CTRL_ITEM ? g_ctrl_lbl : g_gfx_lbl);
         if (src >= 0x10000000u && src < 0x1c000000u) {
             g_blank_addr = src + 4u;          // value 0 string ("On") -> empty for this row
             g_blank_byte = LD8(g_blank_addr);
@@ -461,6 +742,14 @@ static void opt_row(Cpu *c)
 static void opt_value(Cpu *c)
 {
     if (is_opt(c)) {
+        if (is_sub()) {
+            if (!g_remap_pass) {
+                int orig = sub_orig(row_abs(c->r[0], c->r[1], c->r[2]));
+                if (orig >= 0) { c->r[1] = (uint32_t)orig / 8u; c->r[2] = (uint32_t)orig % 8u; }
+            }
+            fnhook_call_original(c, FN_OPT_VALUE);
+            return;
+        }
         if (g_disp_menu) {
             switch (c->r[2]) {
             case DISP_ASPECT: c->r[0] = (uint32_t)g_ar_disp; break;
@@ -481,9 +770,14 @@ static void opt_value(Cpu *c)
             }
             return;
         }
-        if (row_abs(c->r[0], c->r[1], c->r[2]) == GRAPHICS_ITEM) {
-            c->r[0] = 0u;                     // the Graphics row shows no value
-            return;
+        uint32_t flat = row_abs(c->r[0], c->r[1], c->r[2]);
+        if (!g_remap_pass) {
+            if (flat <= GRAPHICS_ITEM) {
+                c->r[0] = 0u;                 // the menu rows show no value
+                return;
+            }
+            int orig = main_orig(flat);
+            if (orig >= 0) { c->r[1] = (uint32_t)orig / 8u; c->r[2] = (uint32_t)orig % 8u; }
         }
     }
     fnhook_call_original(c, FN_OPT_VALUE);
@@ -492,7 +786,7 @@ static void opt_value(Cpu *c)
 static void opt_count(Cpu *c)
 {
     if (is_opt(c)) {
-        c->r[0] = g_disp_menu ? DISP_ROWS : g_gfx_menu ? GFX_ROWS : STOCK_ITEMS + 1u;
+        c->r[0] = is_sub() ? sub_rows() : g_disp_menu ? DISP_ROWS : g_gfx_menu ? GFX_ROWS : MAIN_ROWS;
         return;
     }
     fnhook_call_original(c, FN_OPT_COUNT);
@@ -502,6 +796,65 @@ static void param_set(Cpu *c)
 {
     if (g_gfx_menu) return;                   // the submenu rows must not apply the borrowed option
     fnhook_call_original(c, FN_PARAM_SET);
+}
+
+static void enter_stock_menu(int which)
+{
+    if (is_sub()) return;
+    g_sub = which;
+    uint32_t w = g_opt_obj;
+    if (w) {
+        g_sub_saved_rows = LD8(PW_ROWS(w));
+        g_sub_saved_pages = LD16(w + 0x5eu);
+        g_sub_saved_total = LD16(w + 0x60u);
+        g_sub_saved_page = LD16(PW_PAGE(w));
+        g_sub_saved_row = LD8(PW_ROW(w));
+        uint32_t rows = sub_rows();
+        ST8(PW_ROW(w), 0u);
+        ST16(PW_PAGE(w), 0u);
+        ST8(PW_ROWS(w), 8u);
+        ST16(w + 0x5eu, (uint16_t)((rows + 7u) / 8u));
+        ST16(w + 0x60u, (uint16_t)rows);
+        ST32(w + 0x74u, 0u);
+    }
+    g_lr_last = g_lr_pressed_ns;
+    g_a_last = g_a_pressed_ns;
+    g_b_last = g_b_pressed_ns;
+    g_plus_last = g_plus_pressed_ns;
+    g_help_item = -1;
+    g_open_remap = 0;
+    g_help_pend = -1;
+    g_pad_force = 0;
+    g_custom_cur = -1;
+    g_refresh = 1;
+    LOG("[pausepages] %s menu\n", sub_name());
+}
+
+static void leave_stock_menu(void)
+{
+    if (!is_sub()) return;
+    const char *name = sub_name();
+    g_sub = SUB_NONE;
+    uint32_t w = g_opt_obj;
+    if (w) {
+        ST8(PW_ROWS(w), g_sub_saved_rows ? (uint32_t)g_sub_saved_rows : 8u);
+        ST16(w + 0x5eu, g_sub_saved_pages ? g_sub_saved_pages : 1u);
+        ST16(w + 0x60u, g_sub_saved_total ? g_sub_saved_total : MAIN_ROWS);
+        ST16(PW_PAGE(w), g_sub_saved_page);
+        ST8(PW_ROW(w), (uint32_t)g_sub_saved_row);
+        ST32(w + 0x74u, 0u);
+    }
+    g_lr_last = g_lr_pressed_ns;
+    g_a_last = g_a_pressed_ns;
+    g_b_last = g_b_pressed_ns;
+    g_plus_last = g_plus_pressed_ns;
+    g_help_item = -1;
+    g_open_remap = 0;
+    g_help_pend = -1;
+    g_pad_force = 0;
+    g_custom_cur = -1;
+    g_refresh = 1;
+    LOG("[pausepages] %s menu -> Options list\n", name);
 }
 
 static void enter_disp_menu(void)
@@ -573,6 +926,11 @@ static void enter_menu(void)
     g_lr_last = g_lr_pressed_ns;              // the presses so far are not input for this view
     g_b_last = g_b_pressed_ns;
     g_plus_last = g_plus_pressed_ns;
+    g_help_item = -1;
+    g_open_remap = 0;
+    g_help_pend = -1;
+    g_pad_force = 0;
+    g_custom_cur = -1;
     g_refresh = 1;
     LOG("[pausepages] Graphics menu\n");
 }
@@ -597,6 +955,11 @@ static void leave_menu(void)
     g_b_last = g_b_pressed_ns;
     g_plus_last = g_plus_pressed_ns;
     g_lr_last = g_lr_pressed_ns;
+    g_help_item = -1;
+    g_open_remap = 0;
+    g_help_pend = -1;
+    g_pad_force = 0;
+    g_custom_cur = -1;
     g_refresh = 1;
     LOG("[pausepages] Graphics menu -> Options list\n");
 }
@@ -635,15 +998,18 @@ static void fsrq_apply(int i)
 
 void pausepages_input(uint64_t *buttons)
 {
+    g_btn_now = *buttons;
+    g_nav_btn = g_btn_now & ((1ull << BTN_LEFT) | (1ull << BTN_RIGHT) | (1ull << BTN_UP) | (1ull << BTN_DOWN));
     if (g_swallow_b) {                        // the B that left the menu is still held
         if (*buttons & (1ull << BTN_B)) *buttons &= ~(1ull << BTN_B);
         else g_swallow_b = 0;
     }
-    if (!g_gfx_menu && g_opt_obj) {
+    if (!g_gfx_menu && !is_sub() && g_opt_obj) {
         // Options list. B/Plus leave it (let the engine close it) and the window handle is
         // dropped so the bar's own A presses are never mistaken for the extra row.
         if (g_b_pressed_ns != g_b_last) {
             g_b_last = g_b_pressed_ns;
+            if (g_opt_obj && LD32(g_opt_obj + 0x74u) == 2u) return;  // editor: the engine cancels it
             g_opt_obj = 0;
             return;
         }
@@ -652,24 +1018,63 @@ void pausepages_input(uint64_t *buttons)
             g_opt_obj = 0;
             return;
         }
-        // A on the Graphics row opens the menu instead of the stock action (that index runs
-        // "Reset All Settings"), so the press never reaches the engine.
+        // A on the two menu rows opens them instead of the stock action (item 27 runs "Reset All
+        // Settings"), so the press never reaches the engine.
         if (g_a_pressed_ns != g_a_last) {
             g_a_last = g_a_pressed_ns;
-            if (opt_flat(g_opt_obj) == GRAPHICS_ITEM) {
+            uint32_t flat = opt_flat(g_opt_obj);
+            if (flat == AUDIO_ITEM) {
+                *buttons &= ~(1ull << BTN_A);
+                enter_stock_menu(SUB_AUDIO);
+            } else if (flat == GAMEPLAY_ITEM) {
+                *buttons &= ~(1ull << BTN_A);
+                enter_stock_menu(SUB_GAMEPLAY);
+            } else if (flat == CTRL_ITEM) {
+                *buttons &= ~(1ull << BTN_A);
+                enter_stock_menu(SUB_CTRL);
+            } else if (flat == GRAPHICS_ITEM) {
                 *buttons &= ~(1ull << BTN_A);
                 enter_menu();
+            } else if (main_orig(flat) >= 0 && (!g_opt_obj || LD32(g_opt_obj + 0x74u) != 2u)) {
+                g_open_remap = 1;
             }
         }
         return;
     }
-    if (!g_gfx_menu) return;
+    if (!g_gfx_menu && !is_sub()) return;
     // Safety net: if the window went away by some path other than B/Plus, stop touching input.
     static int hidden;
     if (g_opt_obj && !LD8(g_opt_obj + 0x18u)) {
-        if (++hidden > 60) { hidden = 0; leave_menu(); return; }
+        if (++hidden > 60) {
+            hidden = 0;
+            if (is_sub()) leave_stock_menu();
+            leave_menu();
+            return;
+        }
     } else {
         hidden = 0;
+    }
+    if (is_sub()) {
+        // The stock entries' editor runs in the engine (A, left/right, up/down all pass through;
+        // the update hook moves its pager to the original entry). B closes the editor first.
+        if (g_b_pressed_ns != g_b_last) {
+            g_b_last = g_b_pressed_ns;
+            if (g_opt_obj && LD32(g_opt_obj + 0x74u) == 2u) return;
+            *buttons &= ~(1ull << BTN_B);
+            g_swallow_b = 1;
+            leave_stock_menu();
+            return;
+        }
+        if (g_plus_pressed_ns != g_plus_last) {
+            g_plus_last = g_plus_pressed_ns;
+            leave_stock_menu();
+            return;
+        }
+        if (!(g_opt_obj && LD32(g_opt_obj + 0x74u) == 2u) && g_a_pressed_ns != g_a_last) {
+            g_a_last = g_a_pressed_ns;
+            g_open_remap = 1;                 // A is about to open the stock editor
+        }
+        return;
     }
     if (g_num_edit) {                         // typing the height: the game gets no input at all
         *buttons = 0;
@@ -761,6 +1166,8 @@ void pausepages_input(uint64_t *buttons)
             return;
         }
         switch (row) {
+        case ROW_DISPLAY:
+            return;                            // the nested Display view has its own rows
         case ROW_MSAA: {
             int i = (msaa_index(g_config.msaa) + (dir > 0 ? 1 : 3)) & 3;
             g_config.msaa = msaa_value(i);
@@ -800,8 +1207,23 @@ void pausepages_input(uint64_t *buttons)
     }
 }
 
+// The pause help box's text setter: capture its object once so the custom rows can set their
+// own descriptions through the same path.
+static void hk_helpbox(Cpu *c)
+{
+    uint32_t t = c->r[1];
+    if (!g_help_obj && t >= 0x1827a000u && t < 0x1827e000u) g_help_obj = c->r[0];
+    // Keep the custom description when the engine refreshes the help during a value change.
+    if (g_opt_obj && LD32(g_opt_obj) == OPT_VPTR_RT && !is_sub() && g_custom_guest[0]) {
+        int ci = custom_help_index(g_opt_obj);
+        if (ci >= 0) c->r[1] = g_custom_guest[ci];
+    }
+    fnhook_call_original(c, 0x8431bcu);
+}
+
 void pausepages_init(void)
 {
+    fnhook_set(0x8431bcu, hle_register("pausepages:helpbox", hk_helpbox));
     const char *e = getenv("MHGU_PAUSE_PAGES");
     if (e && *e) g_pages = (uint32_t)strtoul(e, NULL, 10);
     // The Graphics row/menu is always enabled; the bar-init hook is needed so a pause rebuild

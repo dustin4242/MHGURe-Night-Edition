@@ -12,6 +12,8 @@ extern volatile uint64_t g_a_pressed_ns;  // when A was last pressed (plat_now_n
 extern volatile uint64_t g_lr_pressed_ns; // when left/right was last pressed
 extern volatile uint64_t g_b_pressed_ns;  // when B was last pressed
 extern volatile uint64_t g_plus_pressed_ns; // when Plus was last pressed
+// Extra NpadButton bits ORed into the state the game reads for the next query (menu help refresh).
+extern volatile uint64_t g_pad_force;
 // Rumble the game asks for (hid SendVibrationValues, runtime/services/misc.c): low / high frequency motor strength,
 // 0..65535 each, for the window loop to send to the controller (runtime/host_input.c).
 void input_set_rumble(uint16_t low, uint16_t high);

@@ -607,16 +607,43 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   (the romfs mapping copies, 32 hits) does not change any visible label, and no "Item Pouch"
   ASCII exists outside the romfs mapping. So a synthesized "Graphics" label requires writing
   glyph quads into a label node, which needs the quad/atlas format.
-- **Graphics entry in the Options menu (working):** `runtime/hle/pausepages.c` adds a "Graphics"
-  row as the **last** entry of the real Options window (`cUIOOptionWindowForGame`). The item-count
-  virtual `f_7e7534` (stock 27) reports 28, so the pager grows one row on its last page (item 27,
-  page 3 row 3). That row is drawn from the HUD slot (item 2, a plain On/Off row) with its own
-  label and an empty value (the HUD value-0 string is blanked only while that row is built). Note
-  the row virtuals are called with (page, row within that page); the absolute item is
-  `page * rows_per_page + row`, not the raw item argument. It is placed last on purpose: the game
-  identifies each option by its list index in hardcoded code, so inserting a row in front would
-  make every row below edit the next setting. With the entry at the end, all stock rows keep their
-  index and edit exactly as before.
+- **Options compaction + submenus (working):** `runtime/hle/pausepages.c` restructures the real
+  Options window (`cUIOOptionWindowForGame`). The 19 control-related stock entries (Camera Angle,
+  Camera Controls, Camera Speed, Scope Controls, Bowgun Controls, Quick Aim Controls, Quick Aim
+  Camera, Reticle Speed, Orientation, Bow Controls, Bow Aim Mode Cancel, Target Cam Controls,
+  Target Cam Behavior, Terrain-savvy Camera, Control Type, +/L/R/R Stick/L Stick Controls) move
+  into a **Controls** submenu, in their stock order, three pages of eight. Music Volume and SFX
+  Volume move into **Audio** (two rows); HUD, Map, Melody Effect Display and Lens Flares move
+  into **Gameplay** (four rows). The compact one-page main list is `Gameplay`, `Audio`,
+  `Controls`, `Graphics`, `Default Settings`, `Reset All Settings`. The
+  count virtual `f_7e7534` reports 6 for the main list, 2 for Audio, 4 for Gameplay, 19 for
+  Controls, 6 for Graphics and 4 for Display. The four menu rows are drawn from the HUD slot
+  (item 2) with their own labels and empty values. One shared stock-submenu path (`g_sub`) does
+  the pager save/restore, row/value remap and editor remap for Audio, Gameplay and Controls.
+- **Remapping moved stock rows:** the game keys each option by its list index in hardcoded code,
+  so a moved row must still edit its original entry. The row virtual `f_7e7558` and value virtual
+  `f_7e7d34` receive the displayed (page, row); the hooks translate that to the original stock
+  entry's (page, row) before calling the originals, so labels, values, ranges and help are the
+  stock ones. While an editor is open (`obj+0x74 == 2`), the per-frame update hook moves the pager
+  to the original entry, runs the original update (which applies the change), then restores the
+  compact pager shape and forces a relayout. This was verified by displaying Camera Angle on row 0
+  and watching an edit change Camera Angle rather than Music Volume. The help box is stock-indexed
+  too: the update hook re-runs the stock pass with the cursor one step before the original entry,
+  so the direction press it consumes lands on that entry and the description matches the row. When
+  a view opens, or at a row/page boundary where the held direction cannot land on the target, the
+  hook arms one synthetic `Down`/`Up` bit in the pad state for the next frame (`g_pad_force`, one
+  shot) and restores the compact pager before the draw. `A` is translated the same way before the
+  update, so the stock editor opens on the original entry and its editor description is correct.
+  The `Audio`/`Gameplay`/`Controls`/`Graphics` menu rows and every Graphics/Display row get custom help text: the
+  help box setter (`f_8431bc`, object captured from the game's own call) is called with a
+  guest-allocated copy of the string. The fillers are the `g_custom_help[]` table in
+  `runtime/hle/pausepages.c`; the help-setter hook also keeps the custom text when the engine
+  refreshes the help during a value change.
+- **Controls submenu:** A on the `Controls` row is masked and enters the 19-row view (count 19,
+  rows/page 8, three pages; pager saved/restored like the other submenus). Editing is the stock
+  editor (A, left/right, up/down all reach the engine; the update hook does the remap), so the
+  normal value ranges, wrap-around and help text work. B cancels an open editor (passed through)
+  or returns to the compact list; Plus cancels and closes the pause menu.
 - **Graphics submenu (six rows):** A on that row is intercepted in the input layer (that list
   index runs "Reset All Settings", so the press is masked) and switches the same window to a
   six-row view: item count 6, rows/page 6, one page. The rows are `Display`, `FXAA`, `MSAA`,
