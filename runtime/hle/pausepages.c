@@ -2,16 +2,18 @@
 // 0x177aeb0, main_107/108.c) past its stock two pages (docs/UI.md 5b).
 //
 // MHGU_PAUSE_GRAPHICS=<0/1>: add a "Graphics" entry at the end of the Options menu
-// (cUIOOptionWindowForGame). It opens a four-row Graphics menu: FXAA (Off/On), MSAA
-// (Off/2x/4x/8x), FSR (Off/FSR 3/FSR 4) and FSR Quality (NAA/Q/B/P/UP). The stock options keep
-// their own rows and indices.
+// (cUIOOptionWindowForGame). It opens a five-row Graphics menu: FXAA (Off/On), MSAA
+// (Off/2x/4x/8x), FSR (Off/FSR 3/FSR 4), FSR Quality (NativeAA/Quality/Balanced/Perf/UltraPerf)
+// and FSR Sharpness (0.1..1.0).
+// The stock options keep their own rows and indices.
 //
 // The window reports its item count through virtual +0x60 (f_7e7534, stock 27); reporting 28
 // gives the list one extra row on its last page. That row is drawn from the HUD slot (item 2,
 // a plain On/Off row) with the label "Graphics" and an empty value. Selecting it switches this
-// same window to the four-row Graphics view.
+// same window to the five-row Graphics view.
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #include "../hle.h"
 #include "../config.h"
@@ -46,7 +48,8 @@
 #define ROW_MSAA     1
 #define ROW_FSR      2
 #define ROW_FSRQ     3
-#define GFX_ROWS     4u
+#define ROW_SHARP    4
+#define GFX_ROWS     5u
 
 // The borrowed "Camera Angle" slot holds five value strings at +13, +20, +27, +34, +41. The
 // window copies the value text when it builds a row, so the five slots are rewritten with the
@@ -55,10 +58,12 @@ static const char *const g_row_texts[GFX_ROWS][5] = {
     {"Off", "On", NULL, NULL, NULL},
     {"Off", "2x", "4x", "8x", NULL},
     {"Off", "FSR 3", "FSR 4", NULL, NULL},
-    {"NAA", "Q", "B", "P", "UP"},
+    {NULL, NULL, NULL, NULL, NULL},        // FSR Quality: the current label goes into two slots
+    {NULL, NULL, NULL, NULL, NULL},        // FSR Sharpness: the current value goes into two slots
 };
-static const char *const g_row_names[GFX_ROWS] = {"FXAA", "MSAA", "FSR", "FSR Quality"};
+static const char *const g_row_names[GFX_ROWS] = {"FXAA", "MSAA", "FSR", "FSR Quality", "FSR Sharpness"};
 static const char *const g_fsrq_ini[5] = {"NativeAA", "Quality", "Balanced", "Performance", "UltraPerformance"};
+static const char *const g_fsrq_lbl[5] = {"NativeAA", "Quality", "Balanced", "Perf", "UltraPerf"};
 
 static uint32_t g_pages;              // forced bar page count (MHGU_PAUSE_PAGES; 0: leave alone)
 static int g_graphics;                // 1: Graphics row / menu enabled
@@ -78,6 +83,7 @@ static uint32_t g_lbl[GFX_ROWS][2];
 static int g_lbl_cur;
 static uint32_t g_tbl;                // borrowed slot (Camera Angle), patched while the menu shows
 static uint32_t g_tbl_w[16];
+static int g_fsrq_disp;               // which of the two value strings the FSR Quality row shows
 
 // "Graphics" list row label, and the HUD value string blanked for that row only.
 static uint32_t g_gfx_lbl;
@@ -103,7 +109,7 @@ static void put(uint32_t a, const char *s)
 static void ensure_bufs(void)
 {
     if (g_lbl[0][0]) return;
-    for (int r = 0; r < ROW_FSRQ + 1; r++) {
+    for (int r = 0; r < ROW_SHARP + 1; r++) {
         g_lbl[r][0] = hle_alloc(64);
         g_lbl[r][1] = hle_alloc(64);
     }
@@ -124,28 +130,54 @@ static const char *msaa_text(int v) { return v >= 8 ? "8x" : v >= 4 ? "4x" : v >
 
 extern bool g_fsr_on;                 // runtime/nvn/vulkan/fsr.c: FSR started at boot and working
 
+static int sharp_index(void)
+{
+    int i = (int)(g_config.fsr_sharpness * 10.0f + 0.5f) - 1;
+    return i < 0 ? 0 : i > 9 ? 9 : i;
+}
+static float sharp_value(int i) { return (float)(i + 1) * 0.1f; }
+static char g_sharp_buf[8];
+static int g_sharp_disp;              // which of the two value strings the row shows
+static const char *sharp_text(void)
+{
+    snprintf(g_sharp_buf, sizeof g_sharp_buf, "%.1f", (double)sharp_value(sharp_index()));
+    return g_sharp_buf;
+}
+
 static int fsr_sel(void) { return !g_config.fsr ? 0 : g_config.fsr_upscaler == FSR_UP_4 ? 2 : 1; }
 static const char *fsr_text(int sel) { return sel == 2 ? "FSR 4" : sel == 1 ? "FSR 3" : "Off"; }
 
-// Write the row's label and its value strings (into the host buffer and the borrowed table).
+// Write the row's label (host buffer) and its value strings (borrowed table).
 static void fill_row(int row)
 {
     ensure_bufs();
     uint32_t b = g_lbl[row][g_lbl_cur];
     memset(G2H(b), 0, 64);
     put(b, g_row_names[row]);
-    for (int i = 0; i < 5; i++) {
-        const char *t = g_row_texts[row][i];
-        if (!t) t = g_row_texts[row][0];
-        put(b + 13u + (uint32_t)i * 7u, t);
-    }
-    if (g_tbl) {
-        put(g_tbl, g_row_names[row]);              // the label comes from the host buffer
-        for (int i = 0; i < 5; i++) {
-            const char *t = g_row_texts[row][i];
-            if (!t) t = g_row_texts[row][0];
-            put(g_tbl + 13u + (uint32_t)i * 7u, t);
+    if (row == ROW_FSRQ) {
+        // The names are longer than the borrowed slot's seven-byte strings, so only the current
+        // one is written, into slots 0 and 4 (28 bytes apart, no overlap). Reporting 0 or 4
+        // alternately makes the string pointer change, which is what redraws the row.
+        const char *t = g_fsrq_lbl[g_config.fsr_quality];
+        if (g_tbl) {
+            put(g_tbl + 13u, t);
+            put(g_tbl + 41u, t);
         }
+        return;
+    }
+    if (row == ROW_SHARP) {
+        // Ten steps do not fit the borrowed slot's five strings. The row reports value 0 or 1 and
+        // both slots hold the current text, so every change flips the string pointer and redraws.
+        const char *t = sharp_text();
+        if (g_tbl) {
+            put(g_tbl + 13u, t);
+            put(g_tbl + 20u, t);
+        }
+        return;
+    }
+    for (int i = 0; i < 5 && g_row_texts[row][i]; i++) {
+        const char *t = g_row_texts[row][i];
+        if (g_tbl) put(g_tbl + 13u + (uint32_t)i * 7u, t);
     }
 }
 
@@ -241,7 +273,8 @@ static void opt_value(Cpu *c)
             switch (c->r[2]) {                // the row is the item argument
             case ROW_MSAA: c->r[0] = (uint32_t)msaa_index(g_config.msaa); break;
             case ROW_FSR: c->r[0] = (uint32_t)fsr_sel(); break;
-            case ROW_FSRQ: c->r[0] = (uint32_t)g_config.fsr_quality; break;
+            case ROW_FSRQ: c->r[0] = (uint32_t)g_fsrq_disp; break;
+            case ROW_SHARP: c->r[0] = (uint32_t)g_sharp_disp; break;
             default: c->r[0] = g_config.fxaa ? 1u : 0u; break;
             }
             return;
@@ -420,7 +453,16 @@ void pausepages_input(uint64_t *buttons)
         }
         case ROW_FSRQ: {
             int i = (g_config.fsr_quality + (dir > 0 ? 1 : 4)) % 5;
+            g_fsrq_disp = g_fsrq_disp ? 0 : 4;
             fsrq_apply(i);
+            break;
+        }
+        case ROW_SHARP: {
+            int i = (sharp_index() + (dir > 0 ? 1 : 9)) % 10;
+            g_config.fsr_sharpness = sharp_value(i);   // read by the FSR dispatch every frame
+            g_sharp_disp ^= 1;
+            config_save_key("Sharpness", sharp_text());
+            LOG("[pausepages] FSR Sharpness -> %s\n", sharp_text());
             break;
         }
         default:
@@ -448,5 +490,5 @@ void pausepages_init(void)
     fnhook_set(FN_OPT_VALUE, hle_register("pausepages:opt_value", opt_value));
     fnhook_set(FN_OPT_UPDATE, hle_register("pausepages:opt_update", opt_update));
     fnhook_set(FN_PARAM_SET, hle_register("pausepages:param_set", param_set));
-    LOG("[pausepages] Options: Graphics row + FXAA/MSAA/FSR/FSR Quality menu\n");
+    LOG("[pausepages] Options: Graphics row + FXAA/MSAA/FSR/FSR Quality/FSR Sharpness menu\n");
 }
