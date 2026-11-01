@@ -614,22 +614,26 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   Target Cam Behavior, Terrain-savvy Camera, Control Type, +/L/R/R Stick/L Stick Controls) move
   into a **Controls** submenu, in their stock order, three pages of eight. Music Volume and SFX
   Volume move into **Audio** (two rows); HUD, Map, Melody Effect Display and Lens Flares move
-  into **Gameplay** (four rows). The compact one-page main list is `Gameplay`, `Audio`,
-  `Controls`, `Graphics`, `Icons`, `Default Settings`, `Reset All Settings`. The
-  count virtual `f_7e7534` reports 7 for the main list, 2 for Audio, 4 for Gameplay, 19 for
-  Controls, 6 for Graphics and 4 for Display. The five menu rows are drawn from the HUD slot
-  (item 2) with their own labels and empty values. One shared stock-submenu path (`g_sub`) does
+  into **Gameplay**. The compact one-page main list is `Gameplay`, `Audio`, `Controls`,
+  `Graphics`, `Default Settings`, `Reset All Settings` (6 rows). `Gameplay` has HUD, Map,
+  Melody Effect Display, Lens Flares and (when the pp4 glyph sets are built) `Icons`; the
+  count virtual `f_7e7534` reports 6 for the main list, 2 for Audio, 5 for Gameplay (4
+  without Icons), 19 for Controls, 6 for Graphics and 4 for Display. The four menu rows are
+  drawn from the HUD slot (item 2) with their own labels and empty values. One shared stock-submenu path (`g_sub`) does
   the pager save/restore, row/value remap and editor remap for Audio, Gameplay and Controls.
   The A press that opens a view is masked until it is released (`g_swallow_a`), so the held
   button cannot produce a second press that immediately opens the first row's editor; the next
   fresh A press after release still opens it normally.
-- **Hot-swappable controller glyphs:** the `Icons` row cycles `Switch` / `Xbox` / `Playstation`
-  with left/right, writes `[Controls] Icons`, and `runtime/ui_icons.c` swaps every layout atlas
+- **Hot-swappable controller glyphs:** the `Icons` row in `Gameplay` cycles `Switch` / `Xbox` /
+  `Playstation` with left/right (the value is shown on the right like the other options),
+  writes `[Controls] Icons`, and `runtime/ui_icons.c` swaps every layout atlas
   that differs between the pp4 variants: the resident/quest atlases (`HD_custom_pnl2`,
   `HD_window`, `HD_lobby00`, `HD_hud00`, `button_festa`) and the shared `loc/arc/resident.arc`
   copies (`HD_custom_pnl2_loc`, `HD_window_loc`, `button_festa_loc`). The loc arc's button font
   is what the menus draw the actual button prompts from, so it is part of the default merge
-  (`PP4_VARIANT`, e.g. `2-NS`) along with the variant's `title_eng.arc`. `make` extracts the
+  (`PP4_VARIANT`, e.g. `2-NS`) along with the variant's `title_eng.arc`. The Icons row borrows
+  Camera Angle's value block and uses its slots 2/3/4 (`Switch`/`Xbox`/`Playstation`) so the
+  shared `Type 1`/`Type 2` slots that the Melody row uses stay intact. `make` extracts the
   three variants' texel payloads and an FNV manifest into `data/pp4_icons`; a periodic scan
   matches a live NVN texture by storage size and FNV-1a hash, copies the selected variant's
   payload into its guest texels and marks the backend texture dirty. This also applies the INI

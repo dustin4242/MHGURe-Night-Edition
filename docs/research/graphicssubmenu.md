@@ -104,18 +104,19 @@ No new window and no new page: the same list is compacted and given two extra ro
 
 The 27 stock entries are split into:
 
-- **main list** (7 rows, one page): `Gameplay`, `Audio`, `Controls`, `Graphics`, `Icons`, `Default
+- **main list** (6 rows, one page): `Gameplay`, `Audio`, `Controls`, `Graphics`, `Default
   Settings`, `Reset All Settings`.
 - **Audio** (2 rows): Music Volume, SFX Volume.
-- **Gameplay** (4 rows): HUD, Map, Melody Effect Display, Lens Flares.
+- **Gameplay** (4 rows + Icons): HUD, Map, Melody Effect Display, Lens Flares, `Icons` (only
+  when the pp4 glyph sets are built).
 - **Controls** (19 rows, 3 pages of 8): Camera Angle, Camera Controls, Camera Speed, Scope
   Controls, Bowgun Controls, Quick Aim Controls, Quick Aim Camera, Reticle Speed, Orientation,
   Bow Controls, Bow Aim Mode Cancel, Target Cam Controls, Target Cam Behavior, Terrain-savvy
   Camera, Control Type, + Button Controls, L/R Button Controls, R Stick Controls, L Stick
   Controls (stock order).
 
-`opt_count` (`f_7e7534`) returns 7/2/4/19/6/4 for the main list, Audio, Gameplay, Controls,
-Graphics and Display. The four menu rows are drawn from the HUD slot (item 2) with host labels
+`opt_count` (`f_7e7534`) returns 6/2/5/19/6/4 for the main list, Audio, Gameplay, Controls,
+Graphics and Display (6/2/4/19/6/4 without the Icons row). The four menu rows are drawn from the HUD slot (item 2) with host labels
 and empty values.
 
 ### 2.2 Remapping moved rows

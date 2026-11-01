@@ -216,8 +216,8 @@ so one variant is baked in as well: `PP4_UI=2-NS/HDI` by default (Switch buttons
 stays out for the hot-swappable project; build with `PP4_UI=` for the stock menus, or another
 `<1-PS|2-NS|3-XB>/<CI|HDI>` path. The selected variant's shared `loc/arc/resident.arc` (the
 button fonts the menus actually draw) and `title_eng.arc` are merged too, and the build extracts
-all three variants' glyph atlases into `data\pp4_icons` so Options -> `Icons` can switch them live. Without
-`addons\pp4` the row is omitted (and a release's `data\` does not carry the glyph sets). They all load as part of the native RomFS, with no mod
+all three variants' glyph atlases into `data\pp4_icons` so Gameplay -> `Icons` can switch them live.
+Without `addons\pp4` the row is omitted (and a release's `data\` does not carry the glyph sets). They all load as part of the native RomFS, with no mod
 folder needed. To merge
 again after adding or removing pack files (or changing `PP4_UI`), delete `build\data\.pp4` and run `make data`.
 Since releases leave out `data\`, this only affects builds made with the folder present.
