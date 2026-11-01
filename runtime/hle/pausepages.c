@@ -2,7 +2,7 @@
 // 0x177aeb0, main_107/108.c) past its stock two pages (docs/UI.md 5b).
 //
 // The Options menu (cUIOOptionWindowForGame) is compacted into a one-page list: Gameplay, Audio,
-// Controls, Graphics, Default Settings and Reset All Settings. The row/value virtuals remap each displayed row to its original
+// Controls, Graphics, Multiplayer, Default Settings and Reset All Settings. The row/value virtuals remap each displayed row to its original
 // stock entry, and the per-frame update moves the pager to that entry while an editor is open,
 // so the engine still edits the right setting.
 //
@@ -11,11 +11,12 @@
 // holds the 19 control-related entries in their stock order (3 pages). Graphics is the custom
 // six-row menu: Display (Aspect Ratio / Resolution / Framerate / VSync), FXAA, MSAA, FSR, FSR
 // Quality and FSR Sharpness. The count virtual (+0x60) reports 6 for the main list, 2 for Audio,
-// 5 for Gameplay (4 without the pp4 Icons row), 19 for Controls, 6 for Graphics and 4 for
-// Display; the menu rows are drawn from the HUD slot (item 2) with their own labels.
+// 5 for Gameplay (4 without the pp4 Icons row), 19 for Controls, 6 for Graphics, 3 for
+// Multiplayer and 4 for Display; the menu rows are drawn from the HUD slot (item 2) with their own labels.
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <pthread.h>
 
 #include "../hle.h"
 #include "../config.h"
@@ -23,6 +24,7 @@
 #include "../textinput.h"
 #include "input.h"
 #include "../ui_icons.h"
+#include "../net/net.h"
 
 #define FN_BAR_INIT     0x877d0cu     // uUIQuestStartMenu init virtual (fills the paging struct)
 #define BAR_VPTR_RT     0x197aeb8u    // uUIQuestStartMenu object vptr (class table 0x177aeb0 + 8)
@@ -44,15 +46,22 @@
 #define PW_PAGE(w)  ((w) + 0x5cu)
 
 #define STOCK_ITEMS  27u              // rows of the stock Options list
-#define MAIN_ROWS    6u               // Gameplay, Audio, Controls, Graphics, Default Settings, Reset
+#define MAIN_ROWS    7u               // Gameplay, Audio, Controls, Graphics, Multiplayer, Default Settings, Reset
 #define GAMEPLAY_ITEM 0u              // the Gameplay row in the compact list
 #define AUDIO_ITEM   1u               // the Audio row in the compact list
 #define CTRL_ITEM    2u               // the Controls row in the compact list
 #define GRAPHICS_ITEM 3u              // the Graphics row in the compact list
+#define MP_ITEM      4u               // the Multiplayer row in the compact list
 #define CTRL_ROWS    19u              // control-related stock entries, in the Controls submenu
 #define AUDIO_ROWS   2u               // Music Volume, SFX Volume
 #define GAMEPLAY_ROWS 4u              // HUD, Map, Melody Effect Display, Lens Flares
 #define GAMEPLAY_ICONS_ROW 4u         // the custom Icons row inside Gameplay
+
+// Multiplayer submenu rows
+#define MP_IP      0
+#define MP_CONNECT 1
+#define MP_STATUS  2
+#define MP_ROWS    3u
 #define VALUE_ITEM   4u               // "Camera Angle": a long label slot with five value strings
 #define PLAIN_ITEM   2u               // "HUD": a plain On/Off slot (draws the two menu rows)
 
@@ -97,7 +106,7 @@ static const int g_vert_vals[6] = {480, 720, 960, 1080, 1440, 2160};
 static const uint8_t g_ctrl_map[CTRL_ROWS] = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24};
 static const uint8_t g_audio_map[AUDIO_ROWS] = {0, 1};
 static const uint8_t g_gameplay_map[GAMEPLAY_ROWS] = {2, 3, 15, 19};
-static int main_orig(uint32_t f) { return f == 4u ? 25 : f == 5u ? 26 : -1; }
+static int main_orig(uint32_t f) { return f == 5u ? 25 : f == 6u ? 26 : -1; }
 static uint32_t gameplay_rows(void) { return GAMEPLAY_ROWS + (icons_available() ? 1u : 0u); }
 
 enum { SUB_NONE, SUB_CTRL, SUB_AUDIO, SUB_GAMEPLAY };
@@ -161,6 +170,21 @@ static int g_num_cursor = 1, g_num_disp;
 static uint32_t g_gfx_lbl, g_ctrl_lbl, g_audio_lbl, g_gameplay_lbl;
 static uint32_t g_icons_lbl[2];
 static int g_icons_lbl_cur;
+
+// Multiplayer view: an address typed per session (never written to the INI), one probe and status.
+static int g_mp_menu;
+static uint32_t g_mp_saved_rows;
+static uint32_t g_mp_saved_pages, g_mp_saved_total, g_mp_saved_page, g_mp_saved_row;
+static char g_mp_ip[64];
+static char g_mp_buf[64];
+static int g_mp_edit, g_mp_cursor = 1, g_mp_disp[MP_ROWS];
+static uint64_t g_mp_blink;
+static int g_mp_status;               // 0 disconnected, 1 probing, 2 connected
+static int g_mp_running;
+static uint32_t g_mp_lbl[MP_ROWS][2];
+static int g_mp_lbl_cur;
+static uint32_t g_mp_main_lbl;
+static const char *const g_mp_names[MP_ROWS] = {"IP", "Connect", "Status"};
 static uint32_t g_blank_addr;
 static uint8_t g_blank_byte;
 static int g_blank;
@@ -233,6 +257,14 @@ static void ensure_bufs(void)
     g_icons_lbl[0] = hle_alloc(32);
     g_icons_lbl[1] = hle_alloc(32);
     icon_label_refresh();
+    g_mp_main_lbl = hle_alloc(16);
+    put(g_mp_main_lbl, "Multiplayer");
+    for (int r = 0; r < (int)MP_ROWS; r++) {
+        g_mp_lbl[r][0] = hle_alloc(16);
+        g_mp_lbl[r][1] = hle_alloc(16);
+        put(g_mp_lbl[r][0], g_mp_names[r]);
+        put(g_mp_lbl[r][1], g_mp_names[r]);
+    }
 }
 
 static void restore_tbl(void)
@@ -240,6 +272,110 @@ static void restore_tbl(void)
     if (!g_tbl) return;
     for (int i = 0; i < 16; i++) ST32(g_tbl + (uint32_t)i * 4u, g_tbl_w[i]);
     g_tbl = 0;
+}
+
+// ---- Multiplayer view: an address typed per session (never written to the INI) and one probe.
+static char g_mp_val[80];
+static int g_mp_status_seen;
+
+static const char *mp_status_text(void)
+{
+    int st = __atomic_load_n(&g_mp_status, __ATOMIC_RELAXED);
+    return st == 1 ? "Connecting..." : st == 2 ? "Connected" : "Disconnected";
+}
+
+static void mp_dirty(int row)
+{
+    if (row >= 0 && row < (int)MP_ROWS) g_mp_disp[row] ^= 4;
+    g_mp_lbl_cur ^= 1;                // the label pointer must change for a redraw
+    g_refresh = 1;
+}
+
+static void fill_mp_row(int row)
+{
+    ensure_bufs();
+    if (row < 0 || row >= (int)MP_ROWS) row = MP_IP;
+    uint32_t b = g_mp_lbl[row][g_mp_lbl_cur];
+    memset(G2H(b), 0, 16);
+    put(b, g_mp_names[row]);
+    const char *t = "";
+    if (row == MP_IP) {
+        if (g_mp_edit) snprintf(g_mp_val, sizeof g_mp_val, "%s%s", g_mp_buf, g_mp_cursor ? "|" : "");
+        else snprintf(g_mp_val, sizeof g_mp_val, "%s", g_mp_ip[0] ? g_mp_ip : "(not set)");
+        t = g_mp_val;
+    } else if (row == MP_STATUS) {
+        t = mp_status_text();
+    }
+    if (g_tbl) {
+        put(g_tbl + 13u, t);          // slots 0 and 4: the row reports 0 or 4
+        put(g_tbl + 41u, t);
+    }
+}
+
+static void mp_apply(void)
+{
+    snprintf(g_mp_ip, sizeof g_mp_ip, "%s", g_mp_buf);
+    LOG("[multiplayer] address %s\n", g_mp_ip[0] ? g_mp_ip : "(empty)");
+}
+
+static void mp_end(void)
+{
+    if (!g_mp_edit) return;
+    g_mp_edit = 0;
+    textinput_end();
+    textinput_ip_only(false);
+    mp_dirty(MP_IP);
+}
+
+static void mp_start(void)
+{
+    if (g_mp_edit) return;
+    g_mp_edit = 1;
+    snprintf(g_mp_buf, sizeof g_mp_buf, "%s", g_mp_ip);
+    g_mp_cursor = 1;
+    g_mp_blink = plat_now_ns();
+    textinput_ip_only(true);
+    textinput_begin(g_mp_ip, 21);
+    mp_dirty(MP_IP);
+    LOG("[multiplayer] address entry: type an IP (Enter applies, Escape cancels)\n");
+}
+
+static void *mp_probe_thread(void *arg)
+{
+    char *addr = (char *)arg;
+    int ok = ldn_probe_host(addr);
+    LOG("[multiplayer] %s: %s\n", addr, ok ? "host answered" : "no answer");
+    free(addr);
+    __atomic_store_n(&g_mp_status, ok ? 2 : 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_mp_running, 0, __ATOMIC_RELAXED);
+    return NULL;
+}
+
+static void mp_connect(void)
+{
+    if (!g_mp_ip[0]) {
+        LOG("[multiplayer] no address: type an IP first\n");
+        __atomic_store_n(&g_mp_status, 0, __ATOMIC_RELAXED);
+        mp_dirty(MP_STATUS);
+        return;
+    }
+    // In memory only: the game's Local Wireless scan uses this as its extra join address. Nothing
+    // is written to the INI, so the next launch does not connect on its own.
+    snprintf(g_config.ldn_join, sizeof g_config.ldn_join, "%s", g_mp_ip);
+    if (__atomic_exchange_n(&g_mp_running, 1, __ATOMIC_RELAXED)) return;
+    __atomic_store_n(&g_mp_status, 1, __ATOMIC_RELAXED);
+    mp_dirty(MP_STATUS);
+    char *addr = strdup(g_mp_ip);
+    pthread_t th;
+    if (!addr || pthread_create(&th, NULL, mp_probe_thread, addr)) {
+        free(addr);
+        __atomic_store_n(&g_mp_running, 0, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_mp_status, 0, __ATOMIC_RELAXED);
+        mp_dirty(MP_STATUS);
+        return;
+    }
+    pthread_detach(th);
+    LOG("[multiplayer] probing %s (join target set in memory)\n", g_mp_ip);
 }
 
 static int msaa_index(int v) { return v >= 8 ? 3 : v >= 4 ? 2 : v >= 2 ? 1 : 0; }
@@ -448,7 +584,7 @@ static uint32_t opt_flat(uint32_t w)
 // Descriptions for the rows the stock option tables cannot describe: the two menu rows and the
 // custom Graphics/Display rows. These are fillers; edit the strings to change the help box text.
 enum {
-    CH_MAIN_AUDIO, CH_MAIN_GAMEPLAY, CH_MAIN_CTRL, CH_MAIN_GFX, CH_MAIN_ICONS,
+    CH_MAIN_AUDIO, CH_MAIN_GAMEPLAY, CH_MAIN_CTRL, CH_MAIN_GFX, CH_MAIN_ICONS, CH_MAIN_MP,
     CH_GFX_DISPLAY, CH_GFX_FXAA, CH_GFX_MSAA, CH_GFX_FSR, CH_GFX_FSRQ, CH_GFX_SHARP,
     CH_DSP_ASPECT, CH_DSP_RES, CH_DSP_FPS, CH_DSP_VSYNC, CH_COUNT
 };
@@ -458,6 +594,7 @@ static const char *const g_custom_help[CH_COUNT] = {
     "Custom Controls Description",
     "Custom Graphics Description",
     "Choose the controller button icons.",
+    "Connect to a host by IP address.",
     "Custom Display Description",
     "Custom FXAA Description",
     "Custom MSAA Description",
@@ -499,6 +636,7 @@ static int custom_help_alloc(Cpu *c)
 static int custom_help_index(uint32_t w)
 {
     if (!w) return -1;
+    if (g_mp_menu) return CH_MAIN_MP;
     if (g_disp_menu) {
         uint32_t r = LD8(PW_ROW(w));
         return r < 4u ? CH_DSP_ASPECT + (int)r : -1;
@@ -514,6 +652,7 @@ static int custom_help_index(uint32_t w)
     if (flat == GAMEPLAY_ITEM) return CH_MAIN_GAMEPLAY;
     if (flat == CTRL_ITEM) return CH_MAIN_CTRL;
     if (flat == GRAPHICS_ITEM) return CH_MAIN_GFX;
+    if (flat == MP_ITEM) return CH_MAIN_MP;
     return -1;
 }
 
@@ -690,6 +829,35 @@ static void opt_update(Cpu *c)
             g_refresh = 1;
         }
     }
+    if (g_mp_menu) {
+        if (g_mp_edit) {
+            char buf[64];
+            int chars;
+            int ev = textinput_poll(buf, sizeof buf, &chars);
+            if (ev == TI_CHANGED) {
+                snprintf(g_mp_buf, sizeof g_mp_buf, "%s", buf);
+                g_mp_cursor = 1;
+                g_mp_blink = plat_now_ns();
+                mp_dirty(MP_IP);
+            } else if (ev == TI_ENTER) {
+                mp_apply();
+                mp_end();
+            } else if (ev == TI_CANCEL) {
+                mp_end();
+            }
+            uint64_t now = plat_now_ns();
+            if (now - g_mp_blink >= 500000000ull) {
+                g_mp_blink = now;
+                g_mp_cursor = !g_mp_cursor;
+                mp_dirty(MP_IP);
+            }
+        }
+        int st = __atomic_load_n(&g_mp_status, __ATOMIC_RELAXED);
+        if (st != g_mp_status_seen) {
+            g_mp_status_seen = st;
+            mp_dirty(MP_STATUS);
+        }
+    }
     if (g_refresh && g_opt_obj) {
         g_refresh = 0;
         c->r[0] = g_opt_obj;
@@ -728,13 +896,21 @@ static void opt_row(Cpu *c)
             icons_row = 1;
         } else if (is_sub()) {
             if (!g_remap_pass) orig = sub_orig(abs);
+        } else if (g_mp_menu) {
+            sub_row = (int)item;              // 0 IP, 1 Connect, 2 Status
+            if (sub_row == MP_CONNECT) {
+                c->r[2] = 0u;                 // plain action row: no value / arrows
+                c->r[3] = PLAIN_ITEM;
+            } else {
+                c->r[3] = VALUE_ITEM;
+            }
         } else if (g_disp_menu) {
             sub_row = (int)item;              // 0 Aspect Ratio, 1 Resolution, 2 Framerate, 3 VSync
             c->r[3] = VALUE_ITEM;
         } else if (g_gfx_menu) {
             sub_row = (int)item;              // 0 Display, 1 FXAA ... 5 FSR Sharpness
             c->r[3] = VALUE_ITEM;
-        } else if (!g_remap_pass && abs <= GRAPHICS_ITEM) {
+        } else if (!g_remap_pass && abs <= MP_ITEM) {
             c->r[2] = 0u;                     // item 2 (HUD): a plain one-line row
             c->r[3] = PLAIN_ITEM;
             menu_row = (int)abs;
@@ -761,6 +937,24 @@ static void opt_row(Cpu *c)
         }
         fill_icons_row();
         ST32(out, g_icons_lbl[g_icons_lbl_cur]);
+    } else if (g_mp_menu) {
+        if (sub_row == MP_CONNECT) {
+            ensure_bufs();
+            ST32(out, g_mp_lbl[MP_CONNECT][g_mp_lbl_cur]);
+            if (src >= 0x10000000u && src < 0x1c000000u) {
+                g_blank_addr = src + 4u;      // the HUD slot's "On" -> empty
+                g_blank_byte = LD8(g_blank_addr);
+                ST8(g_blank_addr, 0u);
+                g_blank = 1;
+            }
+        } else {
+            if (!g_tbl && src >= 0x10000000u && src < 0x1c000000u) {
+                g_tbl = src;
+                for (int i = 0; i < 16; i++) g_tbl_w[i] = LD32(src + (uint32_t)i * 4u);
+            }
+            fill_mp_row(sub_row);
+            ST32(out, g_mp_lbl[sub_row < 0 || sub_row >= (int)MP_ROWS ? 0 : sub_row][g_mp_lbl_cur]);
+        }
     } else if (g_disp_menu || g_gfx_menu) {
         if (!g_tbl && src >= 0x10000000u && src < 0x1c000000u) {
             g_tbl = src;
@@ -776,7 +970,7 @@ static void opt_row(Cpu *c)
     } else if (menu_row >= 0) {
         ensure_bufs();
         ST32(out, menu_row == AUDIO_ITEM ? g_audio_lbl : menu_row == GAMEPLAY_ITEM ? g_gameplay_lbl
-                     : menu_row == CTRL_ITEM ? g_ctrl_lbl : g_gfx_lbl);
+                     : menu_row == CTRL_ITEM ? g_ctrl_lbl : menu_row == MP_ITEM ? g_mp_main_lbl : g_gfx_lbl);
         if (src >= 0x10000000u && src < 0x1c000000u) {
             g_blank_addr = src + 4u;          // value 0 string ("On") -> empty for this row
             g_blank_byte = LD8(g_blank_addr);
@@ -801,6 +995,11 @@ static void opt_value(Cpu *c)
             fnhook_call_original(c, FN_OPT_VALUE);
             return;
         }
+        if (g_mp_menu) {
+            int row = c->r[2] < MP_ROWS ? (int)c->r[2] : 0;
+            c->r[0] = (uint32_t)g_mp_disp[row];
+            return;
+        }
         if (g_disp_menu) {
             switch (c->r[2]) {
             case DISP_ASPECT: c->r[0] = (uint32_t)g_ar_disp; break;
@@ -823,7 +1022,7 @@ static void opt_value(Cpu *c)
         }
         uint32_t flat = row_abs(c->r[0], c->r[1], c->r[2]);
         if (!g_remap_pass) {
-            if (flat <= GRAPHICS_ITEM) {
+            if (flat <= MP_ITEM) {
                 c->r[0] = 0u;                 // the menu rows show no value
                 return;
             }
@@ -837,7 +1036,7 @@ static void opt_value(Cpu *c)
 static void opt_count(Cpu *c)
 {
     if (is_opt(c)) {
-        c->r[0] = is_sub() ? sub_rows() : g_disp_menu ? DISP_ROWS : g_gfx_menu ? GFX_ROWS : MAIN_ROWS;
+        c->r[0] = g_mp_menu ? MP_ROWS : is_sub() ? sub_rows() : g_disp_menu ? DISP_ROWS : g_gfx_menu ? GFX_ROWS : MAIN_ROWS;
         return;
     }
     fnhook_call_original(c, FN_OPT_COUNT);
@@ -845,7 +1044,7 @@ static void opt_count(Cpu *c)
 
 static void param_set(Cpu *c)
 {
-    if (g_gfx_menu) return;                   // the submenu rows must not apply the borrowed option
+    if (g_gfx_menu || g_mp_menu) return;      // the submenu rows must not apply the borrowed option
     fnhook_call_original(c, FN_PARAM_SET);
 }
 
@@ -1020,6 +1219,55 @@ static void leave_menu(void)
     LOG("[pausepages] Graphics menu -> Options list\n");
 }
 
+static void enter_mp_menu(void)
+{
+    if (g_mp_menu) return;
+    g_mp_menu = 1;
+    uint32_t w = g_opt_obj;
+    if (w) {
+        g_mp_saved_rows = LD8(PW_ROWS(w));
+        g_mp_saved_pages = LD16(w + 0x5eu);
+        g_mp_saved_total = LD16(w + 0x60u);
+        g_mp_saved_page = LD16(PW_PAGE(w));
+        g_mp_saved_row = LD8(PW_ROW(w));
+        ST16(PW_PAGE(w), 0u);
+        ST8(PW_ROW(w), 0u);
+        ST8(PW_ROWS(w), MP_ROWS);
+        ST16(w + 0x5eu, 1u);
+        ST16(w + 0x60u, MP_ROWS);
+        ST32(w + 0x74u, 0u);
+    }
+    g_lr_last = g_lr_pressed_ns;
+    g_a_last = g_a_pressed_ns;
+    g_b_last = g_b_pressed_ns;
+    g_plus_last = g_plus_pressed_ns;
+    g_refresh = 1;
+    LOG("[pausepages] Multiplayer menu\n");
+}
+
+static void leave_mp_menu(void)
+{
+    if (!g_mp_menu) return;
+    mp_end();
+    g_mp_menu = 0;
+    uint32_t w = g_opt_obj;
+    if (w) {
+        ST8(PW_ROWS(w), g_mp_saved_rows ? (uint32_t)g_mp_saved_rows : 8u);
+        ST16(w + 0x5eu, g_mp_saved_pages ? g_mp_saved_pages : 1u);
+        ST16(w + 0x60u, g_mp_saved_total ? g_mp_saved_total : MAIN_ROWS);
+        ST16(PW_PAGE(w), g_mp_saved_page);
+        ST8(PW_ROW(w), (uint32_t)g_mp_saved_row);
+        ST32(w + 0x74u, 0u);
+    }
+    restore_tbl();
+    g_lr_last = g_lr_pressed_ns;
+    g_a_last = g_a_pressed_ns;
+    g_b_last = g_b_pressed_ns;
+    g_plus_last = g_plus_pressed_ns;
+    g_refresh = 1;
+    LOG("[pausepages] Multiplayer menu -> Options list\n");
+}
+
 // The FSR upscaler (and the render resolution it works from) is built at start-up when FSR is on.
 // The setting is always written to the INI; live, FSR can be switched off and back on when it was
 // started at boot, but enabling it from a non-FSR boot (or changing 3 <-> 4) needs the next start.
@@ -1064,7 +1312,7 @@ void pausepages_input(uint64_t *buttons)
         if (*buttons & (1ull << BTN_B)) *buttons &= ~(1ull << BTN_B);
         else g_swallow_b = 0;
     }
-    if (!g_gfx_menu && !is_sub() && g_opt_obj) {
+    if (!g_gfx_menu && !is_sub() && !g_mp_menu && g_opt_obj) {
         // Options list. B/Plus leave it (let the engine close it) and the window handle is
         // dropped so the bar's own A presses are never mistaken for the extra row.
         if (g_b_pressed_ns != g_b_last) {
@@ -1095,19 +1343,23 @@ void pausepages_input(uint64_t *buttons)
             } else if (flat == GRAPHICS_ITEM) {
                 *buttons &= ~(1ull << BTN_A);
                 enter_menu();
+            } else if (flat == MP_ITEM) {
+                *buttons &= ~(1ull << BTN_A);
+                enter_mp_menu();
             } else if (main_orig(flat) >= 0 && (!g_opt_obj || LD32(g_opt_obj + 0x74u) != 2u)) {
                 g_open_remap = 1;
             }
         }
         return;
     }
-    if (!g_gfx_menu && !is_sub()) return;
+    if (!g_gfx_menu && !is_sub() && !g_mp_menu) return;
     // Safety net: if the window went away by some path other than B/Plus, stop touching input.
     static int hidden;
     if (g_opt_obj && !LD8(g_opt_obj + 0x18u)) {
         if (++hidden > 60) {
             hidden = 0;
             if (is_sub()) leave_stock_menu();
+            if (g_mp_menu) leave_mp_menu();
             leave_menu();
             return;
         }
@@ -1149,6 +1401,37 @@ void pausepages_input(uint64_t *buttons)
         if (!(g_opt_obj && LD32(g_opt_obj + 0x74u) == 2u) && g_a_pressed_ns != g_a_last) {
             g_a_last = g_a_pressed_ns;
             g_open_remap = 1;                 // A is about to open the stock editor
+        }
+        return;
+    }
+    if (g_mp_menu) {
+        if (g_mp_edit) {                      // typing the address: the game gets no input
+            *buttons = 0;
+            if (g_a_pressed_ns != g_a_last) { g_a_last = g_a_pressed_ns; mp_apply(); mp_end(); return; }
+            if (g_b_pressed_ns != g_b_last) { g_b_last = g_b_pressed_ns; mp_end(); return; }
+            if (g_plus_pressed_ns != g_plus_last) { g_plus_last = g_plus_pressed_ns; mp_end(); leave_mp_menu(); return; }
+            return;
+        }
+        if (g_b_pressed_ns != g_b_last) {
+            g_b_last = g_b_pressed_ns;
+            *buttons &= ~(1ull << BTN_B);
+            g_swallow_b = 1;
+            leave_mp_menu();
+            return;
+        }
+        if (g_plus_pressed_ns != g_plus_last) {
+            g_plus_last = g_plus_pressed_ns;
+            leave_mp_menu();
+            return;
+        }
+        // These rows borrow stock slots: never let the engine see A/left/right, or it opens the
+        // borrowed value editor (the grey row with arrows).
+        *buttons &= ~((1ull << BTN_A) | (1ull << BTN_LEFT) | (1ull << BTN_RIGHT));
+        if (g_a_pressed_ns != g_a_last) {
+            g_a_last = g_a_pressed_ns;
+            int row = g_opt_obj ? (int)LD8(PW_ROW(g_opt_obj)) : MP_IP;
+            if (row == MP_IP) mp_start();
+            else if (row == MP_CONNECT) mp_connect();
         }
         return;
     }

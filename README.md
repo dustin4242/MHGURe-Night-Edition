@@ -103,7 +103,9 @@ Everything is in `mhgurecomp.ini`; each setting is explained in the file itself.
   used by the UI; Switch by default, also switchable in-game under Options), `BackgroundInput` (On / Off: the controller keeps working while
   the game's window is in the background, such as with a wiki in front of it; default On)
 - `[Mouse]`: `MouseSensitivity` (1 = default, 0.1 to 10)
-- `[Multiplayer]`: `Port`, `Join` (addresses of hosts outside your LAN), `SyncSmallMonsters`
+- `[Multiplayer]`: `Port`, `Join` (addresses of hosts outside your LAN), `SyncSmallMonsters`. The in-game
+  Options -> Multiplayer menu also accepts an address for this session only (not written to the INI) and probes
+  it; the actual join is still the game's Local Wireless -> Join menu.
 - `[Monster HP]`: HP factors for 1 to 4 hunters in Hub quests, and per-quest exceptions (default: all 1, the
   original game)
 - `[Village Quests]`: `VillageQuestsInHub` (default On), `HubHP` (default 2.0: Village quests posted in the Hub

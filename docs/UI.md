@@ -615,15 +615,21 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   into a **Controls** submenu, in their stock order, three pages of eight. Music Volume and SFX
   Volume move into **Audio** (two rows); HUD, Map, Melody Effect Display and Lens Flares move
   into **Gameplay**. The compact one-page main list is `Gameplay`, `Audio`, `Controls`,
-  `Graphics`, `Default Settings`, `Reset All Settings` (6 rows). `Gameplay` has HUD, Map,
+  `Graphics`, `Multiplayer`, `Default Settings`, `Reset All Settings` (7 rows). `Gameplay` has HUD, Map,
   Melody Effect Display, Lens Flares and (when the pp4 glyph sets are built) `Icons`; the
-  count virtual `f_7e7534` reports 6 for the main list, 2 for Audio, 5 for Gameplay (4
-  without Icons), 19 for Controls, 6 for Graphics and 4 for Display. The four menu rows are
+  count virtual `f_7e7534` reports 7 for the main list, 2 for Audio, 5 for Gameplay (4
+  without Icons), 19 for Controls, 6 for Graphics, 3 for Multiplayer and 4 for Display. The four menu rows are
   drawn from the HUD slot (item 2) with their own labels and empty values. One shared stock-submenu path (`g_sub`) does
   the pager save/restore, row/value remap and editor remap for Audio, Gameplay and Controls.
   The A press that opens a view is masked until it is released (`g_swallow_a`), so the held
   button cannot produce a second press that immediately opens the first row's editor; the next
   fresh A press after release still opens it normally.
+- **Multiplayer (session-only address):** the `Multiplayer` submenu has `IP` (typed with the
+  same text input as Resolution, digits/dots/colon, 21 characters), `Connect` (A probes the host
+  once: a TCP hello, not a lobby join) and `Status` (`Disconnected` / `Connecting...` /
+  `Connected`). Connect writes the address to `g_config.ldn_join` in memory only — never to the
+  INI — so the game's Local Wireless -> Join scan finds it; the actual lobby join stays with the
+  game. The probe runs on a background thread so the menu does not freeze.
 - **Hot-swappable controller glyphs:** the `Icons` row in `Gameplay` cycles `Switch` / `Xbox` /
   `Playstation` with left/right (the value is shown on the right like the other options),
   writes `[Controls] Icons`, and `runtime/ui_icons.c` swaps every layout atlas

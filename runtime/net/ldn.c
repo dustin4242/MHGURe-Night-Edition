@@ -702,6 +702,36 @@ static int scan_addresses(struct sockaddr_in *out, int max) {
     return n;
 }
 
+// One-shot reachability probe for the Multiplayer menu: host[:port], default g_config.ldn_port.
+int ldn_probe_host(const char *addr)
+{
+    char host[200];
+    int port = g_config.ldn_port;
+    snprintf(host, sizeof host, "%s", addr);
+    char *colon = strrchr(host, ':');
+    if (colon) { *colon = 0; port = atoi(colon + 1); }
+    if (!host[0]) return 0;
+    struct addrinfo hints = {0}, *res = NULL;
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, NULL, &hints, &res) || !res) return 0;
+    struct sockaddr_in target = *(struct sockaddr_in *)res->ai_addr;
+    target.sin_port = htons((uint16_t)port);
+    freeaddrinfo(res);
+    hnet_init();
+    hsock s = connect_to(&target, 1500);
+    if (s == BADSOCK) return 0;
+    hset_timeout(s, 1500);
+    Hello h = make_hello(true, NULL);
+    static __thread uint8_t buf[MAX_FRAME];
+    uint8_t type;
+    int n;
+    int ok = frame_send(s, F_HELLO, &h, sizeof h, NULL, 0) && (n = frame_recv(s, &type, buf)) >= NETINFO_SIZE &&
+             type == F_INFO;
+    hclose(s);
+    return ok;
+}
+
 // Collects the networks of hosts that answer: by address (TCP) and by LAN broadcast (UDP).
 static int discover(uint8_t (*infos)[NETINFO_SIZE], struct sockaddr_in *addrs, int max) {
     hnet_init();
