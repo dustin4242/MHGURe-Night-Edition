@@ -24,6 +24,7 @@
 #include "../textinput.h"
 #include "input.h"
 #include "../ui_icons.h"
+#include "../ui_hd.h"
 #include "../net/net.h"
 
 #define FN_BAR_INIT     0x877d0cu     // uUIQuestStartMenu init virtual (fills the paging struct)
@@ -107,7 +108,12 @@ static const uint8_t g_ctrl_map[CTRL_ROWS] = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 
 static const uint8_t g_audio_map[AUDIO_ROWS] = {0, 1};
 static const uint8_t g_gameplay_map[GAMEPLAY_ROWS] = {2, 3, 15, 19};
 static int main_orig(uint32_t f) { return f == 5u ? 25 : f == 6u ? 26 : -1; }
-static uint32_t gameplay_rows(void) { return GAMEPLAY_ROWS + (icons_available() ? 1u : 0u); }
+static uint32_t gameplay_icons_row(void) { return GAMEPLAY_ROWS; }
+static uint32_t gameplay_hdui_row(void) { return GAMEPLAY_ROWS + (icons_available() ? 1u : 0u); }
+static uint32_t gameplay_rows(void)
+{
+    return GAMEPLAY_ROWS + (icons_available() ? 1u : 0u) + (hd_ui_available() ? 1u : 0u);
+}
 
 enum { SUB_NONE, SUB_CTRL, SUB_AUDIO, SUB_GAMEPLAY };
 static int g_sub;                     // the stock-entry submenu currently open (SUB_*)
@@ -170,6 +176,8 @@ static int g_num_cursor = 1, g_num_disp;
 static uint32_t g_gfx_lbl, g_ctrl_lbl, g_audio_lbl, g_gameplay_lbl;
 static uint32_t g_icons_lbl[2];
 static int g_icons_lbl_cur;
+static uint32_t g_hdui_lbl[2];
+static int g_hdui_lbl_cur;
 
 // Multiplayer view: an address typed per session (never written to the INI), one probe and status.
 static int g_mp_menu;
@@ -221,6 +229,26 @@ static void icon_label_refresh(void)
 
 static void ensure_bufs(void);
 
+static void hdui_label_refresh(void)
+{
+    if (!g_hdui_lbl[0]) return;
+    g_hdui_lbl_cur ^= 1;
+    put(g_hdui_lbl[g_hdui_lbl_cur], "HD UI");
+}
+
+static void fill_hdui_row(void)
+{
+    ensure_bufs();
+    uint32_t b = g_hdui_lbl[g_hdui_lbl_cur];
+    memset(G2H(b), 0, 16);
+    put(b, "HD UI");
+    if (g_tbl) {
+        // Slots 2/3 are rewritten per row; the Icons row uses 2..4 and the Melody row 0/1.
+        put(g_tbl + 27u, "On");
+        put(g_tbl + 34u, "Off");
+    }
+}
+
 static void fill_icons_row(void)
 {
     ensure_bufs();
@@ -257,6 +285,9 @@ static void ensure_bufs(void)
     g_icons_lbl[0] = hle_alloc(32);
     g_icons_lbl[1] = hle_alloc(32);
     icon_label_refresh();
+    g_hdui_lbl[0] = hle_alloc(32);
+    g_hdui_lbl[1] = hle_alloc(32);
+    hdui_label_refresh();
     g_mp_main_lbl = hle_alloc(16);
     put(g_mp_main_lbl, "Multiplayer");
     for (int r = 0; r < (int)MP_ROWS; r++) {
@@ -586,7 +617,7 @@ static uint32_t opt_flat(uint32_t w)
 enum {
     CH_MAIN_AUDIO, CH_MAIN_GAMEPLAY, CH_MAIN_CTRL, CH_MAIN_GFX, CH_MAIN_ICONS, CH_MAIN_MP,
     CH_GFX_DISPLAY, CH_GFX_FXAA, CH_GFX_MSAA, CH_GFX_FSR, CH_GFX_FSRQ, CH_GFX_SHARP,
-    CH_DSP_ASPECT, CH_DSP_RES, CH_DSP_FPS, CH_DSP_VSYNC, CH_COUNT
+    CH_DSP_ASPECT, CH_DSP_RES, CH_DSP_FPS, CH_DSP_VSYNC, CH_GAMEPLAY_HDUI, CH_COUNT
 };
 static const char *const g_custom_help[CH_COUNT] = {
     "Custom Audio Description",
@@ -605,6 +636,7 @@ static const char *const g_custom_help[CH_COUNT] = {
     "Custom Resolution Description",
     "Custom Framerate Description",
     "Custom VSync Description",
+    "Switch the HD UI textures on or off.",
 };
 static uint32_t g_custom_guest[CH_COUNT];
 static uint32_t g_help_obj;            // the pause help box (captured from its text setter)
@@ -645,7 +677,11 @@ static int custom_help_index(uint32_t w)
         uint32_t r = LD8(PW_ROW(w));
         return r < 6u ? CH_GFX_DISPLAY + (int)r : -1;
     }
-    if (g_sub == SUB_GAMEPLAY && opt_flat(w) == GAMEPLAY_ICONS_ROW && icons_available()) return CH_MAIN_ICONS;
+    if (g_sub == SUB_GAMEPLAY) {
+        uint32_t f = opt_flat(w);
+        if (icons_available() && f == gameplay_icons_row()) return CH_MAIN_ICONS;
+        if (hd_ui_available() && f == gameplay_hdui_row()) return CH_GAMEPLAY_HDUI;
+    }
     if (is_sub()) return -1;
     uint32_t flat = opt_flat(w);
     if (flat == AUDIO_ITEM) return CH_MAIN_AUDIO;
@@ -878,7 +914,7 @@ static void opt_row(Cpu *c)
     int on = is_opt(c);
     uint32_t item = c->r[3];
     uint32_t abs = on ? row_abs(c->r[0], c->r[2], item) : 0u;
-    int menu_row = -1, sub_row = -1, orig = -1, icons_row = 0;
+    int menu_row = -1, sub_row = -1, orig = -1, icons_row = 0, hdui_row = 0;
     if (on) {
         if (g_opt_obj != c->r[0]) {           // the window just opened: its opening press is not input
             g_opt_obj = c->r[0];
@@ -890,10 +926,14 @@ static void opt_row(Cpu *c)
             icon_label_refresh();
             g_swallow_a = 1;                  // do not let the opening press click the first row
         }
-        if (g_sub == SUB_GAMEPLAY && abs == GAMEPLAY_ICONS_ROW && icons_available()) {
+        if (g_sub == SUB_GAMEPLAY && abs == gameplay_icons_row() && icons_available()) {
             c->r[2] = 0u;
             c->r[3] = VALUE_ITEM;
             icons_row = 1;
+        } else if (g_sub == SUB_GAMEPLAY && abs == gameplay_hdui_row() && hd_ui_available()) {
+            c->r[2] = 0u;
+            c->r[3] = VALUE_ITEM;
+            hdui_row = 1;
         } else if (is_sub()) {
             if (!g_remap_pass) orig = sub_orig(abs);
         } else if (g_mp_menu) {
@@ -937,6 +977,13 @@ static void opt_row(Cpu *c)
         }
         fill_icons_row();
         ST32(out, g_icons_lbl[g_icons_lbl_cur]);
+    } else if (hdui_row) {
+        if (!g_tbl && src >= 0x10000000u && src < 0x1c000000u) {
+            g_tbl = src;
+            for (int i = 0; i < 16; i++) g_tbl_w[i] = LD32(src + (uint32_t)i * 4u);
+        }
+        fill_hdui_row();
+        ST32(out, g_hdui_lbl[g_hdui_lbl_cur]);
     } else if (g_mp_menu) {
         if (sub_row == MP_CONNECT) {
             ensure_bufs();
@@ -984,8 +1031,13 @@ static void opt_value(Cpu *c)
 {
     if (is_opt(c)) {
         if (is_sub()) {
-            if (g_sub == SUB_GAMEPLAY && row_abs(c->r[0], c->r[1], c->r[2]) == GAMEPLAY_ICONS_ROW && icons_available()) {
+            uint32_t row = row_abs(c->r[0], c->r[1], c->r[2]);
+            if (g_sub == SUB_GAMEPLAY && row == gameplay_icons_row() && icons_available()) {
                 c->r[0] = 2u + (uint32_t)g_config.icons;
+                return;
+            }
+            if (g_sub == SUB_GAMEPLAY && row == gameplay_hdui_row() && hd_ui_available()) {
+                c->r[0] = g_config.hd_ui ? 2u : 3u;   // slots 2/3: On/Off
                 return;
             }
             if (!g_remap_pass) {
@@ -1382,7 +1434,7 @@ void pausepages_input(uint64_t *buttons)
             leave_stock_menu();
             return;
         }
-        if (g_sub == SUB_GAMEPLAY && g_opt_obj && LD8(PW_ROW(g_opt_obj)) == GAMEPLAY_ICONS_ROW && icons_available()) {
+        if (g_sub == SUB_GAMEPLAY && g_opt_obj && LD8(PW_ROW(g_opt_obj)) == gameplay_icons_row() && icons_available()) {
             // Never let the borrowed Camera Angle slot see A or left/right while this row is selected:
             // its stock editor would open. Up/down still navigate the list.
             int dir = (*buttons & (1ull << BTN_RIGHT)) ? 1 : (*buttons & (1ull << BTN_LEFT)) ? -1 : 0;
@@ -1395,6 +1447,20 @@ void pausepages_input(uint64_t *buttons)
                     icon_label_refresh();
                     g_refresh = 1;
                 }
+            }
+            return;
+        }
+        if (g_sub == SUB_GAMEPLAY && g_opt_obj && LD8(PW_ROW(g_opt_obj)) == gameplay_hdui_row() && hd_ui_available()) {
+            // Same borrowed value slot as Icons: keep A/left/right from the stock editor, and
+            // use left/right only to toggle the setting.
+            int dir = (*buttons & (1ull << BTN_RIGHT)) ? 1 : (*buttons & (1ull << BTN_LEFT)) ? -1 : 0;
+            *buttons &= ~((1ull << BTN_A) | (1ull << BTN_LEFT) | (1ull << BTN_RIGHT));
+            if (g_a_pressed_ns != g_a_last) g_a_last = g_a_pressed_ns;
+            if (g_lr_pressed_ns != g_lr_last) {
+                g_lr_last = g_lr_pressed_ns;
+                if (dir) hd_ui_set(!g_config.hd_ui);
+                hdui_label_refresh();
+                g_refresh = 1;
             }
             return;
         }

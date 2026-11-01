@@ -64,6 +64,20 @@ typedef struct NvnTexture {
     int icon;  // ui_icons.c: 0 unknown, 1..5 glyph texture id, -1 not a glyph texture
     uint64_t icon_hash;  // the glyph set currently in its storage (0: unknown)
     uint8_t icon_tries;  // scans before a same-size texture is written off as not a glyph atlas
+    // ui_hd.c: the pp4 HD UI set (the live HD variant, or the stock payload in our own buffer)
+    int hd_ui_id;                // 0 unknown, >0 manifest id, -1 not in the set
+    uint64_t hd_ui_hash;         // the variant hash currently in the storage (0: unknown)
+    uint8_t hd_ui_tries;
+    uint8_t hd_ui_variant;       // 0 stock, 1 HD
+    uint8_t hd_ui_saved;         // the live state below was captured
+    uint32_t hd_ui_init_width, hd_ui_init_height, hd_ui_init_levels;
+    uint64_t hd_ui_init_total;
+    uint64_t hd_ui_init_addr;
+    uint64_t hd_ui_init_stride;
+    uint32_t hd_ui_init_flags;
+    TexLayout hd_ui_init_layout;
+    uint64_t hd_ui_buf;          // guest buffer holding the stock payload
+    uint32_t hd_ui_buf_size;
 } NvnTexture;
 
 typedef struct {

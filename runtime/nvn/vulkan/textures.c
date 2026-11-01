@@ -10,6 +10,7 @@
 #include "vk.h"
 #include "../astc.h"
 #include "../../ui_icons.h"
+#include "../../ui_hd.h"
 
 // ================================================================== formats
 typedef struct { VkFormat vf; uint8_t expand_rgb, alpha_one; } VkFmt;
@@ -495,6 +496,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
         mem = (const uint8_t *)G2H((uint32_t)t->addr);
         h = ih;
     }
+    hd_ui_identify(t, total, h);  // (only records the set/variant; the scan does the swap)
     b->full_frame = frame;
     b->sample_hash = fnv_sample(mem, total);
     if (b->uploaded && h == b->data_hash) return;

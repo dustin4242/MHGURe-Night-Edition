@@ -267,7 +267,7 @@ endif
 
 data: $(B)/data/.complete $(PP4_DEPS)
 ifneq ($(wildcard $(PP4_DIR)),)
-$(PP4_STAMP): $(PP4_DIR) Makefile tools/pp4_icons.py | $(B)/data/.complete
+$(PP4_STAMP): $(PP4_DIR) Makefile tools/pp4_icons.py tools/pp4_ui.py | $(B)/data/.complete
 	@if [ -d "$(B)/data/romfs" ]; then \
 	    for p in "$(PP4_DIR)/HD Textures v4/romfs" "$(PP4_DIR)/English/HD UI v4/romfs"; do \
 	        if [ -d "$$p" ]; then \
@@ -297,7 +297,12 @@ $(PP4_STAMP): $(PP4_DIR) Makefile tools/pp4_icons.py | $(B)/data/.complete
 	    if [ -d "$(PP4_DIR)/English/Layout" ]; then \
 	        echo "data: pp4 icon variants (Switch/Xbox/Playstation)"; \
 	        $(PY) tools/pp4_icons.py "$(PP4_DIR)/English/Layout" "$(B)/data/pp4_icons" || exit 1; \
-	    fi && touch $@; \
+	    fi; \
+	    if [ -d "$(GAME)/romfs" ]; then \
+	        echo "data: pp4 HD UI stock payloads"; \
+	        $(PY) tools/pp4_ui.py "$(PP4_DIR)" "$(GAME)/romfs" "$(B)/data/pp4_ui" "$(PP4_UI)" || exit 1; \
+	    else echo "data: no game romfs, HD UI stock payloads not extracted"; fi; \
+	    touch $@; \
 	else echo "data: no game romfs yet, pp4 packs not merged"; fi
 endif
 $(B)/data/.complete:

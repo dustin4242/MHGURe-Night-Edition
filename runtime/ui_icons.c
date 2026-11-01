@@ -10,6 +10,7 @@
 #include "nvn/nvn.h"
 #include "rt.h"
 #include "ui_icons.h"
+#include "ui_hd.h"
 
 enum { ICON_N = 8 };
 static const char *const g_ids[ICON_N] = {
@@ -122,6 +123,7 @@ bool icons_texture(struct NvnTexture *t, const uint8_t *mem, uint64_t total, uin
     int k = id - 1, sel = g_config.icons;
     if (sel < 0 || sel > 2 || !g_set[sel][k].size || g_set[sel][k].size != total) return false;
     if (*hash == g_set[sel][k].hash) return false;
+    if (!g_config.hd_ui && hd_ui_available()) return false;  // HD UI off: identify, keep stock texels
     uint8_t *p = payload(sel, k);
     if (!p) return false;
     memcpy(G2H((uint32_t)t->addr), p, total);
@@ -153,6 +155,7 @@ static void scan_texture(struct NvnTexture *t, void *arg)
         t->icon = k + 1;
     }
     if (h == g_set[sc->sel][k].hash) { t->icon_hash = h; sc->found[k] = 1; return; }
+    if (!g_config.hd_ui && hd_ui_available()) { t->icon_hash = h; sc->found[k] = 1; return; }  // stock
     uint8_t *p = payload(sc->sel, k);
     if (!p) return;
     memcpy(G2H((uint32_t)t->addr), p, total);

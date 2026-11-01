@@ -16,7 +16,7 @@
 #include "config.h"
 #include "rt.h"
 
-Config g_config = {DISPLAY_BORDERLESS, 1920, 1080, 0, 0, 60, 1, 1, 1, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, ICONS_SWITCH};
+Config g_config = {DISPLAY_BORDERLESS, 1920, 1080, 0, 0, 60, 1, 1, 1, FACE_POSITION, 39500, "", 0, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, ICONS_SWITCH, 1};
 uint32_t g_render_size[2] = {1920, 1080};
 float g_render_aspect = 16.0f / 9.0f;
 float g_fov_scale = 1.0f;
@@ -105,6 +105,12 @@ static const char DEFAULT_INI[] =
     "\n"
     "; VSync\n"
     "VSync = On\n"
+    "\n"
+    "[UI]\n"
+    "; pp4 HD UI textures (hot-swapped in Options > Gameplay)\n"
+    "; On, Off\n"
+    "; Default: On\n"
+    "HDUi = On\n"
     "\n"
     "[Controls]\n"
     "; Controller face button layout. Set to \"Label\" to reverse A/B and X/Y on XBox controllers to match the button prompts (not recommended)\n"
@@ -340,6 +346,10 @@ static void set_key(const char *key, char *val, int line) {
         if (!strcmp(v, "switch") || !strcmp(v, "nintendo") || !strcmp(v, "2-NS")) g_config.icons = ICONS_SWITCH;
         else if (!strcmp(v, "xbox") || !strcmp(v, "3-XB")) g_config.icons = ICONS_XBOX;
         else if (!strcmp(v, "playstation") || !strcmp(v, "ps") || !strcmp(v, "1-PS")) g_config.icons = ICONS_PLAYSTATION;
+        else ok = false;
+    } else if (!strcmp(k, "hdui")) {
+        if (!strcmp(v, "on") || !strcmp(v, "1") || !strcmp(v, "true") || !strcmp(v, "yes")) g_config.hd_ui = 1;
+        else if (!strcmp(v, "off") || !strcmp(v, "0") || !strcmp(v, "false") || !strcmp(v, "no")) g_config.hd_ui = 0;
         else ok = false;
     } else if (!strcmp(k, "mousesensitivity")) {
         float f = strtof(v, NULL);

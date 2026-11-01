@@ -616,9 +616,10 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   Volume move into **Audio** (two rows); HUD, Map, Melody Effect Display and Lens Flares move
   into **Gameplay**. The compact one-page main list is `Gameplay`, `Audio`, `Controls`,
   `Graphics`, `Multiplayer`, `Default Settings`, `Reset All Settings` (7 rows). `Gameplay` has HUD, Map,
-  Melody Effect Display, Lens Flares and (when the pp4 glyph sets are built) `Icons`; the
-  count virtual `f_7e7534` reports 7 for the main list, 2 for Audio, 5 for Gameplay (4
-  without Icons), 19 for Controls, 6 for Graphics, 3 for Multiplayer and 4 for Display. The four menu rows are
+  Melody Effect Display, Lens Flares and, when the pp4 data is built, `Icons` and `HD UI`; the
+  count virtual `f_7e7534` reports 7 for the main list, 2 for Audio, 6 for Gameplay (5 with one
+  of the two pp4 rows, 4 without them), 19 for Controls, 6 for Graphics, 3 for Multiplayer and 4
+  for Display. The four menu rows are
   drawn from the HUD slot (item 2) with their own labels and empty values. One shared stock-submenu path (`g_sub`) does
   the pager save/restore, row/value remap and editor remap for Audio, Gameplay and Controls.
   The A press that opens a view is masked until it is released (`g_swallow_a`), so the held
@@ -644,6 +645,21 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   matches a live NVN texture by storage size and FNV-1a hash, copies the selected variant's
   payload into its guest texels and marks the backend texture dirty. This also applies the INI
   setting from boot, before the user opens the menu.
+- **HD UI (hot-swappable, pp4 only):** the `HD UI` row in `Gameplay` toggles the pp4 HD UI set
+  live (left/right, value `On`/`Off`, `[UI] HDUi`). The build extracts the stock payloads and a
+  size/FNV manifest from the vanilla romfs into `data/pp4_ui`; the game already loads the HD
+  payloads from the merged arcs. The pack's textures are 2x or 4x wider and taller than the stock
+  ones, so `runtime/ui_hd.c` cannot just copy bytes like `Icons`: it points the live `NvnTexture`
+  at a host buffer holding the stock payload, scales its layout/dimensions down by the integer
+  ratio (the mip count is chosen so `tegra_total_size` matches the payload), and destroys the
+  backend image so the next draw recreates it at the stock size; switching back restores the
+  original storage. Same-size textures use the same buffer path, so the original HD storage is
+  never overwritten. The scan identifies textures by storage size + FNV-1a in the renderer and
+  applies on the next tick; the setting is applied at boot too. The eight controller-glyph atlases
+  are part of the set: while HD UI is off the `Icons` scan still identifies them but leaves the
+  stock Switch glyphs (the Xbox/Playstation atlases are HD only); on On it resumes. Three tutorial
+  map textures whose stock size is a 2x-area (non-integer linear) scale stay HD in both states.
+  The row is hidden when `data/pp4_ui` is absent.
 - **Remapping moved stock rows:** the game keys each option by its list index in hardcoded code,
   so a moved row must still edit its original entry. The row virtual `f_7e7558` and value virtual
   `f_7e7d34` receive the displayed (page, row); the hooks translate that to the original stock

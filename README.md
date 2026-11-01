@@ -99,6 +99,8 @@ Everything is in `mhgurecomp.ini`; each setting is explained in the file itself.
   UltraPerformance), `Sharpness`, and `Upscaler` (FSR3, the default, or FSR4: needs an AMD RDNA 4 GPU and its driver, and an exe built with `make FSR4_DRIVER_PATCH=1`;
   falls back to FSR 3.1). FSR replaces MSAA and FXAA while it is on. Details: `docs/FSR-PORT.md`, `docs/FSR4-PORT.md`
 - `[Performance]`: `FPS` (30 to 240), `VSync` (On / Off; above your monitor's refresh rate, turn VSync off)
+- `[UI]`: `HDUi` (On / Off: the pp4 HD UI textures; also switchable in-game under Options -> Gameplay, and the
+  row is omitted without the pack)
 - `[Controls]`: `FaceButtons` (Position / Label), `Icons` (Switch / Xbox / Playstation: the controller glyphs
   used by the UI; Switch by default, also switchable in-game under Options), `BackgroundInput` (On / Off: the controller keeps working while
   the game's window is in the background, such as with a wiki in front of it; default On)
@@ -219,7 +221,12 @@ stays out for the hot-swappable project; build with `PP4_UI=` for the stock menu
 `<1-PS|2-NS|3-XB>/<CI|HDI>` path. The selected variant's shared `loc/arc/resident.arc` (the
 button fonts the menus actually draw) and `title_eng.arc` are merged too, and the build extracts
 all three variants' glyph atlases into `data\pp4_icons` so Gameplay -> `Icons` can switch them live.
-Without `addons\pp4` the row is omitted (and a release's `data\` does not carry the glyph sets). They all load as part of the native RomFS, with no mod
+It also extracts the HD UI textures' stock counterparts into `data\pp4_ui` so Gameplay -> `HD UI` can
+switch the HD UI on and off live; the pack's textures are 2x or 4x larger in each dimension, so the
+runtime rebuilds those textures at the stock size instead of copying bytes (a few tutorial map
+textures with a non-integer scale stay HD). While HD UI is off the `Icons` glyph sets keep their
+stock Switch glyphs (the Xbox/Playstation atlases are HD only). Without `addons\pp4` both rows are
+omitted (and a release's `data\` does not carry the sets). They all load as part of the native RomFS, with no mod
 folder needed. To merge
 again after adding or removing pack files (or changing `PP4_UI`), delete `build\data\.pp4` and run `make data`.
 Since releases leave out `data\`, this only affects builds made with the folder present.

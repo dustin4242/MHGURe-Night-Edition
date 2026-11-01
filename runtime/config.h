@@ -45,6 +45,7 @@ typedef struct {
     int fsr_animsurf;         // FSR: surfaces animated through their texture (banners, water): 1 detected, 0 off
     int fsr_upscaler;         // [Upscaler] Upscaler: FSR_UP_3 (FSR 3.1) or FSR_UP_4 (FSR 4, runtime/nvn/vulkan/fsr4.c)
     int icons;                // [Controls] Icons: ICONS_* controller glyph set (runtime/ui_icons.c)
+    int hd_ui;                // [UI] HDUi: pp4 HD UI textures on/off (runtime/ui_hd.c)
 } Config;
 enum { UI_CENTER = 1, UI_21_9, UI_32_9, UI_EDGES };  // the middle 16:9, 21:9, 32:9, the picture's sides
 enum { FSR_UP_3, FSR_UP_4 };  // [Upscaler] Upscaler

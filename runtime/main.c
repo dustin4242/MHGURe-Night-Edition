@@ -50,6 +50,7 @@ static void boot(const char *root) {
     movelog_init();  // (debug, MHGU_LOG_MOVES: runtime/hle/movelog.c)
     quickhunt_init();  // (debug, MHGU_QUICKHUNT: runtime/hle/quickhunt.c)
     { void icons_init(void); icons_init(); }  // (controller glyph sets: runtime/ui_icons.c)
+    { void hd_ui_init(void); hd_ui_init(); }  // (pp4 HD UI textures: runtime/ui_hd.c)
     pausepages_init();  // (MHGU_PAUSE_PAGES: in-hunt pause bar page counter: runtime/hle/pausepages.c)
     camjit_init();  // (FSR: the main camera and its jitter: runtime/hle/camera_jitter.c)
     emtrace_init();  // (debug, MHGU_EMTRACE: runtime/hle/emtrace.c)
