@@ -625,10 +625,13 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   The A press that opens a view is masked until it is released (`g_swallow_a`), so the held
   button cannot produce a second press that immediately opens the first row's editor; the next
   fresh A press after release still opens it normally.
-- **Multiplayer (session-only address):** the `Multiplayer` submenu has `IP` (typed with the
-  same text input as Resolution, digits/dots/colon, 21 characters), `Connect` (A probes the host
-  once: a TCP hello, not a lobby join) and `Status` (`Disconnected` / `Connecting...` /
-  `Connected`). Connect writes the address to `g_config.ldn_join` in memory only — never to the
+- **Multiplayer (session-only address):** the `Multiplayer` submenu has `Hosting` at the top
+  (`Yes`/`No`, live: whether this game created a Local Play hub), `IP` (typed with the same text
+  input as Resolution; an IP address or a domain name, with letters, digits, `.`, `-`, `_` and an
+  optional `:port`, up to 255 characters; the row shows a middle-ellipsized form when it does not
+  fit), `Connect` (A probes the host once: a TCP hello, not a lobby join) and `Status`
+  (`Disconnected` / `Connecting...` / `Connected`). Both the probe and the game's Local Wireless
+  scan resolve the name with `getaddrinfo`, so `localhost:42500` or a DNS host work. Connect writes the address to `g_config.ldn_join` in memory only — never to the
   INI — so the game's Local Wireless -> Join scan finds it; the actual lobby join stays with the
   game. The probe runs on a background thread so the menu does not freeze.
 - **Hot-swappable controller glyphs:** the `Icons` row in `Gameplay` cycles `Switch` / `Xbox` /

@@ -686,7 +686,7 @@ static int scan_addresses(struct sockaddr_in *out, int max) {
     char list[sizeof g_config.ldn_join];
     snprintf(list, sizeof list, "%s", g_config.ldn_join);
     for (char *t = strtok(list, ", ;"); t && n < max; t = strtok(NULL, ", ;")) {
-        char host[200];
+        char host[300];
         int port = g_config.ldn_port;
         snprintf(host, sizeof host, "%s", t);
         char *colon = strrchr(host, ':');
@@ -705,31 +705,43 @@ static int scan_addresses(struct sockaddr_in *out, int max) {
 // One-shot reachability probe for the Multiplayer menu: host[:port], default g_config.ldn_port.
 int ldn_probe_host(const char *addr)
 {
-    char host[200];
+    char host[300];
     int port = g_config.ldn_port;
     snprintf(host, sizeof host, "%s", addr);
     char *colon = strrchr(host, ':');
     if (colon) { *colon = 0; port = atoi(colon + 1); }
-    if (!host[0]) return 0;
+    if (!host[0]) { LOG("[ldn] probe %s: empty host\n", addr); return 0; }
     struct addrinfo hints = {0}, *res = NULL;
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, NULL, &hints, &res) || !res) return 0;
+    if (getaddrinfo(host, NULL, &hints, &res) || !res) {
+        LOG("[ldn] probe %s: DNS lookup failed (is there an IPv4 A record?)\n", host);
+        return 0;
+    }
     struct sockaddr_in target = *(struct sockaddr_in *)res->ai_addr;
     target.sin_port = htons((uint16_t)port);
+    LOG("[ldn] probe %s -> %s:%d\n", addr, inet_ntoa(target.sin_addr), port);
     freeaddrinfo(res);
     hnet_init();
     hsock s = connect_to(&target, 1500);
-    if (s == BADSOCK) return 0;
+    if (s == BADSOCK) {
+        LOG("[ldn] probe %s: TCP connect failed (host not hosting, firewall, or port forward?)\n", addr);
+        return 0;
+    }
     hset_timeout(s, 1500);
     Hello h = make_hello(true, NULL);
     static __thread uint8_t buf[MAX_FRAME];
     uint8_t type;
-    int n;
-    int ok = frame_send(s, F_HELLO, &h, sizeof h, NULL, 0) && (n = frame_recv(s, &type, buf)) >= NETINFO_SIZE &&
-             type == F_INFO;
+    int n = 0;
+    int sent = frame_send(s, F_HELLO, &h, sizeof h, NULL, 0);
+    if (sent) n = frame_recv(s, &type, buf);
     hclose(s);
-    return ok;
+    if (!sent) { LOG("[ldn] probe %s: TCP connected, sending hello failed\n", addr); return 0; }
+    if (n < NETINFO_SIZE || type != F_INFO) {
+        LOG("[ldn] probe %s: TCP connected, but no local-play reply (different build or port?)\n", addr);
+        return 0;
+    }
+    return 1;
 }
 
 // Collects the networks of hosts that answer: by address (TCP) and by LAN broadcast (UDP).

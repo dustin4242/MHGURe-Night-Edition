@@ -59,10 +59,11 @@
 #define GAMEPLAY_ICONS_ROW 4u         // the custom Icons row inside Gameplay
 
 // Multiplayer submenu rows
-#define MP_IP      0
-#define MP_CONNECT 1
-#define MP_STATUS  2
-#define MP_ROWS    3u
+#define MP_HOST    0
+#define MP_IP      1
+#define MP_CONNECT 2
+#define MP_STATUS  3
+#define MP_ROWS    4u
 #define VALUE_ITEM   4u               // "Camera Angle": a long label slot with five value strings
 #define PLAIN_ITEM   2u               // "HUD": a plain On/Off slot (draws the two menu rows)
 
@@ -183,8 +184,8 @@ static int g_hdui_lbl_cur;
 static int g_mp_menu;
 static uint32_t g_mp_saved_rows;
 static uint32_t g_mp_saved_pages, g_mp_saved_total, g_mp_saved_page, g_mp_saved_row;
-static char g_mp_ip[64];
-static char g_mp_buf[64];
+static char g_mp_ip[256];
+static char g_mp_buf[256];
 static int g_mp_edit, g_mp_cursor = 1, g_mp_disp[MP_ROWS];
 static uint64_t g_mp_blink;
 static int g_mp_status;               // 0 disconnected, 1 probing, 2 connected
@@ -192,7 +193,7 @@ static int g_mp_running;
 static uint32_t g_mp_lbl[MP_ROWS][2];
 static int g_mp_lbl_cur;
 static uint32_t g_mp_main_lbl;
-static const char *const g_mp_names[MP_ROWS] = {"IP", "Connect", "Status"};
+static const char *const g_mp_names[MP_ROWS] = {"Hosting", "IP", "Connect", "Status"};
 static uint32_t g_blank_addr;
 static uint8_t g_blank_byte;
 static int g_blank;
@@ -306,8 +307,9 @@ static void restore_tbl(void)
 }
 
 // ---- Multiplayer view: an address typed per session (never written to the INI) and one probe.
-static char g_mp_val[80];
+static char g_mp_val[32];
 static int g_mp_status_seen;
+static int g_mp_host_seen;
 
 static const char *mp_status_text(void)
 {
@@ -322,6 +324,21 @@ static void mp_dirty(int row)
     g_refresh = 1;
 }
 
+// The borrowed value slot is 64 bytes (the last string starts at +41), so a long domain is
+// shown with its start and end; the full text stays in g_mp_ip and is what Connect uses.
+static void mp_display(char *out, size_t outsz, const char *s, int cursor)
+{
+    size_t n = strlen(s);
+    int budget = cursor ? 20 : 21;
+    if ((int)n <= budget - (cursor ? 1 : 0)) {
+        snprintf(out, outsz, "%s%s", s, cursor ? "|" : "");
+        return;
+    }
+    int body = cursor ? 20 : 21;
+    int left = (body - 3) / 2, right = body - 3 - left;
+    snprintf(out, outsz, "%.*s...%s%s", left, s, s + n - (size_t)right, cursor ? "|" : "");
+}
+
 static void fill_mp_row(int row)
 {
     ensure_bufs();
@@ -330,9 +347,15 @@ static void fill_mp_row(int row)
     memset(G2H(b), 0, 16);
     put(b, g_mp_names[row]);
     const char *t = "";
-    if (row == MP_IP) {
-        if (g_mp_edit) snprintf(g_mp_val, sizeof g_mp_val, "%s%s", g_mp_buf, g_mp_cursor ? "|" : "");
-        else snprintf(g_mp_val, sizeof g_mp_val, "%s", g_mp_ip[0] ? g_mp_ip : "(not set)");
+    if (row == MP_HOST) {
+        t = ldn_hosting() ? "Yes" : "No";
+    } else if (row == MP_IP) {
+        if (!g_mp_ip[0] && !g_mp_edit) {
+            snprintf(g_mp_val, sizeof g_mp_val, "(not set)");
+        } else {
+            mp_display(g_mp_val, sizeof g_mp_val, g_mp_edit ? g_mp_buf : g_mp_ip,
+                       g_mp_edit && g_mp_cursor);
+        }
         t = g_mp_val;
     } else if (row == MP_STATUS) {
         t = mp_status_text();
@@ -366,9 +389,9 @@ static void mp_start(void)
     g_mp_cursor = 1;
     g_mp_blink = plat_now_ns();
     textinput_ip_only(true);
-    textinput_begin(g_mp_ip, 21);
+    textinput_begin(g_mp_ip, 255);
     mp_dirty(MP_IP);
-    LOG("[multiplayer] address entry: type an IP (Enter applies, Escape cancels)\n");
+    LOG("[multiplayer] address entry: type an IP or domain (Enter applies, Escape cancels)\n");
 }
 
 static void *mp_probe_thread(void *arg)
@@ -625,7 +648,7 @@ static const char *const g_custom_help[CH_COUNT] = {
     "Custom Controls Description",
     "Custom Graphics Description",
     "Choose the controller button icons.",
-    "Connect to a host by IP address.",
+    "Shows hosting status; type a host IP or domain and connect.",
     "Custom Display Description",
     "Custom FXAA Description",
     "Custom MSAA Description",
@@ -892,6 +915,11 @@ static void opt_update(Cpu *c)
         if (st != g_mp_status_seen) {
             g_mp_status_seen = st;
             mp_dirty(MP_STATUS);
+        }
+        int host = ldn_hosting() ? 1 : 0;
+        if (host != g_mp_host_seen) {
+            g_mp_host_seen = host;
+            mp_dirty(MP_HOST);
         }
     }
     if (g_refresh && g_opt_obj) {
