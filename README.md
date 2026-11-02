@@ -91,7 +91,7 @@ Other keys: Alt+Enter or F11 switches between windowed and full screen, F12 take
 Everything is in `mhgurecomp.ini`; each setting is explained in the file itself. In short:
 
 - `[Display]`: `Mode` (Borderless / Fullscreen / Windowed), `Resolution`, `RenderResolution` (the 3D resolution),
-  `AspectRatio` (Auto follows the window: 16:10 and anything wider fill it, narrower gets 16:10 with bars), `FOV`
+  `AspectRatio` (Auto follows the window: 16:10 and anything wider fill it; 3:2/4:3 scale the HUD to fit; narrower than 4:3 gets 4:3 with bars), `FOV`
   (1.0 = the game's), `UIAnchor` (Center keeps the HUD in the middle 16:9 on an ultrawide screen, Edges spreads it
   to the sides)
 - `[Anti-aliasing]`: `MSAA` (Off / 2x / 4x / 8x), `FXAA` (On / Off)

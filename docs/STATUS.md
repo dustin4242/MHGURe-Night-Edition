@@ -444,13 +444,32 @@ Known gaps that remain:
    callers of the perspective matrix 0x9c617c that load it; the other 9 callers are untouched), the game's 2D
    canvas gets the HUD's width (0xdbcd48 / 0xdbcd54), and exec.c (cbuf_info, vertex stage cbuf 3 of 2D draws)
    unstretches the HUD and places its parts left / right / center by their layer depth (94 center banners, 96
-   dialogue box left, 97 menus by x, 100 / 105 right, 103 status left / item bar right). From 16:10 to 16:9
+   dialogue box left, 97/98 menus centered, 100 / 105 right, 103 status left / item bar right). From 16:10 to 16:9
    (2026-10-25): the camera keeps 16:9's width and gets more height (Vert+: config.c camera_fovy, from the
    perspective matrix's fovy argument, radians: fovy' = 2 atan(tan(fovy / 2) * (16/9) / aspect)), and exec.c
    flattens the HUD to its 16:9 shape (sy) and moves each layer to the top (status, minimap, menus), the bottom
    (dialogue, item bar, Hunter Arts prompts) or the middle (banners), one anchor per layer so a window drawn in
-   pieces stays together. Narrower than 16:10 (4:3) gets 16:10 with bars. Tested 1280x720, 1280x800, 1024x768
-   (bars), 1680x720 Center, 1792x504 / 1680x840 Edges: hunt HUD, pause menu, help box, equipment windows,
+   pieces stays together. The village shortcut panel (Multiplayer Menu / World Map / Hunter Search)
+   is layer 96 at x > 900 / y < 300 and gets a right/top anchor too, so Edges keeps it at the top-right; the
+   interaction prompt before a chest/NPC (A Item Box / A Ranch Paw) is layer 96 at x < 500 / y < 120 and is
+   pinned left/top, so 4:3 keeps it in the corner instead of pulling it down with the dialogue box;
+   the village Minus help menu is layer 100 at x 330..958 / y 199..535 (red title strip on 96/97) and is centre/centre anchored instead (latched from the index cell, cleared by B/Plus/Minus so topic pages stay centred)
+   of right/bottom, so it stays in the middle (tested 4:3 and 32:9 Edges).
+   Menus are windows: layer 97/98 (pause menu, item box and Change Appearance → Change Armor Pigment, the
+   village Multiplayer Menu, the chat log) are always centre/centre anchored, so the 4:3 squash does not pull
+   a window's top and bottom apart and Edges/ultrawide does not pull its panels to opposite edges. The chat
+   menu latches from its left log and centres the matching layer-96/100 right-hand pieces too.
+   Menus with a 3D preview (item box Change Appearance/Pigment, Multiplayer Connect, Smithy/equipment)
+   keep their 2D layer in the preview's depth pass; flat 2D UI is now transformed there too (latched by a
+   layer-97/98 draw), so the window no longer centres for one frame and reverts when the preview pass starts.
+   The Connect window's layer-100 preview/list panels and layer-96 rows are latched and centred together;
+   the 4:3 empty header above the rows is gone (tested 4:3). The Change Armor Pigment window is also
+   layer 100 (x 926..1254, y 56..318; the rotated colour diamonds at x 1071 latch it) and is centred as one
+   piece, tested at 4:3 and 32:9. The colour-select screen after picking a piece is the larger layer-100 window
+   (x 885..1254, y 56..479; fill at x 1070,y 268) and is latched and centred the same way.
+   Narrower than 16:9 (16:10, 3:2, 4:3) fills the picture: the camera keeps 16:9's width and gains
+   height (Vert+) and exec.c flattens/edge-anchors the HUD (sy). 4:3 fits; below 4:3 the picture is clamped to
+   4:3 with bars. Tested 1280x720, 1280x800, 1024x768 (now 4:3), 1680x720 Center, 1792x504 / 1680x840 Edges: hunt HUD, pause menu, help box, equipment windows,
    nameplates. 16:10 fixes by Oddity-git (PR 21, 2026-10-26; tested on a Steam Deck size, Linux): target cam icons
    top, the loading screen as one picture (layer 110 strips at y 168 / 433 / 570), layer 98 with its 97 menu, the
    Request Log / quest card (layer 100 beside a 97 menu) top, the Quest Complete border and results rule bottom,

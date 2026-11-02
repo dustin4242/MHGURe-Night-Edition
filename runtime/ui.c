@@ -7,6 +7,7 @@
 #include <SDL3/SDL.h>
 
 #include "config.h"
+#include "hle/armor_class.h"
 #include "mods.h"
 #include "rt.h"
 
@@ -96,5 +97,6 @@ int ui_run(void) {
         }
         host_input_update();
         cheats_frame();
+        armor_class_frame();
     }
 }

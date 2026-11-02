@@ -26,6 +26,8 @@ void input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry)
     static uint64_t raw;
     uint64_t down = buttons & ~raw;
     raw = buttons;
+
+    { extern int g_help_menu_latch; if (down & ((1ull << BTN_B) | (1ull << BTN_PLUS) | (1ull << BTN_MINUS))) g_help_menu_latch = 0; }
     if (down & (1ull << BTN_A)) g_a_pressed_ns = plat_now_ns();
     if (down & (1ull << BTN_B)) g_b_pressed_ns = plat_now_ns();
     if (down & (1ull << BTN_PLUS)) g_plus_pressed_ns = plat_now_ns();

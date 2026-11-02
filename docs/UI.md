@@ -62,6 +62,52 @@ if (g_ui_size[0] < 1280) g_ui_size[0] = 1280;   // never below the game's own ca
 the picture's aspect, clamped to at most the picture's aspect. That is the whole
 "give the game's 2D canvas the HUD's width" half of the ultrawide feature.
 
+Layer 96 is normally the bottom-left dialogue/help box, but the village's shortcut
+panel (`ZL Multiplayer Menu`, `X World Map`, `Y Hunter Search`) is drawn on layer 96
+at the top-right (`x > 900`, `y < 300`). That case is right/top-anchored instead, so
+`Edges` on an ultrawide picture and 3:2/4:3 keep the panel at the top-right rather
+than dragging it toward the middle. The interaction prompt that appears before a
+chest/NPC (`A Item Box`, `A Ranch Paw`) is also layer 96, at the top-left
+(`x < 500`, `y < 120`): it is pinned Left/Top, so 4:3 does not treat it as bottom-left
+dialogue and pull it down the picture.
+
+The village Minus help menu (`Village/Hub`, `World Map`, `Multiplayer Menu`, ...) is a
+centred two-column window on layer 100: columns around `x` 330/484 and 796/958,
+`y` 199..535. Its bottom-left cell at (330, 433) identifies it, and its columns are
+centre-anchored (and vertically centred) instead of using layer 100's right/bottom
+anchor. Its red title strip (also seen on layers 96/97) gets the same centre treatment
+while the help menu is up: the index cell latches that mode and B/Plus/Minus clears it,
+so selecting a topic keeps the whole help window, banner included, in the middle on
+4:3, 3:2 and Edges/ultrawide. The target cam, item bar and prompts on layer 100 keep
+their normal anchors.
+
+Layers 97 and 98 are the game's 16:9 **menu windows** (pause menu, item box and its
+sub-menus — including Change Appearance → Change Armor Pigment — the village
+Multiplayer Menu, and the chat log). They are always centre/centre anchored: at 16:9 the
+transform is an identity, at 4:3/3:2 the vertical centring keeps a window's top and
+bottom pieces together instead of flattening them apart, and on Edges/ultrawide the
+horizontal centring stops its panels being pulled to opposite screen edges. The chat
+menu also latches from its left-hand log and centre-anchors the matching layer-96/100
+right-hand player list and entry box, so the two halves stay one window.
+
+Some menus render a 3D preview and put their 2D layer in the preview pass, which has a
+depth buffer: the item box's Change Appearance/Change Armor Pigment screens, the
+Multiplayer **Connect** window, and the Smithy/equipment previews. The old transform only
+ran in depthless passes, so such a window was placed on its opening frame and snapped back
+to the native layout once the preview pass started. The transform now also runs for flat
+2D UI in the depth pass (a layer-97/98 draw latches it, and the draw must use an
+orthographic matrix with no rotation), and the preview viewport is mapped to the same
+centred window. The Connect window itself is a layer-100 left preview panel plus the list
+panel (`x ~782` and `~1018`, `y 56..394`) with rows on layers 96/100; its fill latches a
+menu mode that centres both panels and the rows, so the 4:3 picture no longer stretches
+an empty header above them. The item box's **Change Armor Pigment** screen is another
+layer-100 window (`x ~926..1254`, `y ~56..318`); its colour diamonds at `x ~1071`,
+`y 154..298` are drawn rotated 45° (`m[0] == m[5] == 0.707`), which latches that window
+and centres its panel and rows too (tested 4:3 and 32:9). Picking an armour piece opens
+the colour-select screen, a larger layer-100 window (`x ~885..1254`, `y ~56..479`) with
+its fill at `x ~1070`, `y ~268`; that fill latches the window, so the swatch grid and the
+title/list below stay together too (tested 4:3 and 32:9).
+
 ## 2. Camera projection, aspect ratio and FOV — the three screen cameras
 
 The same `generated/main/main_218.c` feature also touches the 3D cameras, so the 3D view and
@@ -90,21 +136,21 @@ Each pair becomes (gen.py PATCHES; the second differs only in argument order):
 
 A camera only gets touched if it was built for 16:9 (`a > 1.77 && a < 1.786`); any other
 camera keeps its own aspect and fovy. For a 16:9 screen camera, its aspect becomes
-`g_render_aspect` (`config.c`: the picture's shape, at least 16:10) — that is Hor+ / the wider
+`g_render_aspect` (`config.c`: the picture's shape, at least 4:3) — that is Hor+ / the wider
 3D view — and its fovy is rewritten by `camera_fovy`:
 
 ```c
 float camera_fovy(float fovy, float aspect) {           // runtime/config.c
     if (aspect != g_render_aspect) return fovy;         // not a screen camera
     fovy *= g_fov_scale;                                // [Display] FOV
-    if (aspect < 16.0f / 9.0f)                          // 16:9 .. 16:10: Vert+
+    if (aspect < 16.0f / 9.0f)                          // narrower than 16:9: Vert+
         fovy = 2.0f * atanf(tanf(fovy * 0.5f) * (16.0f / 9.0f) / aspect);
     return fovy;
 }
 ```
 
-Below 16:10 the whole picture is dropped (config.c forces 16:10 with letterbox bars); between
-16:10 and 16:9 the camera keeps 16:9's width and gains height (Vert+). The other nine
+Below 16:9 (16:10, 3:2, 4:3) the camera keeps 16:9's width and gains height (Vert+);
+below 4:3 the picture is clamped to 4:3 with letterbox bars. The other nine
 `f_9c617c` callers are left untouched, so equipment-box previews, guild cards, etc. keep
 their own framing.
 
@@ -452,27 +498,21 @@ The one place the pause menu *is* handled concretely is the port's HUD repositio
 non-16:9 pictures, in `runtime/nvn/vulkan/exec.c` (the vertex stage of 2D draws, cbuf 3). The
 whole pause menu and every sub-menu inside it are drawn at NVN layer `pos_z = 97`; the text and
 labels that sit over them — e.g. the **Qty.** label of the quantity box — are a separate layer,
-`98` (exec.c ~lines 2265–2266). The rules there (exec.c ~2263–2287):
+`98`. Both layers use one rule (exec.c ~2298–2308): the anchor is **Centre** horizontally and
+the vertical anchor is **Centre**. At 16:9 `s`/`sy` are 1, so the rule does nothing there.
 
-| Part of the pause menu | Screen region (1280×720 layout) | Anchor |
-| --- | --- | --- |
-| Left window — Quest Info | `x ≤ 430` | Left |
-| Submenu & Pause Menu content — Combine, Items, the "Menu 1 / Menu 2" pages | `x > 430` | Right |
-| Quest Complete banner's lower border (slides in from y 739) | `y > 650` | Bottom (else Top) |
-
-So the menu's panel (the two menu pages, the Combine / Items sub-windows) stays pinned to the
-right edge and grows into the empty middle, while a left-side panel (Quest Info) stays on the
-left — the split is at `x = 430`. Vertically the menu keeps its **Top** anchor; only the Quest
-Complete banner's lower border drops to the bottom edge. Layer 98 (the Qty. label and any text
-over a menu) follows the same rule as the layer-97 menu under it; before this fix it used the
-generic rule, which left it centered 36 px below its top-anchored box (exec.c:2266).
+This replaced the old `x ≤ 430` Left / `x > 430` Right split. That split pinned the Menu pages,
+the Combine/Items sub-windows and the item box's Change Appearance windows to the right edge
+(the left-side Quest Info window to the left) on Edges/ultrawide, and its old Top/Bottom split
+pulled a window's top and bottom apart at 3:2 and 4:3. Keeping each window as one centred piece
+is what the item box, Change Armor Pigment, village Multiplayer Menu and chat log need.
 
 The pause menu also affects a neighbouring layer, `100`. When a pass drew a layer-97 menu, the
-flag `ui_menu_pass` is set (exec.c:693 declaration, cleared at 1133, set at 2276). A layer-100
+flag `ui_menu_pass` is set (exec.c:693 declaration, cleared at 1133, set at 2308). A layer-100
 left window then — the **Request Log** info panel / quest card (`x < 630`, `y < 560`) — is
-top-anchored so it lines up with the top-anchored 97 menu beside it, or the window splits.
-Without a menu in the pass (the results screen, whose labels on the left and numbers on the right
-are one table) those windows keep the layer's default Bottom anchor (exec.c:2286).
+top-anchored so its rows stay with the menu; the 97 menu itself is centred. Without a menu in
+the pass (the results screen, whose labels on the left and numbers on the right are one table)
+those windows keep the layer's default Bottom anchor.
 
 Sub-menu scissor: the item / Combine sub-windows are drawn through a scissor sized for the
 original layout; when a moved bar slides out from under it, exec.c relaxes that scissor for the
@@ -510,8 +550,8 @@ flag each sets:
 | --- | --- | --- | --- | --- |
 | `< 95` (94.0) | central notifications & banners ("Time limit: 50 min.") | Center | — | — |
 | `96.0` | dialogue & help text box (bottom left) | Left | Bottom | — |
-| `97.0` | pause menu & sub-menus: **Menu 1/2 pages, Items, Combine** (`x>430`) Right; **Quest Info** left window (`x≤430`) Left | by `x` split @430 | Top (Quest Complete border `y>650` → Bottom) | sets `ui_menu_pass` |
-| `98.0` | text drawn over menus — **Qty. label of the quantity box** — follows the 97 menu under it | as 97 | as 97 | — |
+| `97.0` | pause menu & sub-menus, item box/Change Appearance, village Multiplayer Menu, chat log — 16:9 windows | Center | Center | sets `ui_menu_pass` |
+| `98.0` | text drawn over menus — **Qty. label of the quantity box** — follows the 97 menu under it | Center | Center | — |
 | `99.0` | results-screen rule between its rows (`y` 266) | Center | forced **Bottom** (no center band) | — |
 | `100.0` | **Hunter Arts HUD** & bottom-right prompts (`y>600`); **target-cam selector** (`x>1000, y<360`); **Request Log** info panel / quest card (`x<630, y<560`); centered windows (`x` 640) stay one piece | Right | Bottom; **Top** for the selector, cutscene top bar (`y<10`), and the left panel when `ui_menu_pass` | `ui_menu_pass` |
 | `103.0` | in-hunt **Status HUD** (clock, HP bar, stamina, gauges, **palico** status, `y<500`) Left/Top; **Item Selector wheel** (`y≥500`) Right/Bottom | by `y` split @500 | Top / Bottom | sets `ui_relax_scissor` on the item bar |

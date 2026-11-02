@@ -216,8 +216,8 @@ static int parse_factors(const char *v, float f[4]) {
 
 // The vertical field of view (radians) a camera of this aspect gets (tools/gen.py PATCHES: the three callers of the
 // perspective matrix that load a camera's). One made for the screen (its 16:9 aspect replaced with g_render_aspect)
-// gets the FOV factor and, on a picture narrower than 16:9 (16:10), the height that keeps 16:9's width (Vert+): more
-// above and below instead of less to the sides. Other cameras keep their own.
+// gets the FOV factor and, on a picture narrower than 16:9 (16:10, 3:2, 4:3), the height that keeps 16:9's width
+// (Vert+): more above and below instead of less to the sides. Other cameras keep their own.
 float camera_fovy(float fovy, float aspect) {
     if (aspect != g_render_aspect) return fovy;
     fovy *= g_fov_scale;
@@ -565,14 +565,15 @@ void config_load(void) {
 
     int tw = g_config.width, th = g_config.height;  // (Borderless shows the image at the desktop size)
     if (g_config.display_mode == DISPLAY_BORDERLESS) tw = tw < desktop_w ? tw : desktop_w, th = th < desktop_h ? th : desktop_h;
-    // The picture's shape: the window's or AspectRatio's, at least 16:10. The game lays its HUD out for 16:9, which
-    // still fits down to 16:10 (a little flatter, nvn/vulkan/exec.c), so a narrower window (4:3) shows 16:10 with bars.
-    // Wider than 16:9 shows more to the sides, 16:9 to 16:10 more above and below (camera_fovy, gen.py PATCHES).
+    // The picture's shape: the window's or AspectRatio's, at least 4:3. The game lays its HUD out for 16:9;
+    // wider than 16:9 shows more to the sides, and a narrower picture (16:10, 3:2, 4:3) gets more height
+    // (Vert+: camera_fovy) while nvn/vulkan/exec.c flattens and edge-anchors the HUD so it still fits. Below
+    // 4:3 the HUD would be crushed too far, so the picture stays 4:3 with bars.
     float aspect = g_config.aspect_ratio > 0 ? g_config.aspect_ratio : (float)tw / (float)th;
-    if (aspect < 1.6f - 0.005f) {
+    if (aspect < 4.0f / 3.0f - 0.005f) {
         if (g_config.aspect_ratio > 0)
-            LOG("[config] AspectRatio %.3f is narrower than 16:10, which the HUD needs: using 16:10\n", aspect);
-        aspect = 1.6f;
+            LOG("[config] AspectRatio %.3f is narrower than 4:3: using 4:3\n", aspect);
+        aspect = 4.0f / 3.0f;
     }
     if (fabsf(aspect - 16.0f / 9.0f) < 0.01f) aspect = 16.0f / 9.0f;  // (1366x768 and the like)
     if (render_auto && g_config.fsr && g_config.display_mode == DISPLAY_BORDERLESS && (tw < desktop_w || th < desktop_h)) {

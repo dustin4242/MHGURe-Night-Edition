@@ -7,6 +7,7 @@
 #include "camera_jitter.h"
 #include "gamelib.h"
 #include "hle.h"
+#include "hle/armor_class.h"
 #include "kernel.h"
 #include "mods.h"
 
@@ -46,6 +47,7 @@ static void boot(const char *root) {
     dispatch_init();
     forge_init();  // (Forge plugins in the mods: runtime/forge.c)
     hpscale_init();  // (large monster HP by the number of hunters: runtime/hle/hpscale.c)
+    armor_class_init();  // (armour stats follow the equipped weapon's class: runtime/hle/armor_class.c)
     villagehub_init();  // (Village quests at the Hub / Pub counter: runtime/hle/villagehub.c)
     movelog_init();  // (debug, MHGU_LOG_MOVES: runtime/hle/movelog.c)
     quickhunt_init();  // (debug, MHGU_QUICKHUNT: runtime/hle/quickhunt.c)

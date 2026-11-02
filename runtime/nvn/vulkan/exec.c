@@ -691,6 +691,7 @@ static VkFormat pass_color[8], pass_depth;
 static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
 static bool ui_relax_scissor;  // the draw being set up moved a HUD piece out from under the game's scissor
 static bool ui_menu_pass;  // this pass drew a layer 97 menu before (the windows of layer 100 then sit beside Top-anchored ones)
+static uint64_t ui_menu_latch_until;  // a layer 97/98 menu was drawn recently (also inside a depth-preview pass)
 static int ui_last_vanchor = 1;  // 0 top, 1 centre, 2 bottom: how the last HUD quad was anchored vertically (a model preview follows its window)
 static bool ui_loading_pass;  // this pass draws the loading screen (its backdrop, layer 110, came first)
 static VkRenderPass pass_rp;
@@ -1225,14 +1226,13 @@ static bool ui_preview_map(PreviewMap *pm) {
     if (w < 8.0f || w > 0.9f * pw || h > 0.98f * ph) return false;  // (the scene itself: the whole picture)
     *pm = (PreviewMap){0, 1, 0, 1};
     if (asp > 16.0f / 9.0f) {
+        // HUD-window previews (Smithy, equipment, item-box appearance/pigment) belong to
+        // menu windows, and those are centred on every shape. Keep the preview in the
+        // middle of the picture with its window; anchoring by the old left/right window
+        // x split left the model on the right edge after the menu itself moved in.
         float s = (16.0f / 9.0f) / asp;
-        float anchor = g_ui_anchor_aspect < asp ? g_ui_anchor_aspect : asp;
-        float left_px = 640.0f * (1.0f - anchor / asp) * (pw / 1280.0f);
-        float cx = (vp[0] + w * 0.5f) / pw * 1280.0f;
         pm->kx = s;
-        if (cx <= 430.0f) pm->sx = left_px;
-        else if (cx >= 650.0f) pm->sx = pw - left_px - pw * s;
-        else pm->sx = pw * 0.5f * (1.0f - s);
+        pm->sx = pw * 0.5f * (1.0f - s);
     } else {
         float sy = asp / (16.0f / 9.0f);
         pm->ky = sy;
@@ -2207,12 +2207,30 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if (size < 16) size = 16;
     if (!guest_range_ok(r.addr, size)) return zero_buffer(size);
     if (stage == 0 && k == 3) ui_relax_scissor = false;
-    if (stage == 0 && k == 3 && !st.ds[0] && (pass_h == g_render_size[1] || pass_sy != 1.0f) &&  // (FSR: stand-ins)
+    if (stage == 0 && k == 3 && (pass_h == g_render_size[1] || pass_sy != 1.0f) &&  // (FSR: stand-ins)
         fabsf(g_render_aspect - 16.0f / 9.0f) > 0.01f) {
         if (size >= 64) {
             float m[16];
             memcpy(m, G2H((uint32_t)r.addr), 64);
             float pos_x = m[12], pos_y = m[13], pos_z = m[14];
+            // Most HUD/menu draws are in a pass without depth, but screens with a 3D preview
+            // (item box appearance/pigment, the Multiplayer Connect window, Smithy/equipment)
+            // put their 2D layer in the preview's depth pass. The old !st.ds[0] guard skipped
+            // those, so the window was placed on frame one and snapped back to native once the
+            // preview pass started. Transform the 2D UI (orthographic matrix, UI layers) there
+            // too; leave real 3D geometry (projected/rotated matrices) alone.
+            // A layer 97/98 menu is itself enough to say this is UI, even when it is drawn
+            // in a depth-preview pass. Latch it first, so the menu's own frame and the
+            // layer-100 windows over it get the same transform instead of waiting for a
+            // depthless frame that only the opening animation had.
+            if ((fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f) &&
+                fabsf(m[1]) < 0.001f && fabsf(m[4]) < 0.001f) {
+                ui_menu_latch_until = plat_now_ns() + 300000000ull;
+            }
+            bool ui_in_depth = st.ds[0] && plat_now_ns() < ui_menu_latch_until &&
+                               pos_z >= 93.5f && pos_z <= 110.5f &&
+                               fabsf(m[1]) < 0.001f && fabsf(m[4]) < 0.001f;
+            if (!st.ds[0] || ui_in_depth) {
 
             // Ignore fullscreen overlays (e.g. screen fade / full backdrop)
             bool is_fullscreen = (fabsf(pos_x - 640.0f) < 1.0f && fabsf(pos_y - 360.0f) < 1.0f &&
@@ -2221,7 +2239,8 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 
             if (!is_fullscreen) {
                 // The HUD keeps the 16:9 shape it is laid out in: on a wider picture its parts are narrowed (s) and moved
-                // toward their side, on a narrower one (16:10) flattened (sy) and moved toward the top or bottom.
+                // toward their side; on a narrower one (16:10, 3:2, 4:3) the elements are flattened (sy) and moved toward
+                // the top, bottom or middle, which is what lets 4:3 still fit edge to edge without overlapping.
                 float s = g_render_aspect > 16.0f / 9.0f ? (16.0f / 9.0f) / g_render_aspect : 1.0f;
                 float sy = g_render_aspect < 16.0f / 9.0f ? g_render_aspect / (16.0f / 9.0f) : 1.0f;
                 // Layer 110 is the loading screen's scrolling backdrop: strips at y 168 / 433 / 570 that must stay one picture.
@@ -2241,7 +2260,61 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 
                 bool is_3d_overlay = (pos_z > 180.0f);
                 float new_pos_x = pos_x, new_pos_y = pos_y;
-
+                // The village Minus help menu (Village/Hub, World Map, Multiplayer Menu, ...) is a
+                // centred two-column window on layer 100: its columns are at x ~330/484 and ~796/958,
+                // y ~199..535. The generic right anchor for that layer would drag it right on an
+                // Edges/ultrawide picture; detect its distinctive bottom-left cell and keep the
+                // whole window centred (also vertically, which helps 4:3/3:2).
+                extern int g_help_menu_latch;
+                static uint64_t help_until;
+                uint64_t unow = plat_now_ns();
+                if (fabsf(pos_z - 100.0f) < 0.5f && fabsf(pos_x - 330.0f) < 1.0f && fabsf(pos_y - 433.0f) < 1.0f) {
+                    help_until = unow + 200000000ull;
+                    g_help_menu_latch = 1;
+                }
+                bool help_menu = g_help_menu_latch || unow < help_until;
+                // The chat window (ZR + Minus) is a left-hand log on layer 97 and a
+                // right-hand player list/entry box on layer 100. Below 16:10 and on
+                // ultrawide both halves would be dragged to opposite edges, so latch
+                // the log's distinctive centre panel and keep the window together.
+                static uint64_t chat_until;
+                if (fabsf(pos_z - 97.0f) < 0.5f && pos_x > 20.0f && pos_x < 620.0f &&
+                    pos_y > 80.0f && pos_y < 700.0f && m[0] > 9.0f) {
+                    chat_until = unow + 300000000ull;
+                }
+                bool chat_menu = unow < chat_until;
+                // The village Connect window is layer 100: a left background/preview panel
+                // (x ~782) plus the list panel (x ~1018), with the rows on layers 96/100.
+                // Its top and bottom were anchored apart, so at 4:3 the preview stretched
+                // into an empty dark header above the rows. Latch the panel fills and keep
+                // the whole window centred.
+                static uint64_t mpmenu_until;
+                if (fabsf(pos_z - 100.0f) < 0.5f && pos_y > 100.0f && pos_y < 260.0f &&
+                    ((pos_x > 1000.0f && pos_x < 1030.0f && m[0] > 20.0f) ||
+                     (pos_x > 770.0f && pos_x < 800.0f && m[0] > 200.0f))) {
+                    mpmenu_until = unow + 300000000ull;
+                }
+                bool mp_menu = unow < mpmenu_until;
+                // The item box's Change Armor Pigment screen is another layer-100 window:
+                // x ~926..1254, y ~56..318, with the colour diamonds at x ~1071,y 154..298
+                // drawn rotated 45 deg (m[0] == m[5] == 0.707). Its top/list used to get
+                // different anchors; latch the diamonds and centre the window as one piece.
+                static uint64_t pigment_until;
+                if (fabsf(pos_z - 100.0f) < 0.5f && pos_x > 1060.0f && pos_x < 1082.0f &&
+                    pos_y > 145.0f && pos_y < 305.0f && fabsf(m[0] - 0.707107f) < 0.001f &&
+                    fabsf(m[5] - 0.707107f) < 0.001f) {
+                    pigment_until = unow + 300000000ull;
+                }
+                bool pigment_menu = unow < pigment_until;
+                // Picking an armor piece opens the colour-select screen: a larger layer-100
+                // window (x ~885..1254, y ~56..479; fill at x ~1070,y ~268). Latch it so its
+                // swatch panel and the title/list below stay one centred window too.
+                static uint64_t color_until;
+                if (fabsf(pos_z - 100.0f) < 0.5f && pos_x > 1060.0f && pos_x < 1080.0f &&
+                    pos_y > 260.0f && pos_y < 276.0f && m[0] > 17.0f && m[5] > 20.0f) {
+                    color_until = unow + 300000000ull;
+                }
+                bool color_menu = unow < color_until;
                 if (!is_3d_overlay) {
                     enum { ANCHOR_LEFT, ANCHOR_RIGHT, ANCHOR_CENTER } anchor = ANCHOR_CENTER;
                     // vertically one anchor per layer (or per part of one), so a window drawn in pieces stays together
@@ -2257,33 +2330,59 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         // 94.0: Central notifications & banners ("Time limit: 50 min.")
                         anchor = ANCHOR_CENTER;
                     } else if (fabsf(pos_z - 96.0f) < 0.5f) {
-                        // 96.0: Dialogue & Help text box (bottom left)
-                        anchor = ANCHOR_LEFT;
-                        vanchor = V_BOTTOM;
-                    } else if (fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f) {
-                        // 97.0: Menus and Submenus
-                        // 98.0: text drawn over them (the Qty. label of the quantity box): it used the generic rule, which
-                        // centered it 36 px below its top-anchored box
-                        // Left window (Quest Info: x <= 430) -> Left anchor
-                        // Submenu & Pause Menu (Combine, Items, Menu 1/2: x > 430) -> Right anchor
-                        if (pos_x > 430.0f) {
+                        // 96.0: Dialogue & Help text box (bottom left), but the village shortcut panel
+                        // (Multiplayer Menu / World Map / Hunter Search) uses this layer too, at the
+                        // top-right. Keep that one right/top-anchored so Edges does not pull it into
+                        // the middle with the 16:9 compression. The red title strip of the Minus help
+                        // menu is also on this layer: when the help menu is up, keep that strip with
+                        // the centred help window instead.
+                        // The interaction prompt ("A Item Box", "A Ranch Paw", ...) is a
+                        // small top-left bar on this layer. Keep it at the top-left corner
+                        // instead of treating it as bottom-left dialogue text.
+                        if (pos_x < 500.0f && pos_y < 120.0f) {
+                            anchor = ANCHOR_LEFT;
+                            vanchor = V_TOP;
+                        } else if ((help_menu && pos_x > 900.0f && pos_y > 150.0f && pos_y < 800.0f) ||
+                            ((chat_menu && pos_x > 900.0f && pos_y > 120.0f && pos_y < 560.0f) ||
+                             (mp_menu && pos_x > 700.0f && pos_y < 560.0f))) {
+                            anchor = ANCHOR_CENTER;
+                            vanchor = V_CENTER;
+                        } else if (pos_x > 900.0f && pos_y < 300.0f) {
                             anchor = ANCHOR_RIGHT;
+                            vanchor = V_TOP;
                         } else {
                             anchor = ANCHOR_LEFT;
+                            vanchor = V_BOTTOM;
                         }
-                        // The Quest Complete banner's lower border slides in from y 739: it belongs to the bottom edge.
-                        vanchor = pos_y > 650.0f ? V_BOTTOM : V_TOP;
+                    } else if (fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f) {
+                        // 97.0: Menus and Submenus (pause, item box and every sub-menu, the village
+                        // multiplayer menu, the chat log, quest info).
+                        // 98.0: text drawn over them (the Qty. label of the quantity box).
+                        // These are 16:9 windows, not edge HUD: keep each one centred on both axes
+                        // so Edges does not pull its panels to opposite sides and 4:3/3:2 do not
+                        // pull its top and bottom apart. At 16:9 s/sy are 1, so nothing changes there.
+                        anchor = ANCHOR_CENTER;
+                        vanchor = V_CENTER;
                         if (fabsf(pos_z - 97.0f) < 0.5f) ui_menu_pass = true;
                     } else if (fabsf(pos_z - 100.0f) < 0.5f) {
                         // 100.0: Hunter Arts HUD and bottom right prompts (y > 600) -> Bottom anchor
                         // Target cam selector (right edge, y 42..82: x > 1000, y < 360) -> Top anchor, so it stays by the minimap.
                         // (Windows centered on this layer, x 640, must stay one piece: they keep the Bottom anchor.)
+                        if ((help_menu && pos_x > 300.0f && pos_x < 1300.0f && pos_y > 150.0f && pos_y < 800.0f) ||
+                            (chat_menu && pos_x > 900.0f && pos_y < 560.0f) ||
+                            (mp_menu && pos_x > 700.0f && pos_y < 560.0f) ||
+                            (pigment_menu && pos_x > 900.0f && pos_y < 700.0f) ||
+                            (color_menu && pos_x > 800.0f && pos_y < 600.0f)) {
+                            anchor = ANCHOR_CENTER;
+                            vanchor = V_CENTER;
+                        } else {
                         anchor = ANCHOR_RIGHT;
                         // The black bar at the top of a cinematic (y 0, its twin at y 720 is Bottom) must stay at the top edge, or the scene shows above it.
                         // The left windows (Request Log info panel, quest card: x < 630, y < 560) are drawn here too, beside the Top-anchored menus
                         // of layer 97: one anchor for the whole window, or it splits. Without a menu in the pass (the results screen, whose
                         // labels on the left and numbers on the right are one table) they stay Bottom like the rest of the layer.
                         vanchor = ((pos_x > 1000.0f && pos_y < 360.0f) || pos_y < 10.0f || (ui_menu_pass && pos_x < 630.0f && pos_y < 560.0f)) ? V_TOP : V_BOTTOM;
+                        }
                     } else if (fabsf(pos_z - 103.0f) < 0.5f) {
                         // 103.0: In-hunt Status HUD & Item Selector
                         // Status HUD (Clock, HP bar, Stamina, gauges, palico status: y < 500) -> Left anchor
@@ -2334,11 +2433,13 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 memcpy(sp.ptr, m, 64);
                 return ubo_span(sp, size);
             }
+            }
         }
     }
     return ubo_span(guest_copy(r.addr, size), size);
 }
 
+int g_help_menu_latch;  // (village Minus help index; input.c clears it on B/Plus/Minus)
 static int32_t fsr_cap_base;  // (FSR capture draw: its FSR_CAP_BASE_BINDING value, stage_set)
 
 static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out) {
