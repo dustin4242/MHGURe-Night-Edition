@@ -10,6 +10,13 @@ player set it.
 > rewrite currently reaches only the transmog/model resolvers, not the stat calculation, which
 > resolves through `f_33f03c`. Whether the derived defence and skills therefore follow the
 > weapon class is open; `MHGU_ARMOR_DEBUG=1` (section 6) is the test that settles it.
+>
+> A full live run (boot → save → village → house → item box → *Manage Equipment → Select
+> Equip.*) was performed on 2026-11-03 and is recorded in section 6, **"Live caller census"**.
+> Its result: the alias never fired (`swapped=00000000` on all 13 log lines). Two independent
+> causes were confirmed — the weapon was never drawn, so the class cache stayed 0 (section 4),
+> and every lookup carrying a real armour id came from the out-of-band identity/model path
+> (section 3). The feature is therefore inert in exactly the flow the report describes.
 
 This covers the three files that make the feature work:
 
@@ -278,6 +285,15 @@ and reused during sheathed/placeholder moments, so the armour swap no longer dep
 weapon being physically in hand at lookup time. A level-3 weapon is recognized the same as
 its base because only the *id* changes, not the category.
 
+**Live caveat — the cache does not fix the report flow (verified 2026-11-03).** The cache only
+fills if a real weapon entry is ever *seen*. A run that boots, loads the save and walks straight
+into the item box never reads a weapon category at all: the only weapon line in the whole log is
+`[armor] unknown weapon entry: +4=00010053 (type=83 id=1)`, so `weapon_class()` returns 0 for the
+entire session and `equip_data()` skips the alias (`if (want && ...)`). The cache therefore helps
+only after the hunter has drawn the weapon once in the field; it does not by itself make the
+"load save → village → item box" flow work. The real source of truth is the *equipped* weapon
+record, not the drawn-item slot (see section 8).
+
 ---
 
 ## 5. Per-frame maintenance — `armor_class_frame()`
@@ -315,6 +331,51 @@ grep '\[armor\]' log.txt
 Startup note: the first frame can sit idle for ~30–60 s while the **RomFS image index**
 (12.6 GB / ~35,531 files) is built. That is not a hang; wait for the `[romfs]` log line.
 
+### Live caller census (fresh boot → item box, 2026-11-03)
+
+Reproduced end to end with the control pipe on a hidden run (`MHGU_HIDDEN=1`,
+`SDL_VIDEODRIVER=x11`, `MHGU_ARMOR_DEBUG=1`): boot → title → `A` (skip movie) → load save →
+village → `X` (World Map) → `A` (Bherna) → `A` (travel) → `STICK_UP 240` (walk to the house) →
+`A` (Item Box) → `DOWN`×5 → `A` (Manage Equipment) → `A` (Select Equip.). The complete armour
+census for that session, verbatim:
+
+```
+[armor] lookup caller=0046ec84 type=1 id=0  in_range=0 swapped=00000000
+[armor] lookup caller=002dbe74 type=1 id=0  in_range=1 swapped=00000000
+[armor] lookup caller=002dbf78 type=1 id=0  in_range=1 swapped=00000000
+[armor] lookup caller=002db0b0 type=1 id=0  in_range=1 swapped=00000000
+[armor] lookup caller=002ddd48 type=1 id=0  in_range=1 swapped=00000000
+[armor] lookup caller=00487454 type=1 id=0  in_range=0 swapped=00000000
+[armor] lookup caller=0048a30c type=2 id=0  in_range=0 swapped=00000000
+[armor] unknown weapon entry: +4=00010053 (type=83 id=1) +8=00000000 +c=00000000
+[armor] lookup caller=006ea4c0 type=1 id=23 in_range=0 swapped=00000000
+[armor] lookup caller=006eb170 type=1 id=23 in_range=0 swapped=00000000
+[armor] lookup caller=006eb2fc type=5 id=3  in_range=0 swapped=00000000
+[armor] lookup caller=0047b410 type=1 id=23 in_range=0 swapped=00000000
+[armor] lookup caller=0076ea38 type=1 id=3  in_range=0 swapped=00000000
+```
+
+What the run establishes:
+
+- **The in-band callers are real but only ever ask for `id=0`.** Four `0x2dxxxx` sites
+  (`0x2dbe74`, `0x2dbf78`, `0x2db0b0`, `0x2ddd48`) match the gate, so the range is not stale —
+  but they fire during boot with an empty slot. Two of them (`0x2dbe74`, `0x2dbf78`, `0x2ddd48`)
+  are not the three sites the static scan predicted (`0x2db138`, `0x2db1e8`, `0x2db254`), so the
+  static audit under-counts in-band callers.
+- **Every real armour id arrives out of band.** `id=23` (head) and `id=3` (chest/legs) come
+  from `0x6ea4c0`, `0x6eb170`, `0x6eb2fc`, `0x47b410`, `0x76ea38` — i.e. the identity/model/UI
+  path, all `in_range=0`. So the path that draws the hunter is *not* aliased, which matches
+  §3's conclusion.
+- **`swapped=` was `00000000` on every line for the whole session**: the alias never fired. Two
+  independent reasons, both confirmed above — the class cache was 0 (weapon never drawn) and the
+  callers carrying real ids are out of band. A `swapped=0000xxxx` line is the evidence that the
+  alias actually applied, and none appeared.
+- **The observed save could not exercise the swap anyway:** 1/10 equipment-box pages are
+  populated, the box holds no spare armour, and the hunter wears a class-consistent blademaster
+  set (head 23, chest 3, arms 23, waist 3, legs 3) with a level-3 *Petrified Horn*. Demonstrating
+  the alias live needs either purchased armour or guest-memory pokes.
+
+
 ---
 
 ## 7. Control-console aids used during RE
@@ -344,6 +405,20 @@ weapon-category table above and the sheathed placeholder behaviour.
   piece ever fails to equip while its class *is* cached correctly, log with `MHGU_ARMOR_DEBUG=1`
   and check which callers appear — the census will show whether the restriction path is aliased
   at all.
+- **The class cache needs a real equipped-weapon source (open, confirmed live)**: because
+  `weapon_class()` only learns from the *drawn* entry, a session that never draws the weapon
+  runs with class 0 and the alias is dead (§4, §6). The equipped weapon record must exist
+  somewhere other than `+0x94`; `f_3449b4` walks a list as `object + index*0x2c + 0x20`
+  (`LD16 & 0x1f` = category) and reads `LD8(object + 0x4d4)`, which is the obvious place to
+  look for it. Until that is found, the feature is a no-op for the reported flow.
+- **Series-id namespace (open, unverified)**: the equipment ids are *per slot* — the hunter's
+  head and arms entries both read `id=23` — while `armor_pairs.h` is indexed by the **global**
+  record number of `armorSeriesData.asd`. Whether the game's per-type tables use the same
+  numbering as the `.asd` record index was not established. If they do not, `armor_series_class[id]`
+  and `pair[id]` read the wrong record and the swap would exchange a piece for an unrelated
+  one. The check once armour exists: equip a known class-split piece, watch for
+  `swapped=0000xxxx`, and confirm the substituted id is that piece's counterpart (§2) and not
+  another slot's record.
 - **Caller-range fragility**: the `0x2d0000..0x2e3000` range is tied to the current build's
   `main_012` layout. A rebuilt/updated `mhgugame.so` could move these addresses; the alias
   would silently stop applying. The `[armor] lookup ... in_range=1` lines are the regression
