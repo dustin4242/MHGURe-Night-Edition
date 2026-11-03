@@ -1,14 +1,15 @@
 // Armour appearance stays the piece the hunter equipped, while its stats follow the class of the equipped weapon.
 //
-// The game asks f_33c208 (type, id) for an equipment data row.  Armour rows are types 1..5; a row whose series is
-// Blademaster-only or Gunner-only has a counterpart of the other class (armor_pairs.h, generated from
-// armorSeriesData.asd).  We alias only that lookup: when the equipped weapon's class does not match the piece, the
-// data row returned is the counterpart's.  The equipment itself is never modified, so:
-//   - the model, name, colour and existing transmog stay exactly as the player set them (no transmog flag added),
-//   - the class restriction and its UI use the counterpart's class data,
-//   - nothing is written to the save,
-//   - changing the weapon changes the alias immediately; the game's normal equipment-change recalculation reads the
-//     new rows.
+// The game asks f_33c208 (manager, type, id) for an element of one of its per-type equipment tables (type 1..5 are the
+// armour slots).  A series that is Blademaster-only or Gunner-only has a counterpart of the other class
+// (armor_pairs.h, generated from armorSeriesData.asd).  We alias only that lookup: when the equipped weapon's class
+// does not match the piece, the element returned is the counterpart's.  The equipment entry itself is never modified,
+// so the id, name, model and transmog stay the player's, and nothing is written to the save.
+//
+// The alias is gated on the *caller* (see equip_data) because the same lookup also serves identity/name/model queries.
+// research/armor-class.md section 3 documents what the gate actually covers in this build: the equipment-box and
+// transmog/model path is aliased, while the stat recalculation resolves through f_33f03c and is not.  Run with
+// MHGU_ARMOR_DEBUG=1 to log one "[armor] lookup" line per distinct caller and re-derive the gate after a rebuild.
 //
 // "Both classes" armour is not aliased.  Every class-split series in the data has a counterpart, so no defense
 // scaling is needed for armour that can be equipped by the current class.
@@ -65,21 +66,52 @@ static uint8_t weapon_class(void) {
 }
 
 // f_33c208(manager, type, id): for a class-incompatible armour row, ask the table for the counterpart instead.
+
+// Debug census of the callers that reach this lookup for armour.  One line per distinct (caller, gate, decision) so
+// the caller gate can be re-derived after any rebuild -- the 0x2d0000..0x2e3000 range below is build-specific, and
+// an address appearing in this list is the evidence that the gate still fires there.  Bounded, so it cannot flood.
+// Only active with MHGU_ARMOR_DEBUG=1.
+static void log_lookup(uint32_t caller, uint32_t type, uint32_t id, uint32_t out, bool in_range) {
+    static int dbg = -1;
+    if (dbg < 0) dbg = getenv("MHGU_ARMOR_DEBUG") != NULL;
+    if (!dbg) return;
+    enum { MAX_SEEN = 64 };
+    static uint32_t seen[MAX_SEEN];
+    static int n_seen;
+    bool swapped = out != id;
+    uint32_t key = caller | (in_range ? 0x40000000u : 0u) | (swapped ? 0x80000000u : 0u);
+    for (int i = 0; i < n_seen; i++)
+        if (seen[i] == key) return;
+    if (n_seen == MAX_SEEN) return;
+    seen[n_seen++] = key;
+    LOG("[armor] lookup caller=%08x type=%u id=%u in_range=%d swapped=%08x\n", caller, type, id, in_range,
+        swapped ? out : 0);
+}
+
 static void equip_data(Cpu *c) {
-    uint32_t type = c->r[1], id = c->r[2];
-    if (type >= 1 && type <= 5 && id < ARMOR_SERIES_COUNT) {
-        uint32_t next = 0, caller = dispatch_function_at(c->r[14], &next);
-        // Only the equipment-stat/skill calculation code in main_012 uses the counterpart row.  The UI's identity,
-        // name and model lookups go through their own callers and keep the real id.
-        if (caller >= 0x2d0000u && caller < 0x2e3000u) {
+    uint32_t type = c->r[1], id = c->r[2], out = id;
+    bool armour = type >= 1 && type <= 5 && id < ARMOR_SERIES_COUNT;
+    bool in_range = false;
+    uint32_t caller = 0;
+    if (armour) {
+        uint32_t next = 0;
+        caller = dispatch_function_at(c->r[14], &next);
+        // The gate: only callers inside the equipment/skill calculation block are aliased.  The UI's identity, name
+        // and model lookups live in other bands (0x3x/0x4x/0x7x/0x8x) and keep the real id.  Note that this covers
+        // the direct call sites only: code that resolves a piece through f_33f03c never matches, because its call to
+        // this function arrives with LR inside f_33f03c (see research/armor-class.md section 3).
+        in_range = caller >= 0x2d0000u && caller < 0x2e3000u;
+        if (in_range) {
             uint8_t cls = armor_series_class[id];
             uint8_t want = weapon_class();
             if (want && cls && cls != want) {
                 uint16_t pair = armor_series_pair[id];
-                if (pair != 0xffffu && pair < ARMOR_SERIES_COUNT && armor_series_class[pair] == want) c->r[2] = pair;
+                if (pair != 0xffffu && pair < ARMOR_SERIES_COUNT && armor_series_class[pair] == want) out = pair;
             }
         }
+        log_lookup(caller, type, id, out, in_range);
     }
+    if (out != id) c->r[2] = out;
     fnhook_call_original(c, FN_EQUIP_DATA);
 }
 
@@ -88,8 +120,9 @@ void armor_class_init(void) {
 }
 
 // The game removes class-incompatible armour from the equipped set when a weapon changes class.  Keep the pieces the
-// player had: on a class change, put the saved entries back.  The stat hook still makes their data follow the new
-// class, and the entries themselves keep their original id/name/model and transmog.
+// player had: on a class change, put the saved entries back.  The entries themselves keep their original
+// id/name/model and transmog; whether their contribution to the hunter's stats is aliased depends on the caller gate
+// (see research/armor-class.md section 3).
 typedef struct {
     uint32_t w[11];  // the whole 44-byte entry (pointer, type/id, transmog, the rest: box/equipped state)
     bool valid;
