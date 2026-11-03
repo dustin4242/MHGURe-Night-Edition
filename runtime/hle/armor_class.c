@@ -15,6 +15,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include "hle/armor_class.h"
 #include "hle/armor_pairs.h"
@@ -30,13 +31,37 @@ static bool is_gunner_type(uint16_t type) {
     return (type >= 11 && type <= 13) || type == 17;  // light/heavy bowgun, bow
 }
 
+static uint32_t g_last_weapon_raw;  // raw weapon +4 word, for the unrecognised-weapon debug log
+
 static uint16_t current_weapon_type(void) {
     uint32_t sp = LD32(G_SPLAYER);
     if (sp < 0x08000000u || sp >= 0xa0000000u) return 0;
     uint32_t weapon = sp + PLAYER_WEAPON;
     if (LD32(weapon) != ITEM_PTR) return 0;
     uint16_t type = LD16(weapon + 4);
-    return type >= 1 && type <= 21 ? type : 0;
+    if (type >= 1 && type <= 21) return type;
+    // Outside the weapon categories: normally the sheathed-weapon placeholder (type 83).  weapon_class() keeps the
+    // last known class across these, so this only logs under MHGU_ARMOR_DEBUG to catch any real unrecognised weapon.
+    static int dbg = -1;
+    if (dbg < 0) dbg = getenv("MHGU_ARMOR_DEBUG") != NULL;
+    if (dbg && LD32(weapon + 4) != g_last_weapon_raw) {
+        g_last_weapon_raw = LD32(weapon + 4);
+        LOG("[armor] unknown weapon entry: +4=%08x (type=%u id=%u) +8=%08x +c=%08x\n",
+            LD32(weapon + 4), LD16(weapon + 4), LD16(weapon + 6), LD32(weapon + 8), LD32(weapon + 0xc));
+    }
+    return 0;
+}
+
+// Blademaster/gunner class of the weapon the hunter is using.  +0x94 is the *drawn* item, which reads as a
+// placeholder (type 83) while the weapon is sheathed (e.g. inside the item box), so current_weapon_type() returns 0
+// at those moments.  Remember the class from the last real weapon and keep using it while the drawn entry is a
+// placeholder, so the armour swap is not skipped just because the weapon is temporarily not in hand.
+static uint8_t g_weapon_class;  // 0 unknown, 1 blademaster, 2 gunner
+
+static uint8_t weapon_class(void) {
+    uint16_t type = current_weapon_type();
+    if (type) g_weapon_class = is_gunner_type(type) ? 2 : 1;
+    return g_weapon_class;
 }
 
 // f_33c208(manager, type, id): for a class-incompatible armour row, ask the table for the counterpart instead.
@@ -48,9 +73,8 @@ static void equip_data(Cpu *c) {
         // name and model lookups go through their own callers and keep the real id.
         if (caller >= 0x2d0000u && caller < 0x2e3000u) {
             uint8_t cls = armor_series_class[id];
-            uint16_t weapon = current_weapon_type();
-            uint8_t want = is_gunner_type(weapon) ? 2 : 1;
-            if (weapon && cls && cls != want) {
+            uint8_t want = weapon_class();
+            if (want && cls && cls != want) {
                 uint16_t pair = armor_series_pair[id];
                 if (pair != 0xffffu && pair < ARMOR_SERIES_COUNT && armor_series_class[pair] == want) c->r[2] = pair;
             }
@@ -74,6 +98,7 @@ typedef struct {
 static SavedArmor g_saved[5];
 static uint32_t g_arm_link;  // box-slot link for the arms slot (sp+0x88), used by the equipment-box marker
 static bool g_arm_link_valid;
+static uint32_t g_last_weapon;  // for the MHGU_ARMOR_DEBUG weapon-type log
 
 static uint32_t player_base(void) {
     uint32_t sp = LD32(G_SPLAYER);
@@ -105,12 +130,21 @@ void armor_class_frame(void) {
     uint32_t sp = player_base();
     if (!sp) return;
     uint16_t weapon = current_weapon_type();
+    uint8_t cls = weapon_class();  // cached: survives a sheathed/placeholder drawn entry
+    bool gunner = cls == 2;
     bool arms_restored = false;
+
+    static int dbg = -1;
+    if (dbg < 0) dbg = getenv("MHGU_ARMOR_DEBUG") != NULL;
+    if (dbg && weapon && weapon != (uint16_t)g_last_weapon) {
+        g_last_weapon = weapon;
+        LOG("[armor] weapon type=%u class=%s\n", weapon, is_gunner_type(weapon) ? "gunner" : "blademaster");
+    }
 
     for (int i = 0; i < 5; i++) {
         uint32_t e;
         if (armor_entry(sp, i, &e)) {
-            if (weapon) clear_auto_tm(e, is_gunner_type(weapon));
+            if (cls) clear_auto_tm(e, gunner);
             if (!g_saved[i].valid || LD32(e + 4) != g_saved[i].w[1]) {
                 for (int k = 0; k < 11; k++) g_saved[i].w[k] = LD32(e + 4u * (uint32_t)k);
                 g_saved[i].valid = true;
@@ -119,7 +153,7 @@ void armor_class_frame(void) {
         } else if (g_saved[i].valid) {
             e = sp + PLAYER_ARMOR + (uint32_t)i * 0x2cu;
             for (int k = 0; k < 11; k++) ST32(e + 4u * (uint32_t)k, g_saved[i].w[k]);
-            if (weapon) clear_auto_tm(e, is_gunner_type(weapon));
+            if (cls) clear_auto_tm(e, gunner);
             g_saved[i].w[2] = LD32(e + 8);
             if (i == 2) arms_restored = true;
         }
