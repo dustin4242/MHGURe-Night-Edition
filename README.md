@@ -67,7 +67,9 @@ The Options screen from the pause menu is one long list of 27 entries spread ove
 
 *The Graphics page. These are the same keys as `[Anti-aliasing]`, `[Upscaler]` and `[Display]` in `mhgurecomp.ini`, and changing one writes it back there. The rows the renderer builds at start-up (resolution, aspect ratio, FSR, Shader Prewarm) say so and take effect on the next start. FSR 4 needs an AMD RDNA 4 card and the FSR 4 build: [FSR4-PORT.md](docs/FSR4-PORT.md).*
 
-Gameplay also gains the HD UI and controller **Icons** rows when the Pixel Pack 4 textures are installed, and Controls gathers all 19 controller entries on one submenu. Multiplayer keeps hosting in the same window:
+Gameplay also gains the HD UI and controller **Icons** rows when the Pixel Pack 4 textures are installed, and Controls gathers all 19 controller entries on one submenu.
+
+Multiplayer keeps hosting in the same window:
 
 ![The Multiplayer page: Hosting, IP, Connect and Status](docs/images/options-multiplayer.jpg)
 
