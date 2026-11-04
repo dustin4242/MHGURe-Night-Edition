@@ -17,6 +17,8 @@ The game usually splits armor into Blademaster and Gunner sets and only lets you
 
 *The Jaggi Guards are equipped with the Blademaster Petrified Hunting Horn equipped as well. In the original game the piece cannot be equipped in this state since it is Gunner-only.*
 
+I added this because it's a feature that was implemented in modern Monster Hunter games which makes it so much easier to just pick the armor you want for your hunter. Not bound by a weapon class.
+
 Read [armor-class.md](docs/research/armor-class.md) if you want to dig in deeper on how this works exactly, but warning: all the markdowns I have in there are written by my local deepseek so it may need an overhaul to actually be readable.
 
 ## Requirements
