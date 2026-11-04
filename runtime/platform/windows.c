@@ -24,11 +24,16 @@ static bool lazy_commit(uint64_t a) {
     return VirtualAlloc((void *)(uintptr_t)base, COMMIT_CHUNK, MEM_COMMIT, PAGE_READWRITE) != NULL;
 }
 
+void (*plat_touch_hook)(uint64_t guest_addr, int write);
+
 static LONG CALLBACK vectored_handler(EXCEPTION_POINTERS *ep) {
     EXCEPTION_RECORD *er = ep->ExceptionRecord;
     if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
     uint64_t fa = er->ExceptionInformation[1];
-    if (lazy_commit(fa)) return EXCEPTION_CONTINUE_EXECUTION;
+    if (lazy_commit(fa)) {
+        if (plat_touch_hook) plat_touch_hook(fa - g_lo, er->ExceptionInformation[0] == 1);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -120,6 +125,15 @@ void plat_init(void) {
     timeBeginPeriod(1);
 }
 
+unsigned long plat_process_id(void) { return GetCurrentProcessId(); }
+bool plat_wait_process(unsigned long pid) {
+    HANDLE process = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (!process) return GetLastError() == ERROR_INVALID_PARAMETER;
+    DWORD result = WaitForSingleObject(process, 30000);
+    CloseHandle(process);
+    return result == WAIT_OBJECT_0;
+}
+
 bool plat_exe_path(char *buf, size_t size) {
     DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)size);
     return n > 0 && n < size;
@@ -170,6 +184,46 @@ bool plat_user_dir(char *buf, size_t size) {
     len = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, shrt, -1, buf, (int)size, NULL, &lossy);
     return len > 0 && !lossy;
 }
+
+bool plat_use_folder(const char *utf8, char *buf, size_t size) {
+    wchar_t dir[MAX_PATH];
+    if (!*utf8 || !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, dir, MAX_PATH)) return false;
+    for (wchar_t *p = dir; *p; p++) if (*p == L'/') *p = L'\\';
+    for (wchar_t *p = dir; (p = wcschr(p + 1, L'\\'));) {  // (each missing folder on the way, then the folder itself)
+        *p = 0;
+        CreateDirectoryW(dir, NULL);
+        *p = L'\\';
+    }
+    CreateDirectoryW(dir, NULL);
+    DWORD attr = GetFileAttributesW(dir);
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    BOOL lossy = FALSE;
+    int len = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, dir, -1, buf, (int)size, NULL, &lossy);
+    if (len > 0 && !lossy) return true;
+    wchar_t shrt[MAX_PATH];
+    DWORD m = GetShortPathNameW(dir, shrt, MAX_PATH);
+    if (!m || m >= MAX_PATH) return false;
+    len = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, shrt, -1, buf, (int)size, NULL, &lossy);
+    return len > 0 && !lossy;
+}
+
+static int count_files(const char *dir, int depth) {
+    char pat[MAX_PATH * 2];
+    if (depth > 32 || snprintf(pat, sizeof pat, "%s\\*", dir) >= (int)sizeof pat) return 0;
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileExA(pat, FindExInfoBasic, &fd, FindExSearchNameMatch, NULL, FIND_FIRST_EX_LARGE_FETCH);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    int n = 0;
+    do {
+        if (fd.cFileName[0] == '.') continue;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) { n++; continue; }
+        char sub[MAX_PATH * 2];
+        if (snprintf(sub, sizeof sub, "%s\\%s", dir, fd.cFileName) < (int)sizeof sub) n += count_files(sub, depth + 1);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    return n;
+}
+int plat_count_files(const char *dir) { return count_files(dir, 0); }
 
 void plat_error_box(const char *msg) { MessageBoxA(NULL, msg, "MHGU Recomp", MB_OK | MB_ICONERROR); }
 

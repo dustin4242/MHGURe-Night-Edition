@@ -1,0 +1,67 @@
+name: Bug report
+description: Something in MHGU Recomp doesn't work as it should.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Mods can sometimes cause problems that look like recomp bugs, so it helps to say whether you were using any.
+        If a mod looks like the cause, you're welcome to also share it in the [mod directory](https://github.com/Oddity-git/MHGURecomp-mods/issues/new?template=report-mod-issue.yml), which keeps track of mod issues. That's entirely optional, and you can report it here either way.
+  - type: dropdown
+    id: mods
+    attributes:
+      label: Were any mods installed?
+      description: Turning them all off in the Mods tab of the settings menu (F1), or moving your `mods` folder away, and trying again is the quickest way to find out.
+      options:
+        - "No, it happens with no mods installed"
+        - "Yes, but it also happens with all mods turned off"
+        - "Yes, and it only happens with mods on"
+        - "Yes, haven't tried without them / not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What goes wrong?
+      description: What you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: MHGU Recomp version
+      placeholder: "0.10.7"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - Linux
+        - Steam Deck
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: CPU and GPU, and on Linux the distribution.
+      placeholder: "Ryzen 5 5600, RX 6700 XT, Fedora 44"
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: |
+        Attach `log.txt` by dragging it into this box. It's next to `mhgurecomp.exe` (on Linux, next to `mhgurecomp`).
+        The game replaces it every time it starts, so copy it right after the problem, before starting the game again.
+    validations:
+      required: false

@@ -78,7 +78,10 @@ typedef struct NvnTexture {
     TexLayout hd_ui_init_layout;
     uint64_t hd_ui_buf;          // guest buffer holding the stock payload
     uint32_t hd_ui_buf_size;
+    bool screenshot;  // a buffer of the game's sScreenShot (made while g_nvn_making_screenshot was set)
 } NvnTexture;
+// Set by runtime/hle/camera_jitter.c on the thread making the game's screenshot buffers, while it does
+extern _Thread_local bool g_nvn_making_screenshot;
 
 typedef struct {
     uint32_t min_filter, mag_filter, wrap[3], compare_mode, compare_func, reduction;
@@ -191,6 +194,8 @@ void backend_pool_written(uint64_t addr, uint64_t size);
 void nvn_texture_dump(void);             // debug (control file: texdump)
 void nvn_textures_visit(void (*fn)(NvnTexture *, void *), void *arg);
 void backend_texture_dirty(NvnTexture *t);
+void backend_program_created(const NvnProgram *p);  // nvnProgramSetShaders (the renderer may prepare it ahead of use)
+void backend_photo_requested(void);  // the game asked for its quest photo (tools/gen.py: 0xa6f97c): drawn in the next frames
 void renderer_sync(void);
 uint64_t renderer_fence_seq(void);
 void renderer_wait_seq(uint64_t seq);

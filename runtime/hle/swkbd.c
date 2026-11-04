@@ -11,6 +11,7 @@
 
 #include "../hle.h"
 #include "../textinput.h"
+#include "chat.h"
 
 // nn::swkbd::ShowKeyboard(String *out, const ShowKeyboardArg &) -> Result. String = {void *ptr; size_t size}.
 HLE_FUNC("_ZN2nn5swkbd12ShowKeyboardEPNS0_6StringERKNS0_15ShowKeyboardArgE", swkbd_show) {
@@ -116,6 +117,7 @@ HLE_FUNC("_ZN2nn5swkbd14InlineKeyboard6AppearERKNS0_9AppearArgE", ik_appear) {
     for (int i = 0; i < 0x30; i++) snprintf(hex + 3 * i, 4, " %02x", LD8(a + (uint32_t)i));
     LOG("[swkbd] inline keyboard shown (frame %llu), AppearArg%s\n", (unsigned long long)g_present_count, hex);
     ik_state = 3;
+    chat_close();  // (the game's own entry takes the keyboard)
     ik_auto = getenv("MHGU_NAME") || getenv("MHGU_INLINE_CANCEL") ? 1 : 0;
     if (!ik_auto) textinput_begin(ik_initial, max);
 }

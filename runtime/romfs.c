@@ -9,9 +9,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "arcmerge.h"
 #include "rt.h"
 
 #define EMPTY 0xFFFFFFFFu
@@ -20,6 +22,7 @@
 typedef struct Dir Dir;
 typedef struct {
     char *name, *path;  // path: the host file
+    char *orig;         // the game's own file, once a mod has replaced it
     uint64_t size, data_off;
     uint32_t off;
     Dir *parent;
@@ -87,9 +90,26 @@ static int merge(Dir *dst, Dir *src) {
         int k = 0;
         while (k < dst->nfiles && strcasecmp(dst->files[k]->name, f->name)) k++;
         if (k < dst->nfiles) {
-            free(dst->files[k]->path);
-            dst->files[k]->path = strdup(f->path);
-            dst->files[k]->size = f->size;
+            File *d = dst->files[k];
+            size_t nl = strlen(f->name);
+            char merged[1200];
+            // (two mods' archives: both's changes. One with only some of the game's entries: those over the rest)
+            if (nl > 4 && !strcasecmp(f->name + nl - 4, ".arc") && (d->orig || arc_partial(d->path, f->path)) &&
+                arc_merge(d->orig ? d->orig : d->path, d->path, f->path, merged, sizeof merged)) {
+                struct stat st;
+                if (!stat(merged, &st)) {
+                    if (!d->orig) d->orig = strdup(d->path);
+                    free(d->path);
+                    d->path = strdup(merged);
+                    d->size = (uint64_t)st.st_size;
+                    changed++;
+                    continue;
+                }
+            }
+            if (!d->orig) d->orig = strdup(d->path);
+            free(d->path);
+            d->path = strdup(f->path);
+            d->size = f->size;
         } else {
             File *n = calloc(1, sizeof *n);
             n->name = strdup(f->name), n->path = strdup(f->path), n->size = f->size;
@@ -170,6 +190,15 @@ static char *rel_path(File *f) {
 bool romfs_open(const char *base_dir, const char *const *overlays, int noverlays) {
     Dir *root = scan(base_dir, "", 0);
     if (!root) { LOG("[romfs] cannot read %s\n", base_dir); return false; }
+    // The game looks its files up by their exact names, and some dump tools (yuzu's) spell the top folder NativeNX:
+    // the image calls it nativeNX whatever its spelling on disk (issue #147; main.c's game_files_problem catches
+    // wrong capitals further in)
+    for (int i = 0; i < root->ndirs; i++)
+        if (!strcasecmp(root->dirs[i]->name, "nativeNX") && strcmp(root->dirs[i]->name, "nativeNX")) {
+            LOG("[romfs] the game files' %s folder is used as nativeNX\n", root->dirs[i]->name);
+            free(root->dirs[i]->name);
+            root->dirs[i]->name = strdup("nativeNX");
+        }
     for (int i = 0; i < noverlays; i++) {
         Dir *o = scan(overlays[i], "", 0);
         if (!o) continue;

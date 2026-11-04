@@ -364,8 +364,11 @@ static NvnTexture *texture_from_builder(uint64_t b) {
     return t;
 }
 
+_Thread_local bool g_nvn_making_screenshot;
+
 NVN(nvnTextureInitialize) {
     NvnTexture *t = texture_from_builder(A(1));
+    t->screenshot = g_nvn_making_screenshot;
     SET_HOST(A(0), t);
     if (ENV("MHGU_TEX_LOG"))  // (debug) every texture made: format, size, flags, storage, layout
         LOG("[tex] init fmt %#x %ux%ux%u target %u flags %#x levels %u addr %llx bh %u stride %llu\n", t->format, t->width,
@@ -673,6 +676,7 @@ static void set_shaders(Cpu *c, NvnArgs *na_, int stride) {
         p->stages[stage].const_size = *(const uint32_t *)(control + 0x6FC);
         p->stage_mask |= 1u << stage;
     }
+    backend_program_created(p);
     RET(1);
 }
 NVN(nvnProgramSetShaders) { set_shaders(c, na_, 16); }     // NVNshaderData {data, control}

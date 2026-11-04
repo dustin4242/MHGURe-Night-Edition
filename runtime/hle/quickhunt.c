@@ -2,6 +2,9 @@
 // Find the Ferns: Village 1 star, Jurassic Frontier, no large monster). Presses A through the title, the main menu
 // (Continue), the character select (the first character) and the welcome message, then orders the quest and departs
 // at the first update of the town the save is in. The save is not changed (no quest fee is paid).
+// MHGU_QUICKHUNT=town: the same up to the town, and stays there.
+// Only quests of the town the save starts in: a Hub quest (10101...) departed from the Village stops on a call
+// through a missing vtable slot (main 0x2125b8, the stage's object; checked 2026-10-30 with no mods).
 //
 // How the game departs: the counter's accept (0x984e94) writes the quest number to sQuestSelector +0xd68 (0 = none)
 // and sets bit 0 of its flags (+0xd65); "Depart on Quest" at the departure point sets bit 3 there. The selector's
@@ -21,6 +24,7 @@
 // loading screen and 4.4 s of town loading are game load time, not input. MHGU_QUICKHUNT_MS sets the A interval
 // (default 250 ms), MHGU_QUICKHUNT_FIRST_MS the first press (default 2000 ms).
 #include <stdlib.h>
+#include <string.h>
 
 #include "../hle.h"
 
@@ -31,6 +35,7 @@
 #define FLAG_ORDERED     0x01u
 #define FLAG_DEPART      0x08u
 #define MS(x)            ((uint64_t)(x) * 1000000ull)
+#define TOWN_ONLY        0xffffffffu  // (MHGU_QUICKHUNT=town)
 
 static uint32_t g_quest;          // the quest to start (0: off)
 static uint32_t g_ms = 250;       // milliseconds between A presses (MHGU_QUICKHUNT_MS)
@@ -44,7 +49,9 @@ static void town_idle(Cpu *c) {
         g_done = true;
         g_in_town = true;
         uint32_t sel = LD32(G_SELECTOR);
-        if (sel) {
+        if (g_quest == TOWN_ONLY) {
+            LOG("[quickhunt] in town\n");
+        } else if (sel) {
             ST32(sel + SEL_ORDERED, g_quest);
             ST8(sel + SEL_FLAGS, LD8(sel + SEL_FLAGS) | FLAG_ORDERED | FLAG_DEPART);
             LOG("[quickhunt] in town: ordered quest %u, departing\n", g_quest);
@@ -69,13 +76,16 @@ void quickhunt_poll(void) {
 
 void quickhunt_init(void) {
     const char *e = getenv("MHGU_QUICKHUNT");
-    if (!e || !*e || !(g_quest = (uint32_t)strtoul(e, NULL, 10))) return;
+    if (!e || !*e) return;
+    g_quest = !strcmp(e, "town") ? TOWN_ONLY : (uint32_t)strtoul(e, NULL, 10);
+    if (!g_quest) return;
     const char *ms = getenv("MHGU_QUICKHUNT_MS");
     if (ms && *ms) g_ms = (uint32_t)strtoul(ms, NULL, 10);
     const char *first = getenv("MHGU_QUICKHUNT_FIRST_MS");
     if (first && *first) g_first_ms = (uint32_t)strtoul(first, NULL, 10);
     g_t0 = plat_now_ns();
     fnhook_set(FN_TOWN_IDLE, hle_register("quickhunt:town_idle", town_idle));
-    LOG("[quickhunt] quest %u: pressing A to the town every %u ms (first after %u ms), then departing\n",
-        g_quest, g_ms, g_first_ms);
+    if (g_quest == TOWN_ONLY) LOG("[quickhunt] pressing A to the town\n");
+    else LOG("[quickhunt] quest %u: pressing A to the town every %u ms (first after %u ms), then departing\n",
+             g_quest, g_ms, g_first_ms);
 }

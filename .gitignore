@@ -29,3 +29,12 @@ __pycache__/
 /run2/
 /run3/
 /third_party/ffmpeg/
+/third_party/sdl3/
+/third_party/shaderc/
+/dist/
+
+# the hub server built in place (server/README.md)
+server/mhgurecomp-hubserver
+server/mhgurecomp-hubserver.exe
+/build-android/
+/obj-android/

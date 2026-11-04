@@ -55,6 +55,23 @@ PATCHES = {
     # uScheduler's update (push {r4, lr}): runtime/hle/evskip.c speeds up an event camera pan when A is pressed
     ('main', 0xb66164): (0xE92D4010, '{ extern void evskip_update(Cpu *); evskip_update(c); '
                                      'uint32_t ea = c->r[13] - 8u; ST32(ea, c->r[4]); ST32(ea + 4u, c->r[14]); c->r[13] = ea; }'),
+    # Buff icon cycle on the HUD's status plates (runtime/hle/buffcycle.c): the countdown's `sub r7, r7, #1` per update
+    # and its reload `mov r0, #20` count in the frame step instead of updates
+    ('main', 0x834d20): (0xE2477001, '{ extern uint32_t buffcycle_tick(void); c->r[7] -= buffcycle_tick(); }'),
+    ('main', 0x834ef4): (0xE3A00014, '{ extern uint32_t buffcycle_reload(void); c->r[0] = buffcycle_reload(); }'),
+    # Two-button input window (runtime/hle/combowin.c): the countdown a press waits for a second button takes 1.0 off
+    # per update (`vmov.f32 s2, #-1.0`); it takes the frame step instead
+    ('main', 0x47ca84): (0xEEBF1A00, '{ extern float combowin_tick(void); c->v.f[2] = -combowin_tick(); }'),
+    # Town NPC fade (uLobbyNpc, 0x8c2d9c): `vldr s8, [r2]` loads the squared distance within which the NPC fades in
+    # (table at 0x8c2ef0: 2500^2, or 1800^2 with flag 0x40 of +0x186a); config.c npc_fade_dist2 scales it ([Graphics]
+    # DrawDistance)
+    ('main', 0x8c2e34): (0xED924A00, '{ extern float npc_fade_dist2(float); c->v.f[8] = npc_fade_dist2(LDF(c->r[2])); }'),
+    # ... and its speech bubble (0x8c11f8: the same check against its own copy of the table, 0x8c1328, then the bubble
+    # above the head, 0x938530)
+    ('main', 0x8c127c): (0xED924A00, '{ extern float npc_fade_dist2(float); c->v.f[8] = npc_fade_dist2(LDF(c->r[2])); }'),
+    # Quest photo request (sScreenShot, 0xa6f97c: `mov r1, #1` before the store to +0x2c that asks for the capture): the
+    # renderer doesn't skip draws for building shaders while the one-off capture is drawn (exec.c, PHOTO_FRAMES)
+    ('main', 0xa6f9ac): (0xE3A01001, '{ extern void backend_photo_requested(void); backend_photo_requested(); c->r[1] = 1; }'),
 }
 
 # Monster jump physics (runtime/hle/emjump.c): the stores of `pos += vel; vel += acc; acc.y += -0.2`, done once per

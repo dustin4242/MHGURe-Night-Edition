@@ -13,6 +13,7 @@ void textinput_digits_only(bool on);                        // typing keeps 0-9 
 void textinput_ip_only(bool on);                            // typing keeps hostname/IP characters (the Multiplayer address)
 void textinput_end(void);                                  // it is gone (decided, or closed by the game)
 int textinput_poll(char *out, size_t size, int *chars);    // TI_*: what happened since the last poll; the text now
+void textinput_peek(char *out, size_t size);               // the text now (to show it), leaving the events for the poll
 
 // window side (the main thread)
 bool textinput_active(void);

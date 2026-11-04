@@ -17,27 +17,32 @@ uint32_t g_native_window;
 // (pointer in the global at 0x2326764, the same field theboy181's 60fps patch sets). The game puts 30.0 there at
 // start and resets it at some transitions, so every presented frame writes the chosen rate back (the 90 / 120 fps
 // cheat codes write this same field). The frame delta is in 60 fps frames, measured: walking speed is the same at 30,
-// 60 and ~135 fps. The settings' FPS (mhgurecomp.ini: 30..240, default 60); MHGU_FRAMERATE overrides it. Above the
+// 60 and ~135 fps. The settings' FPS (mhgurecomp.ini: 30..240, default 60); MHGU_FRAMERATE supplies the initial override. Above the
 // monitor's refresh rate the settings' VSync must be Off (immediate present): FIFO / mailbox wait for the display.
 #define FPS_OBJ_GLOBAL 0x2326764u
-static float g_fps = -1;
+static float g_fps;  // MHGU_FRAMERATE's target, when given
+static bool fps_env, fps_logged;
 static float framerate(void) {
-    if (g_fps < 0) {
+    if (!fps_env && !g_fps) {  // first call: MHGU_FRAMERATE overrides the ini
         const char *e = getenv("MHGU_FRAMERATE");
-        g_fps = e ? (float)atof(e) : (float)g_config.fps;
-        if (!(g_fps >= 30.0f)) g_fps = 30.0f;
-        if (g_fps > 240.0f) g_fps = 240.0f;
-        LOG("[vi] frame rate target %.0f\n", g_fps);
+        if (e && *e) { g_fps = (float)atof(e); fps_env = true; }
     }
-    return g_fps;
+    float f = fps_env ? g_fps : config_live_fps();
+    if (!(f >= 30.0f)) f = 30.0f;
+    if (f > 240.0f) f = 240.0f;
+    if (!fps_logged) { fps_logged = true; LOG("[vi] frame rate target %.0f\n", f); }
+    return f;
 }
-// The settings' Framerate row: write the new target into the engine's limiter now (the game resets
-// the field to 30 at some transitions; vi_apply_framerate puts the current value back).
+// The settings' Framerate row (or the pause menu): write the new target into the engine's limiter now and into the
+// live value the settings menu reads (the game resets the field to 30 at some transitions; vi_apply_framerate puts
+// the current value back).
 void vi_set_framerate(int fps) {
     float f = (float)fps;
     if (!(f >= 30.0f)) f = 30.0f;
     if (f > 240.0f) f = 240.0f;
-    g_fps = f;
+    g_fps = f, fps_env = true;  // the menu's choice wins over the ini's live value until the next start
+    g_config.fps = (int)f;
+    config_store_loaded(&g_config);
     uint32_t obj = LD32(FPS_OBJ_GLOBAL);
     if (obj >= HEAP_BASE && obj < HEAP_BASE + HEAP_MAX) STF(obj + 0x3c, f);
     LOG("[vi] frame rate target %.0f\n", f);
@@ -47,7 +52,7 @@ void vi_apply_framerate(void) {  // (also called per presented frame: runtime/nv
     uint32_t obj = LD32(FPS_OBJ_GLOBAL);
     if (obj < HEAP_BASE || obj >= HEAP_BASE + HEAP_MAX) return;  // (not created yet)
     float cur = LDF(obj + 0x3c);
-    if (cur == 30.0f && want != 30.0f) STF(obj + 0x3c, want);
+    if (cur != want) STF(obj + 0x3c, want);
 }
 
 // The display's vsync event: 60 Hz, or the frame rate target when that is higher (the game waits for it per frame).

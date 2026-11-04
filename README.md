@@ -1,9 +1,41 @@
+<p align="center"><img src="docs/images/logo.svg" alt="GU Recomp" width="440"></p>
+
+<p align="center">
+  <a href="https://github.com/morerokk/MHGURecomp/releases/latest"><img src="https://img.shields.io/github/v/release/morerokk/MHGURecomp?style=flat-square&label=release&labelColor=1d1e22&color=c58a2e" alt="Latest release"></a>
+  <a href="https://github.com/morerokk/MHGURecomp/releases"><img src="https://img.shields.io/github/downloads/morerokk/MHGURecomp/total?style=flat-square&label=downloads&labelColor=1d1e22&color=c58a2e" alt="Downloads of all releases"></a>
+  <a href="#requirements"><img src="https://img.shields.io/badge/platforms-Windows%20%C2%B7%20Linux%20%C2%B7%20Android-c58a2e?style=flat-square&labelColor=1d1e22" alt="Platforms: Windows, Linux and Android"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/morerokk/MHGURecomp?style=flat-square&labelColor=1d1e22&color=c58a2e" alt="License: MIT"></a>
+  <a href="https://github.com/morerokk/MHGURecomp/stargazers"><img src="https://img.shields.io/github/stars/morerokk/MHGURecomp?style=flat-square&label=stars&labelColor=1d1e22&color=c58a2e" alt="GitHub stars"></a>
+</p>
+
+<p align="center">
+  <a href="https://discord.gg/mdNPWfKBXf"><img src="https://img.shields.io/badge/Discord-MHGU%20Mod%20Community-5865f2?style=flat-square&logo=discord&logoColor=white&labelColor=1d1e22" alt="Join the MHGU Mod Community Discord"></a>
+  <a href="https://github.com/Oddity-git/MHGURecomp-mods"><img src="https://img.shields.io/badge/mods-tested%20mod%20list-2ea44f?style=flat-square&logo=github&labelColor=1d1e22" alt="Mods tested with MHGU Recomp"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/morerokk/MHGURecomp/releases/latest"><b>Download</b></a> ·
+  <a href="#installation">Install</a> ·
+  <a href="#android">Android</a> ·
+  <a href="#controls">Controls</a> ·
+  <a href="#settings">Settings</a> ·
+  <a href="#mods">Mods</a> ·
+  <a href="#building-from-source">Build from source</a>
+</p>
+
 # MHGURe Night Edition
 
-A fork of MHGURecomp by morerokk. Mainly to put in features I would specifically want in mhgu over what others may prefer.
+A fork of **MHGU Recomp** by morerokk, mostly to put in features I want in MHGU that others may not. Everything not
+listed under "Features added on top of MHGURecomp" is the base port's work: [MHGURecomp](https://github.com/morerokk/MHGURecomp).
 
-**No game files are included.** You need your own copy of the game, dumped from your own Switch. This project does
-not explain how to dump it and does not provide game files, keys or links to them.
+A native PC port of **Monster Hunter Generations Ultimate** (Nintendo Switch, version 1.4.0), made by statically
+recompiling the game's 32-bit ARM code to C and running it on a host runtime. Switch system services and the NVN
+graphics API are reimplemented on Windows, Linux and Android, with Vulkan for rendering.
+
+> **No game files are included.** You need your own copy of the game, dumped from your own Switch. This project does
+> not explain how to dump it and does not provide game files, keys or links to them.
+
+**Status: fully playable**, singleplayer and multiplayer. There will probably be some bugs here and there, please [open an issue](https://github.com/morerokk/MHGURecomp/issues/new/choose) with your `log.txt` if you run into one.
 
 ## Features added on top of MHGURecomp
 
@@ -45,19 +77,44 @@ With the pack built in, Options -> Gameplay has two extra rows:
 
 Both switch live while you play. Without the pack neither row shows up and the game looks exactly as it did before. The build section below covers the pack's options and how to merge again after changing it.
 
+## What it adds over the Switch version
+
+| Area | What you get |
+| --- | --- |
+| **Graphics** | Resolution, render resolution (supersampling), MSAA, FXAA, FSR 3.1 upscaling, VSync, longer draw distance |
+| **Screens** | Any widescreen aspect ratio (16:10, 16:9 or anything wider), with HUD adjustment options for ultrawide |
+| **Frame rate** | Framerates anywhere between 30-240 fps, with fixes for bugs that GU normally has on emulators at high frame rates |
+| **Controls** | Almost any controller is supported (SDL), as well as keyboard+mouse |
+| **Multiplayer** | Online play through the "Local Wireless" feature. Comes preloaded with an online server, but you can also host your own or directly connect to friends by forwarding port 39500. |
+| **Multiplayer options** | Small monsters are synced between players, monster HP optionally scaled by player count, Village quests playable in Multiplayer Hubs, Urgent Quest credit for everyone |
+| **Quality of life** | Fast-forward unskippable cutscenes with A, the game's own Options menu for the fork's settings, Discord Rich Presence |
+| **Mods and cheats** | Drop-in `mods` folder with load order and conflict checks. Natively supports Forge plugins ([Mods](#mods)), and Ryujinx / Atmosphère cheat files ([Cheats](#cheats)) |
+
 ## Requirements
 
-- OS: Windows 10/11 64-bit, or Linux
-- CPU: Any x86-64 CPU from 2009 or newer. AVX2 makes it a little faster, but is not needed (see above)
+- OS: Windows 10/11 64-bit, or Linux 64-bit with glibc 2.39 or newer. The following Linux distros are known to work (Vulkan support required):
+    - Ubuntu 24.04
+    - Linux Mint 22
+    - Debian 13
+    - SteamOS 3.7
+    - Arch
+    - Fedora 40
+- CPU: Any CPU from 2014 or newer (needs AVX2 support)
 - GPU: Any GPU from 2016 or newer (needs Vulkan 1.2 support), and at least 1GB of VRAM
+- RAM: 4GB
+- Android (experimental): a 64-bit ARM device with Android 10+, Vulkan 1.1 and a controller. See [Android](#android).
 - The game files for Monster Hunter Generations Ultimate, version 1.4.0. You can extract these from your Switch or Ryujinx with patches pre-applied.
     - (Title ID `0100770008DD8000`, the `main` executable's build ID starts with `FB08F1D20FD1204F`)
+ 
+**For Mac OSX support, please check out mhvuze's fork! https://github.com/mhvuze/MHGURecomp/releases**
 
 ## Installation
 
 [Download the latest prebuilt release from the Releases page. Make sure you download the right ZIP file for your desired platform.](https://github.com/morerokk/MHGURecomp/releases)
 
-You need the `exefs` and `romfs` folders from Monster Hunter Generations Ultimate 1.4.0. If you are coming from Ryujinx, you can right-click the game (make sure the 1.4.0 title update is applied), and Extract the game files with the patches pre-applied.
+You need the `exefs` and `romfs` folders from Monster Hunter Generations Ultimate 1.4.0. If you are coming from Ryujinx, you can right-click the game (make sure the 1.4.0 title update is applied), and Extract the game files with the patches pre-applied. Similar functionality also exists in Yuzu, or you can use other tools to extract the game files.
+
+You may be able to extract the files with another tool, just make sure that you extract both the base game files and the 1.4.0 title update. The title update's `exefs` and `romfs` files should be copied on top of the base game's.
 
 1. Extract the release zip anywhere, for example `C:\Games\MHGURecomp\`.
 2. Put the game's `exefs` and `romfs` folders in the `data` subfolder. It should look like this:
@@ -80,114 +137,266 @@ You need the `exefs` and `romfs` folders from Monster Hunter Generations Ultimat
    ```
 
    `exefs` must come from the 1.4.0 update, and `romfs` must be the base game's romfs with the update's files
-   merged over it.
+   merged over it. You should have about 35,500 files, 12.3 GB.
 3. Start `mhgurecomp.exe`.
-
-If the files are missing or the wrong version, a message box says so.
 
 ### Where things are
 
 | What | Where |
 | --- | --- |
-| Settings | `mhgurecomp.ini` next to the exe (written with the defaults on first start; delete it to reset) |
-| Save data | `%APPDATA%\MHGURecomp\save\` (kept apart from the game folder so updating the port can't touch it) |
-| Log | `log.txt` next to the exe (look here first when something goes wrong) |
-| Screenshots | `shots\` next to the exe (F12) |
-| Mods | `mods\` next to the exe: one folder per mod (see below) |
-| Cheats | `cheats\` next to the exe: `.txt` files with cheat codes (see below) |
-| Shader cache | `cache\` next to the exe (safe to delete; the first minutes after that may stutter) |
+| Settings | `mhgurecomp.ini` (safe to delete if you need to reset your settings) |
+| Save data | `%APPDATA%\MHGURecomp\save\` (Linux: `~/.local/share/MHGURecomp/save/`), or the folder set as `SaveLocation` in `mhgurecomp.ini` |
+| Log | `log.txt`, please attach this file when opening an issue |
+| Screenshots | `shots\` (press F12) |
+| Mods | `mods\` one folder per mod (see below) |
+| Cheats | `cheats\` `.txt` files with cheat codes (see below) |
+| Shader cache | `cache\` |
 
-To move an existing Switch save over, put its `system` and `system_backup` files in
-`%APPDATA%\MHGURecomp\save\save_0\`.
+To import your existing saves from the Switch, put the `system` and `system_backup` files in `%APPDATA%\MHGURecomp\save\save_0\` (Linux: `~/.local/share/MHGURecomp/save/save_0/`).
+
+### Android
+
+**The Android version is experimental!** You need:
+
+- A phone, tablet or Android TV device with a 64-bit ARM processor, Android 10 or newer, and a GPU driver with Vulkan
+  1.1 (FSR needs Vulkan 1.2). Expect a recent mid-range or high-end device (Snapdragon 865 or better) with 6 GB of RAM or
+  more; an NVIDIA Shield TV Pro 2019 (3 GB) runs it too, at 41-45 fps in a hunt.
+- A controller (Bluetooth or USB). There are no touch controls.
+- About 13 GB of free storage for the game files (26 GB while the app copies them in from another folder).
+
+1. Download `Android-MHGURecomp.<version>.apk` from the
+   [Releases page](https://github.com/morerokk/MHGURecomp/releases) and open it on the device. Android asks you to
+   allow installing apps from your browser or file manager the first time.
+2. Put the game's `exefs` and `romfs` folders anywhere on the device (for example in `Download`, or on an SD card),
+   both in one folder. Start **MHGU Recomp**: it says the game files were not found and offers **Import game files**.
+   Pick the folder that holds `exefs` and `romfs`, and the app copies them into its own folder (a few minutes). You
+   can delete your copy afterwards.
+
+   Not enough room, or the files are on a USB drive or SD card? Choose **Use where they are** instead: nothing is
+   copied, and the game reads them from that folder, so the drive has to stay connected while you play. Android asks you
+   to allow "All files access" for the app. With a large USB drive, the first start can take a couple of minutes.
+3. Or copy them from a PC instead: start the app once (it makes its folder), connect the device to your PC with USB
+   and choose **File transfer** on the device. On the PC, open the device's storage, go to `Android\data\io.github.morerokk.mhgurecomp\files\` and copy the game's `exefs` and `romfs` folders
+   into the `data` folder there:
+
+   ```
+   Android/data/io.github.morerokk.mhgurecomp/files/
+     data/
+       exefs/
+         main
+         (main.npdm, rtld, sdk, subsdk0)
+       romfs/
+         nativeNX/
+         (the rest of the game's romfs)
+   ```
+
+   If the PC doesn't show the `files` or `data` folder, restart the device and connect it again (or create `data`
+   yourself). The device's own file manager can't open `Android/data` on Android 11 and newer, so use a PC.
+   With [adb](https://developer.android.com/tools/adb) you can push them from a terminal instead:
+   `adb push exefs romfs /sdcard/Android/data/io.github.morerokk.mhgurecomp/files/data/`
+4. Connect your controller and start the game.
+
+Everything lives in that `files` folder. Its contents match the PC version's game folder:
+
+| What | Where (in `Android/data/io.github.morerokk.mhgurecomp/files/`) |
+| --- | --- |
+| Game files | `data/exefs/`, `data/romfs/` |
+| Save data | `save/save_0/` |
+| Settings | `mhgurecomp.ini` |
+| Log | `log.txt` |
+| Mods, cheats | `mods/`, `cheats/` |
+| Shader cache | `cache/` |
+
+This fork has no settings menu, so the Android tab's buttons aren't there. The same folders can be set in
+`mhgurecomp.ini` (`[Android] SaveFolder`, `GameFolder`), and files can be put in place with the device's own file
+manager; the rest of this section is kept for reference:
+
+- **Import save:** pick the `system` and `system_backup` files from anywhere on the device. The app copies them in,
+  keeping your current save in `save/save_0.before-import-<date>`, and closes; start it again to play. (Over USB you
+  can also put the two files in `save/save_0/` yourself.)
+- **Export save:** copies the save's two files out to a folder you pick, as a backup or to move it elsewhere.
+- **Save folder:** keeps the save in a folder you pick (the one that holds `save_0`), so file syncing software
+  can keep it in step between devices: pick the same folder on each. Android asks you to allow "All files access" for it, since
+  the app reads and writes that folder itself. Press Save and start the app again. Your current save isn't moved: use
+  **Export save** first to put it in the folder. **Use the app's folder** goes back to the default.
+- **Game files folder:** uses the game files where they are (the **Use where they are** of the first start), for
+  example on a USB drive or SD card. Android asks you to allow "All files access". Press Save and start the app again.
+  **Use the app's folder** goes back to the default.
+- **Import game files:** the same import as at the first start (see above), for replacing the game files. They then
+  replace any Game files folder as well.
+- **Import mod (zip)** and **Import mod (folder):** pick a mod's `.zip` or folder from anywhere on the device, and the
+  app puts it in `mods/`. It checks the layout first: the game finds a mod's files in a `romfs`, `exefs` or `nativeNX`
+  folder at most three folders down in the mod's folder. If the files are buried deeper (a zip with folders wrapped
+  around the mod), or the patch files (`.pchtxt`, `.ips`) aren't in an `exefs` folder, it says so and offers to fix it
+  while importing (the files are only moved, never changed). A zip with none of those folders is flagged as not
+  looking like a mod, and you can still import it. Close and reopen the app to load the mod.
+
+The FPS counter has a **Battery indicator** next to it (Graphics & Audio): off, in the FPS counter's box, or in a box of
+its own.
+
+There is no Restart in the menu on Android (the app can't start itself again): use Exit game and open it again. From the PC version, copy the
+contents of `%APPDATA%\MHGURecomp\save\save_0\` (Linux: `~/.local/share/MHGURecomp/save/save_0/`). From a Switch,
+use the same files you'd use on PC. Copy `save/save_0/` back to your PC now and then as a backup.
+
+Public internet hubs on Android are shared with other Android players only. To play with friends on PC, all enter the
+same matchmaking key (`Key` under `[Multiplayer]` in `mhgurecomp.ini`).
+
+To update, install the newer APK over the old one: your game files, saves and settings stay. **Don't uninstall it
+first.** Uninstalling deletes the whole `files` folder, game files and saves included. Android may offer to keep the
+app's data; say yes if you mean to reinstall.
 
 ## Controls
 
-Almost every controller under the sun should work, as long as it has SDL support. If you really want to swap the face buttons on non-Nintendo controllers, open the .ini file and set `FaceButtons = Label`.
+Almost every controller under the sun should work, as long as it has SDL support. With more than one connected (a Steam Deck with a controller plugged in, say), press a button on the one you want to use. If you really want to swap the face buttons on non-Nintendo controllers, open the .ini file and set `FaceButtons = Label`, but I recommend installing a mod to match the button prompts instead.
 
-Keyboard and mouse support (not recommended):
+Keyboard and mouse support is also implemented, and currently surprisingly viable. Default keybinds:
 
 | Key | Switch button |
 | --- | --- |
 | W A S D | left stick (hold Left Shift to walk) |
-| Mouse | right stick (camera) |
+| Mouse | camera |
 | Left click / Right click | X / A |
-| Space / R | B / Y |
+| Space / R or middle click | B / Y |
+| Mouse wheel | item bar: up = the item to the left, down = to the right (in a hunt, no need to hold L) |
 | Q / E | L / R |
 | Tab / T | ZL / ZR |
 | Enter / Backspace | Plus / Minus |
 | Arrow keys | d-pad |
 | Ctrl / Alt | left / right stick click |
 
-Click in the game window to capture the mouse for the camera; Escape lets it go (so does switching to another
-window). `MouseSensitivity` in the ini's `[Mouse]` section sets its speed; the game's own camera options (speed,
-inverted axes) apply to it too.
+You can change them in `mhgurecomp.ini` under `[Keybinds]`. You can bind up to 2 keys at a time for a single action.
 
-When the game asks for text (names, chat), the keyboard types: Enter confirms, Escape cancels, Ctrl+V pastes.
+Escape, Insert, F7 to F12 and the keys the Forge overlay uses cannot be bound, as they are reserved by the recomp.
 
-Other keys: Alt+Enter or F11 switches between windowed and full screen, F12 takes a screenshot, F7 cycles MSAA.
+Sometimes the game might ask for keyboard input, such as naming your hunter or renaming item sets. Use the keyboard to enter text, `ENTER` to confirm, or `ESC` to cancel. You can use the `/` key to free-chat in multiplayer lobbies.
+
+Other useful keybinds:
+
+- Alt+Enter or F11: switches between windowed and full screen
+- F7: Cycle MSAA
+- F12: screenshot
 
 ## Settings
 
-Everything is in `mhgurecomp.ini`; each setting is explained in the file itself. In short:
+Most settings are in `mhgurecomp.ini` in the game folder, with a comment above each one that explains it; the game
+walks through them at startup (`log.txt` says what it read). The ones you change while playing are in the game's own
+pause menu: Options -> Gameplay, Graphics and Multiplayer have the fork's rows, and they are saved to the ini as you
+change them.
+
+The most used ones are also in `mhgurecomp.ini` before you start: resolution, MSAA, FSR, the frame rate cap, VSync.
+
+<details>
+<summary><b>All settings, by section of <code>mhgurecomp.ini</code></b></summary>
+
 
 - `[Display]`: `Mode` (Borderless / Fullscreen / Windowed), `Resolution`, `RenderResolution` (the 3D resolution),
   `AspectRatio` (Auto follows the window: 16:10 and anything wider fill it; 3:2/4:3 scale the HUD to fit; narrower than 4:3 gets 4:3 with bars), `FOV`
   (1.0 = the game's), `UIAnchor` (Center keeps the HUD in the middle 16:9 on an ultrawide screen, Edges spreads it
   to the sides)
-- `[Anti-aliasing]`: `MSAA` (Off / 2x / 4x / 8x), `FXAA` (On / Off)
-- `[Upscaler]`: `FSR` (Off / On, default Off), `FSRQuality` (NativeAA / Quality / Balanced / Performance /
-  UltraPerformance), `Sharpness`, and `Upscaler` (FSR3, the default, or FSR4: needs an AMD RDNA 4 GPU and its driver, and an exe built with `make FSR4_DRIVER_PATCH=1`;
-  falls back to FSR 3.1). FSR replaces MSAA and FXAA while it is on. Details: `docs/FSR-PORT.md`, `docs/FSR4-PORT.md`
-- `[Performance]`: `FPS` (30 to 240), `VSync` (On / Off; above your monitor's refresh rate, turn VSync off)
-- `[UI]`: `HDUi` (On / Off: the pp4 HD UI textures; also switchable in-game under Options -> Gameplay, and the
-  row is omitted without the pack)
-- `[Controls]`: `FaceButtons` (Position / Label), `Icons` (Switch / Xbox / Playstation: the controller glyphs
-  used by the UI; Switch by default, also switchable in-game under Options), `BackgroundInput` (On / Off: the controller keeps working while
-  the game's window is in the background, such as with a wiki in front of it; default On)
+- `[Anti-aliasing]`: `MSAA` (Off / 2x / 4x / 8x), `FXAA` (On / Off), `FXAAMode` (Original / 3_11: FXAA 3.11 in
+  place of GU's FXAA, sharper textures; default Original)
+- `[Upscaler]`: `FSR` (Off / On, default Off), `Upscaler` (FSR3, the default, or FSR4: needs an AMD RDNA 4 GPU and its
+  driver, and an exe built with `make FSR4_DRIVER_PATCH=1`; falls back to FSR 3.1), `FSRQuality` (NativeAA / Quality /
+  Balanced / Performance / UltraPerformance), `Sharpness`. FSR replaces MSAA and FXAA while it is on. Details:
+  `docs/FSR-PORT.md`, `docs/FSR4-PORT.md`
+- `[Graphics]`: `DrawDistance` (how far away people in the villages and the Hubs are still drawn: 1 = the game's,
+  2 = twice as far, 0.5 = half, 0 = no limit; up to 10)
+- `[Performance]`: `FPS` (30 to 240), `VSync` (On / Off; above your monitor's refresh rate, turn VSync off), `ShaderPrewarm`
+  (On / Off: translate all of the game's shaders in the background at startup, so fewer things are drawn black the
+  first time they appear; the first start takes about 20 s for it, during the logos, and the cache folder needs about
+  340 MB). `pipelines.list` next to the exe lists the shader combinations the common areas use; with the prewarm on,
+  they are prepared in the background as well, so entering those areas for the first time no longer shows surfaces
+  briefly black. Only made with MSAA Off; the rest is still prepared the first time it is needed. Recording more of
+  it: [docs/PIPELINE_LIST.md](docs/PIPELINE_LIST.md).
+- `[UI]`: `HDUi` (On / Off: the pp4 HD UI textures, also Options -> Gameplay -> HD UI; the row is omitted without
+  the pack)
+- `[Controls]`: `FaceButtons` (Position / Label), `Icons` (Switch / Xbox / Playstation: the pp4 button prompts, also
+  Options -> Gameplay -> Icons),
+  `BackgroundInput` (On / Off: the controller keeps working while the game's window is in the background, such as
+  with a wiki in front of it; default On), `ComboInputWindow` (Lenient / Strict: how long the game waits for a
+  second button for inputs like the Hunting Horn's X+A; Lenient, the default, as long as at 30 fps at any frame
+  rate, Strict a fixed number of frames, shorter the higher the frame rate)
 - `[Mouse]`: `MouseSensitivity` (1 = default, 0.1 to 10)
-- `[Multiplayer]`: `Port`, `Join` (addresses of hosts outside your LAN), `SyncSmallMonsters`. The in-game
-  Options -> Multiplayer menu also accepts an IP address or a domain name (with an optional `:port`) for this
-  session only (not written to the INI) and probes it; its top `Hosting` row shows whether this game is hosting
-  a hub. The actual join is still the game's Local Wireless -> Join menu.
+- `[Multiplayer]`: `Port`, `Join` (addresses of hosts outside your LAN), `Server` (hub server for internet hubs:
+  empty = the default, `Off` = none, or `host[:port]`), `Key` (matchmaking key: only players with the same key see
+  each other's hubs; empty = public, on Android public among Android players only), `SyncSmallMonsters`,
+  `ShareUrgentCredit` (default On: an Urgent quest someone else posted counts for you too when you clear it, if you
+  have unlocked it yourself)
 - `[Monster HP]`: HP factors for 1 to 4 hunters in Hub quests, and per-quest exceptions (default: all 1, the
   original game)
 - `[Village Quests]`: `VillageQuestsInHub` (default On), `HubHP` (default 2.0: Village quests posted in the Hub
   multiply their monsters' HP by this first, then by the `[Monster HP]` factor)
+- `[Discord]`: `RichPresence` (default On: your Discord profile shows where you are, the monsters you're hunting
+  and the map, how many are in your hub or quest; Discord must be running on the same computer), `ShowHunter`
+  (default On: your hunter's name, HR and weapon type too)
 - `[Bonus Content]`: `BonusContent` (default On), see below
+- `[Audio]`: `Volume` (0 to 100: the whole game), `MuteInBackground` (On / Off, default Off: no sound while the
+  game's window is in the background)
+- `[Application]`: `ButtonIcons` (Xbox / Switch / PlayStation: the
+  visual guides on the game's own prompts), `Theme` (Hunter, the default / Gold / Blue: the colours of the host's
+  overlays), `MenuScale` (50 to 200 percent: the same overlays) and `SaveLocation` (the folder holding the save)
 
-### Multiplayer
+</details>
 
-Over LAN or a VLAN, this should work out of the box.
+## Multiplayer
 
-Over the internet, the host needs to forward the right port (39500 TCP/UDP by default), the client needs to configure the host's IP address in their .ini file. (`Join = xxx.xxx.xxx.xxx`)
+Over LAN or a VLAN, this should work out of the box. You can automatically see other hubs that are on the same network as you.
+
+The game also comes with my own LDN server preloaded (server software for hosting your own is included in this repo). By default, this lets you see other online players and hubs by using the ingame "Local Wireless" option.
+
+If you only want to play with friends or premade groups, set a matchmaking key (`Key` under `[Multiplayer]` in `mhgurecomp.ini`). Everyone who has a matchmaking key set, can only see each other.
+
+See [server/README.md](server/README.md) if you want to host your own LDN server. If the hub server can't be reached, a notice at the top of the screen will tell you. I try to keep the LDN server up 24/7.
+
+You can also play multiplayer without an LDN server if you want to play with your friends. The host needs to forward the right port (39500 TCP/UDP by default), and all clients need to configure the host's IP address in their .ini file. (`Join = xxx.xxx.xxx.xxx`)
 
 Choose the "Local Wireless" multiplayer options, as this port pretends to be a local nearby Switch with a wireless connection. The online options are unavailable and are unnecessary.
 
-### Bonus content
+## Bonus content
 
 By default, the `bonus` subfolder in releases contains a savegame with all the free online content (event quests, item packs, palicoes), which will be copied into your savegame when the game starts the 2nd time.
 
 If you don't want this, set `BonusContent = Off` or don't provide a savegame in the `bonus` subfolder. You can also provide your own savegame instead if you want. Note that this port will not attempt to copy bonus content if such bonus content already exists.
 
-### Mods
+## Mods
 
 To install a mod, put the mod folder in `mods\`. Remove the folder to uninstall said mod. Mods are layered over the game at startup.
 - romfs mods (files that replace or add game data) are found inside the mod's folder, including the
   `atmosphere\contents\0100770008DD8000\romfs` layout.
-- exefs patches (`.pchtxt`, `.ips`) are applied when they change data. Patches to game code can't be applied, because
-  the code is precompiled; the log lists them.
-- Forge plugins (`.nro` in `romfs\nativeNX\plugins\`) are loaded. Forge's menu with the plugins' settings opens with
-  Insert (or the key in Forge's own `config.ini`, if a mod includes Forge's files); use the mouse, keyboard or
-  controller in it. While it is open the game gets no controller input. Window positions are kept in
-  `forge_imgui.ini`.
+- When several mods ship the same game archive (such as `resident_eng.arc`), only the entries each mod changed from the
+  game's are applied, so mods that change different files in it work together. If two mods change the same entry,
+  the one later in load order wins, and the log says so ("changes ..., which an earlier mod changed too"). Mods load in
+  alphabetical order. To choose the order, make `mods\load_order.txt` with one mod folder name per line: then only
+  the mods listed load, in that order. The merged archives are kept in `cache\arcmerge\`.
+- Partial `.arc` files supported (so `.arc` files that only contain a single entry to replace also work). Entries match the game's by their internal name and type, and
+  the archive's version must be the game's (17). An archive that holds none of the game's entries still replaces it
+  entirely.
+- exefs patches (`.pchtxt`, `.ips` / IPS32) are applied, to data and to code. The game's code is precompiled, so a
+  function a patch changes runs in an interpreter instead (a little slower, only that function). A mod's own code
+  modules (`exefs\subsdk1` and so on, as in the
+  [MH4U Port](https://github.com/Scrimas/MH4U-port-to-MHGU)) are loaded and run in the interpreter too. The log says
+  what was patched and loaded (`[mods]` lines).
+- Forge plugins (`.nro` in `romfs\nativeNX\plugins\`) are loaded. Forge's own loader (the `exefs\subsdk9` that
+  Forge and mods with Forge plugins include) is not needed and is passed over: the port runs the plugins itself. Forge's menu with the plugins' settings opens with
+  Insert (or the key in Forge's own `config.ini`, if a mod includes Forge's files, which can also set `[log] level`);
+  use the mouse, keyboard or controller in it. While it is open the game gets no controller input. Window positions
+  are kept in `forge_imgui.ini`.
 - You do not need any resolution, FPS cap or connection fix mods. These features are included with this port.
 
-If you are newer to the game, I very strongly recommend the [Key Quest Markers](https://gamebanana.com/mods/727960) mod by PurplefinNeptuna. This marks out the Village and Hub quests you need to complete for the next tier directly in the quest menu, which means you no longer need a wiki to play the damn game.
+**Places to get mods:**
 
-### Cheats
+- [The MHGURecomp-Mods Repo](https://github.com/Oddity-git/MHGURecomp-mods)
+- [MHGU GameBanana](https://gamebanana.com/mods/games/17088)
 
-Put `.txt` files with cheat codes in `cheats\`. Every cheat in them is on from the start. Codes made for Ryujinx or a
-modded Switch work as they are, as long as they are for version 1.4.0. A file can hold any number of cheats, each
+**Modding resources:**
+- [MHGU-Modding Wiki](https://github.com/RTHKKona/MHGU-Modding/wiki)
+- [Fexty's Forge](https://github.com/Fexty12573/forge)
+
+## Cheats
+
+Put `.txt` files with cheat codes in the `cheats/` subfolder.
+
+Every cheat in a file is enabled from the start. Any cheat code for GU should work, the same way as on an emulator. A file can hold any number of cheats, each
 starting with its name in square brackets:
 
 ```
@@ -196,20 +405,15 @@ starting with its name in square brackets:
 ```
 
 - To turn off a file without deleting it, start its name with `_`.
-- Cheats that change the game's code also work: the port runs each changed function in an interpreter. That
-  function runs slower, which only matters for functions the game calls very often.
+- Cheats that change the game's code also work, but for each one used, you may experience *very* slight performance loss. For the vast majority of cheat codes, this won't matter.
 - `log.txt` lists the cheats it loaded, and any it couldn't read.
-- `extras\cheats\` in the source has two cheats that double the skill points from armor, weapon and talisman
-  decorations, and talismans (with Double Talisman, talisman points go x4). `Skill points x2` doubles negative
-  points too; `Skill points x2 (positive only)` leaves them as they are. Use only one of the two.
-- `Valor Sheathe original damage reduction` sets the damage you take in a Valor Sheathe evade back to the game's
-  own values (70% less for Blademasters, 85% for Gunners), for mods that change it, such as GU Rebalanced (50% / 65%).
-  The rest of the mod stays as it is. To pick other values, see `docs/research/valor-sheathe.md`.
+- There are some example cheats listed in `extras\cheats\`. [For more, check out the Cheat Codes page on the MHGU Modding Wiki.](https://github.com/RTHKKona/MHGU-Modding/wiki/Cheat-Codes)
+    - The Valor Sheathe cheat in this repo does nothing unless you have MHGU Rebalanced installed.
+- **Please** notify other players in multiplayer if you're using cheat codes, and what codes you're using. Be nice.
 
 ## Building from source
 
-The build recompiles the game code from your own copy of the game. Nothing in this repository contains game code or
-data, and the build never uploads anything.
+The build recompiles the game code from your own copy of the game. Nothing in this repository contains game code or data, so you will need the extracted game files first (see above).
 
 ### 1. Tools (Windows)
 
@@ -238,7 +442,7 @@ data, and the build never uploads anything.
 ### 2. Recompile and build
 
 From the UCRT64 shell, in the repository folder, with your game files in a folder holding `exefs\` and `romfs\` (as
-under "Installing a release"):
+under [Installation](#installation)):
 
 ```bash
 make gen GAME=/c/path/to/game      # translate the game code to C in generated/ (~300 MB)
@@ -287,6 +491,7 @@ Useful targets and options:
 - `GENARCH=-march=x86-64`: builds the game code for CPUs older than 2009. The default covers 2009 and newer, and
   changing it rebuilds the game code by itself.
 - `FFMPEG=system`: links the system's FFmpeg libraries instead of building them (see below).
+- Linux: `SDL3=system`, `SHADERC=system`: link the system's SDL3 / shaderc instead of building them (see Linux).
 
 ### FFmpeg
 
@@ -302,33 +507,42 @@ distribution package would; that build then only runs with that FFmpeg version.
 
 ### Making a release
 
-A release is the contents of `build\` without the game files:
-- Include `mhgurecomp.exe`, `mhgugame.dll`, all other `.dll` files and `licenses\`.
-- Leave out `data\`.
+This fork has no release tooling of its own: no `make dist`, no auto-updater, no installer. `make` leaves a folder
+that runs as it is, and packaging it is done by hand (or by whatever is made for this fork later). What a copy must
+carry in any case:
 
-`make` fills `licenses\` with everything a copy has to carry: this project's `LICENSE.txt`, `THIRD_PARTY_NOTICES.txt`
-(code compiled in), FFmpeg's license, and on Windows the licenses of the MSYS2 packages behind the bundled DLLs and
-the libraries linked in. `licenses\README.txt` lists those with their versions and where their exact source is, and
-holds a written offer for the source of the LGPL DLL among them (libiconv, which SDL3 uses): whoever publishes the
-release makes that offer, so keep those sources at hand for three years (the MSYS2 address it gives is one copy).
+- `mhgurecomp(.exe)` and `mhgugame.dll` / `.so`;
+- on Windows, the bundled MSYS2 DLLs (`make bundle` puts them there);
+- `licenses\`, which `make` fills with this project's license, `THIRD_PARTY_NOTICES.txt`, FFmpeg's license, and the
+  licenses of the MSYS2 packages behind the bundled DLLs;
+- `bonus\system`, the donor save for the bonus content, when you want to ship it (see "Bonus content").
 
-The exe creates the `mods` and `cheats` folders and the ini on first start. Players then add their own `data\` as
-described above.
+Never include `data\`, the game files, mods, settings or caches: players add their own. The exe writes the ini and
+creates `mods` and `cheats` on first start.
 
 ### Linux
 
-The Windows build runs under Proton / Wine. A native Linux build is supported as well: the Makefile picks
-`runtime/platform/linux.c` when `uname -s` isn't Windows and everything else is shared. Tested on Gentoo
-x86_64 with clang under Wayland (NVIDIA). Besides `make`, `git`, `clang`, `lld` and Python 3.10 or newer it
+Releases include a native Linux build (the Windows build also runs under Proton / Wine). The Makefile picks
+`runtime/platform/linux.c` when `uname -s` isn't Windows and everything else is shared. Besides `make`, `git`, `clang`, `lld` and Python 3.10 or newer it
 needs:
 
-- SDL3, the Vulkan loader and headers and shaderc — the same libraries the MSYS2 list above installs, under your
-  distro's names — plus `curl` and optionally `nasm` for building FFmpeg (see "FFmpeg" above; no FFmpeg package
-  needed);
+- the Vulkan loader and headers, plus `curl` and optionally `nasm` for building FFmpeg (see "FFmpeg" above; no
+  FFmpeg package needed);
+- `cmake` and the development files of what SDL uses on a desktop: X11 (with Xcursor, Xext, Xfixes, Xi, Xrandr,
+  Xss, Xtst), Wayland (wayland-protocols, libxkbcommon, libdecor), PipeWire, PulseAudio, ALSA, libudev and D-Bus.
+  Like FFmpeg, the first build downloads pinned releases of SDL3 and shaderc (with glslang and SPIRV-Tools) to
+  `third_party/`, checked against their SHA-256, and links them in statically, so the game runs on distributions
+  that have neither (Ubuntu 24.04 has no SDL3) and the release needs nothing besides glibc, libstdc++ and the
+  Vulkan loader. SDL still loads X11 / Wayland and the audio server from the system when it runs, and when the system
+  has an SDL3 of the same version or newer (new controllers, fixes), the game uses that one instead: `log.txt` says
+  which (`[ui] SDL ...`), and `MHGU_SDL=bundled` keeps the built-in one. That takes a few
+  minutes, once; the build stops if SDL didn't find one of those (`SDL3_NEED`). `make SDL3=system SHADERC=system`
+  links the system's `libSDL3.so.0` / `libshaderc_shared.so.1` instead, as a distribution package would;
 - `vk_mem_alloc.h` (3.4.0) in `third_party/vk_mem_alloc/`, which the Makefile has on the include path (a
   distro package that installs the header where the compiler looks by default works just as well);
 - `zenity` or `kdialog` for the dialog on a fatal error. Without either, the message goes to the terminal and
-  to `log.txt` as usual.
+  to `log.txt` as usual;
+- `zlib`'s headers (the hub server's matchmaking key is hashed with it).
 
 ```bash
 python3 -m venv tools/venv && tools/venv/bin/pip install -r tools/requirements.txt
@@ -347,7 +561,9 @@ From Windows, the Linux build can be made in WSL with Arch Linux (`wsl --install
 Windows checkout, into its own folders so the Windows build is left alone:
 
 ```bash
-pacman -S --needed make git clang lld python sdl3 vulkan-headers vulkan-icd-loader shaderc nasm vulkan-swrast
+pacman -Syu --needed make git clang lld python cmake vulkan-headers vulkan-icd-loader nasm vulkan-swrast \
+    libx11 libxcursor libxext libxfixes libxi libxrandr libxss libxtst wayland wayland-protocols libxkbcommon \
+    libdecor pipewire libpulse alsa-lib systemd-libs dbus
 mkdir -p /usr/local/include/vma && cp /mnt/c/msys64/ucrt64/include/vma/vk_mem_alloc.h /usr/local/include/vma/
 make -j16 B=build-linux O=obj-linux     # in the repository, under /mnt/c/...
 ```
@@ -365,8 +581,12 @@ buttons), and screenshots come out black there.
 | --- | --- |
 | `tools/` | the recompiler: `lifter.py` (ARM to C), `neon.py` (NEON / VFP), `gen.py` (whole modules), `nso.py`, test and research tools |
 | `runtime/` | the host side: CPU state, kernel and threads, Switch services (`services/`, `hle/`), networking (`net/`), the NVN graphics API on Vulkan (`nvn/`), settings, input, mods |
-| `docs/` | `STATUS.md`: progress, design notes, reverse-engineering findings, debug options |
-| `extras/` | `cheats/`: cheat files players can copy into their `cheats` folder |
+| `docs/` | `STATUS.md`: progress, design notes, reverse-engineering findings, debug options; `AVX2-FALLBACK.md`, `FSR4-PORT.md`, `UI.md` (this fork's work) |
+| `android/` | the Android app: manifest, Java activities and the APK build (`apk.mk`) |
+| `server/` | the hub (LDN) server for online multiplayer, see [server/README.md](server/README.md) |
+| `tests/` | host-only tests (the settings file) that need no game files |
+| `third_party/` | pinned sources of the libraries built in (SDL3, shaderc, FFmpeg, ImGui, FSR) |
+| `extras/` | `cheats/`: cheat files players can copy into their `cheats` folder; `pipelines.list` |
 
 ## License
 

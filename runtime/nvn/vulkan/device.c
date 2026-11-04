@@ -6,6 +6,8 @@
 //                          none (the R9's driver), Off: immediate. MHGU_VK_PRESENT=fifo|mailbox|immediate picks the present mode directly.
 //   MHGU_SHOT_AT=<frame>[,<frame>...]   save the window image at those presented frames as shots/frame_N.png
 //   MHGU_FPS=1             frames per second in the log every 2 s
+//   MHGU_NO_BC=1           act as if the GPU had no BC textures, as phone GPUs (they are decoded on the CPU then)
+//   MHGU_VK11=1            take the path for Vulkan 1.1 devices on any device (g_vk.api11), to test it on a PC
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <math.h>
@@ -21,6 +23,17 @@
 
 VkG g_vk;
 static VkDebugUtilsMessengerEXT messenger;
+// Windows: the swapchain says it never wants exclusive full screen (VK_EXT_full_screen_exclusive). Otherwise NVIDIA's
+// driver takes a borderless window covering the screen into exclusive mode, and alt-tab or F11 then blacks out the
+// monitor until its "Vulkan/OpenGL present method" is set to "Prefer layered on DXGI Swapchain" (issue #100).
+// VkSurfaceFullScreenExclusiveInfoEXT and its enum live in vulkan_win32.h, which needs windows.h: the same layout here.
+typedef struct {
+    VkStructureType sType;
+    void *pNext;
+    int32_t fullScreenExclusive;  // VkFullScreenExclusiveEXT
+} FullScreenExclusiveInfo;
+enum { FULL_SCREEN_EXCLUSIVE_DISALLOWED = 2 };  // VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT
+static bool surface_caps2, no_exclusive;  // VK_KHR_get_surface_capabilities2 (instance), VK_EXT_full_screen_exclusive
 
 static pthread_mutex_t g_vk_mutex = PTHREAD_MUTEX_INITIALIZER;
 static volatile bool g_vk_owner;  // who holds it: exit() may run inside a submission, from the guest's own code
@@ -65,7 +78,15 @@ static void create_instance(void) {
     if (!sdl_ext) FATAL("SDL_Vulkan_GetInstanceExtensions: %s (is the window a Vulkan window?)\n", SDL_GetError());
     const char *ext[16];
     uint32_t n_ext = 0;
-    for (Uint32 i = 0; i < n_sdl && n_ext < 14; i++) ext[n_ext++] = sdl_ext[i];
+    for (Uint32 i = 0; i < n_sdl && n_ext < 13; i++) ext[n_ext++] = sdl_ext[i];
+    uint32_t ni = 0;  // VK_EXT_full_screen_exclusive (create_device) needs this one
+    vkEnumerateInstanceExtensionProperties(NULL, &ni, NULL);
+    VkExtensionProperties *ip = calloc(ni ? ni : 1, sizeof *ip);
+    vkEnumerateInstanceExtensionProperties(NULL, &ni, ip);
+    for (uint32_t i = 0; i < ni; i++)
+        if (!strcmp(ip[i].extensionName, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) surface_caps2 = true;
+    free(ip);
+    if (surface_caps2) ext[n_ext++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
     bool validate = getenv("MHGU_VK_VALIDATION") != NULL;
     if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
@@ -83,7 +104,7 @@ static void create_instance(void) {
         validate = false;
         r = vkCreateInstance(&ci, NULL, &g_vk.inst);
     }
-    if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (is a Vulkan 1.2 driver installed?)\n", r);
+    if (r != VK_SUCCESS) FATAL("vkCreateInstance: %d (is a Vulkan 1.1 driver installed?)\n", r);
     if (validate) {
         PFN_vkCreateDebugUtilsMessengerEXT f =
             (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(g_vk.inst, "vkCreateDebugUtilsMessengerEXT");
@@ -101,28 +122,44 @@ static bool has_ext(VkExtensionProperties *e, uint32_t n, const char *name) {
     return false;
 }
 
-// Discrete GPU first (MHGU_GPU=<index> picks one); needs Vulkan 1.2 and a queue that can draw, compute and present.
+// Discrete GPU first (MHGU_GPU=<index> picks one), every Vulkan 1.2 device before any 1.1 one, a GPU's own
+// driver before Windows' D3D12 one; needs a queue that can
+// draw, compute and present.
+// The device can't run the game: the player sees why, not "the details are in log.txt" (which a phone can't easily open)
+static void no_vulkan(const char *why) {
+    LOG("[vk] %s (Vulkan 1.1 required)\n", why);
+    plat_error_box("This device's GPU driver does not support Vulkan 1.1, which the game needs. A system or GPU driver "
+                   "update may help.");
+    exit(1);
+}
+
 static void pick_device(void) {
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(g_vk.inst, &n, NULL);
     if (!n) FATAL("no Vulkan device\n");
     VkPhysicalDevice *pd = calloc(n, sizeof *pd);
     vkEnumeratePhysicalDevices(g_vk.inst, &n, pd);
-    int want = getenv("MHGU_GPU") ? atoi(getenv("MHGU_GPU")) : -1, best = -1, best_score = -1;
+    int want = getenv("MHGU_GPU") ? atoi(getenv("MHGU_GPU")) : -1, best = -1, best_score = -100;
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
         LOG("[vk] gpu %u: %s (api %u.%u.%u)\n", i, p.deviceName, VK_API_VERSION_MAJOR(p.apiVersion),
             VK_API_VERSION_MINOR(p.apiVersion), VK_API_VERSION_PATCH(p.apiVersion));
-        if (p.apiVersion < VK_API_VERSION_1_2) continue;
+        if (p.apiVersion < VK_API_VERSION_1_1) continue;
         int score = p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 3 : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
+        if (p.apiVersion < VK_API_VERSION_1_2) score -= 3;
+        // Windows' "OpenCL, OpenGL, and Vulkan Compatibility Pack" (Mesa's Dozen) lists each GPU a second time, as
+        // "Microsoft Direct3D12 (...)": Vulkan run over D3D12, and listed first. It crashes inside D3D12Core.dll when
+        // a quest loads, so the GPU's own driver goes first whenever there is one.
+        if (!strncmp(p.deviceName, "Microsoft Direct3D12", 20)) score -= 4;
         if ((int)i == want) score = 100;
         if (score > best_score) { best_score = score; best = (int)i; }
     }
-    if (best < 0) FATAL("no Vulkan 1.2 device\n");
+    if (best < 0) no_vulkan("no Vulkan 1.1 device");
     g_vk.phys = pd[best];
     free(pd);
     vkGetPhysicalDeviceProperties(g_vk.phys, &g_vk.props);
+    g_vk.api11 = g_vk.props.apiVersion < VK_API_VERSION_1_2 || (getenv("MHGU_VK11") && atoi(getenv("MHGU_VK11")));
     uint32_t nq = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, NULL);
     VkQueueFamilyProperties *qp = calloc(nq, sizeof *qp);
@@ -152,6 +189,24 @@ static void create_device(void) {
     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
     g_vk.stencil_export = has_ext(ep, ne, VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME);  // (MSAA stencil resolve)
     if (g_vk.stencil_export) ext[n_ext++] = VK_EXT_SHADER_STENCIL_EXPORT_EXTENSION_NAME;
+    no_exclusive = surface_caps2 && has_ext(ep, ne, "VK_EXT_full_screen_exclusive") && !getenv("MHGU_VK_EXCLUSIVE");
+    if (no_exclusive) ext[n_ext++] = "VK_EXT_full_screen_exclusive";
+    // (only where DEPTH24_STENCIL8 is made as D32S8: textures.c; MHGU_VK_NO_BIAS_CONTROL=1 leaves it off)
+#ifdef VK_EXT_depth_bias_control
+    bool bias_ctl = vk_depth24_stencil8() == VK_FORMAT_D32_SFLOAT_S8_UINT &&
+                    has_ext(ep, ne, VK_EXT_DEPTH_BIAS_CONTROL_EXTENSION_NAME) && !getenv("MHGU_VK_NO_BIAS_CONTROL");
+    if (bias_ctl) {
+        VkPhysicalDeviceDepthBiasControlFeaturesEXT bc = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_BIAS_CONTROL_FEATURES_EXT};
+        VkPhysicalDeviceFeatures2 q = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &bc};
+        vkGetPhysicalDeviceFeatures2(g_vk.phys, &q);
+        bias_ctl = bc.depthBiasControl && bc.leastRepresentableValueForceUnormRepresentation;
+    }
+    if (bias_ctl) ext[n_ext++] = VK_EXT_DEPTH_BIAS_CONTROL_EXTENSION_NAME;
+#endif
+    if (g_vk.api11) {  // (Vulkan 1.2 has it as the feature samplerMirrorClampToEdge)
+        g_vk.no_mirror_clamp = !has_ext(ep, ne, VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME);
+        if (!g_vk.no_mirror_clamp) ext[n_ext++] = VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME;
+    }
     bool fsr4 = g_config.fsr && g_config.fsr_upscaler == FSR_UP_4 && vk_fsr4_device_exts(ep, ne, ext, &n_ext);  // FSR 4: its extensions
     free(ep);
 
@@ -162,9 +217,13 @@ static void create_device(void) {
     VkPhysicalDeviceVulkan12Features f12_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
                                                  .pNext = g_vk.custom_border ? (void *)&cbc_have : g_vk.divisor ? (void *)&div_have : NULL};
     VkPhysicalDeviceVulkan11Features f11_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, .pNext = &f12_have};
-    VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f11_have};
+    // (a Vulkan 1.1 device doesn't know the Vulkan11 / Vulkan12 structures: f12_have stays all off there)
+    VkPhysicalDevice16BitStorageFeatures s16_have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
+                                                     .pNext = f12_have.pNext};
+    VkPhysicalDeviceFeatures2 have = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                      .pNext = g_vk.api11 ? (void *)&s16_have : (void *)&f11_have};
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &have);
-    if (!f12_have.timelineSemaphore) FATAL("the GPU driver has no timeline semaphores (Vulkan 1.2 required)\n");
+    g_vk.fences = !f12_have.timelineSemaphore;
     g_vk.divisor = g_vk.divisor && div_have.vertexAttributeInstanceRateDivisor;
     g_vk.custom_border = g_vk.custom_border && cbc_have.customBorderColors && cbc_have.customBorderColorWithoutFormat;
 
@@ -174,7 +233,7 @@ static void create_device(void) {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT, .customBorderColors = VK_TRUE,
         .customBorderColorWithoutFormat = VK_TRUE, .pNext = g_vk.divisor ? &div : NULL};
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-                                            .timelineSemaphore = VK_TRUE, .shaderInt8 = f12_have.shaderInt8,
+                                            .timelineSemaphore = f12_have.timelineSemaphore, .shaderInt8 = f12_have.shaderInt8,
                                             .samplerMirrorClampToEdge = f12_have.samplerMirrorClampToEdge,
                                             .uniformAndStorageBuffer8BitAccess = f12_have.uniformAndStorageBuffer8BitAccess,
                                             .storageBuffer8BitAccess = f12_have.storageBuffer8BitAccess,
@@ -182,14 +241,17 @@ static void create_device(void) {
                                             .pNext = g_vk.custom_border ? (void *)&cbc : g_vk.divisor ? (void *)&div : NULL};
     VkPhysicalDeviceVulkan11Features f11 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
                                             .storageBuffer16BitAccess = f11_have.storageBuffer16BitAccess, .pNext = &f12};
-    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f11};
+    VkPhysicalDevice16BitStorageFeatures s16 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES,
+                                                .storageBuffer16BitAccess = s16_have.storageBuffer16BitAccess, .pNext = f12.pNext};
+    VkPhysicalDeviceFeatures2 f = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+                                   .pNext = g_vk.api11 ? (void *)&s16 : (void *)&f11};
     VkPhysicalDeviceFeatures *b = &f.features, *h = &have.features;
     b->independentBlend = h->independentBlend;
     b->dualSrcBlend = h->dualSrcBlend;
     b->logicOp = h->logicOp;
     b->fillModeNonSolid = h->fillModeNonSolid;
     b->samplerAnisotropy = h->samplerAnisotropy;
-    b->textureCompressionBC = h->textureCompressionBC;
+    b->textureCompressionBC = g_vk.bc = h->textureCompressionBC && !(getenv("MHGU_NO_BC") && atoi(getenv("MHGU_NO_BC")));
     b->textureCompressionASTC_LDR = h->textureCompressionASTC_LDR;
     b->shaderInt64 = h->shaderInt64;
     b->depthBiasClamp = h->depthBiasClamp;
@@ -198,28 +260,48 @@ static void create_device(void) {
     b->largePoints = h->largePoints;
     b->wideLines = h->wideLines;
     b->imageCubeArray = h->imageCubeArray;
-    b->sampleRateShading = h->sampleRateShading;
+    b->sampleRateShading = g_vk.sample_shading = h->sampleRateShading;
     b->fragmentStoresAndAtomics = h->fragmentStoresAndAtomics;
     b->vertexPipelineStoresAndAtomics = h->vertexPipelineStoresAndAtomics;
     b->robustBufferAccess = h->robustBufferAccess;  // guest shaders index cbufs freely: keep OOB reads harmless
     b->shaderClipDistance = h->shaderClipDistance;
     b->multiViewport = h->multiViewport;
-    if (g_config.fsr) {  // FSR: its shaders write images declared without a format, and have 16-bit float variants
+    if (fsr4) vk_fsr4_device_features(&f11, &f12, b);  // FSR 4: cooperative matrix, float8... (only when asked for)
+    if (g_config.fsr && !g_vk.api11) {  // FSR: its shaders write images declared without a format, and have 16-bit float variants
         b->shaderStorageImageWriteWithoutFormat = g_vk.fsr_storage_wo_format = h->shaderStorageImageWriteWithoutFormat;
         b->shaderStorageImageReadWithoutFormat = h->shaderStorageImageReadWithoutFormat;
         f12.shaderFloat16 = b->shaderInt16 = g_vk.fsr_fp16 = f12_have.shaderFloat16 && h->shaderInt16;  // (both, or neither)
     }
-    if (fsr4) vk_fsr4_device_features(&f11, &f12, b);  // FSR 4: cooperative matrix, float8... (only when asked for)
     if (!h->shaderInt64) LOG("[vk] warning: no shaderInt64 (64-bit address math in shaders)\n");
+#ifdef VK_EXT_depth_bias_control
+    VkPhysicalDeviceDepthBiasControlFeaturesEXT bias = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_BIAS_CONTROL_FEATURES_EXT, .depthBiasControl = VK_TRUE,
+        .leastRepresentableValueForceUnormRepresentation = VK_TRUE, .pNext = f.pNext};
+    if (bias_ctl) f.pNext = &bias;
+#endif
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_vk.qfam,
                                   .queueCount = 1, .pQueuePriorities = &prio};
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f, .queueCreateInfoCount = 1,
                              .pQueueCreateInfos = &qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VK_CHECK(vkCreateDevice(g_vk.phys, &di, NULL, &g_vk.dev));
+#ifdef VK_EXT_depth_bias_control
+    if (bias_ctl) g_vk.set_depth_bias2 = (PFN_vkCmdSetDepthBias2EXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetDepthBias2EXT");
+#endif
+    LOG("[vk] polygon offsets on the D32S8 made for D24S8: %s\n",
+        vk_depth24_stencil8() != VK_FORMAT_D32_SFLOAT_S8_UINT ? "not needed (D24S8)"
+        : g_vk.set_depth_bias2                               ? "in D24 steps (VK_EXT_depth_bias_control)"
+                                                             : "as given (no VK_EXT_depth_bias_control)");
+    if (!g_vk.fences) {
+        g_vk.get_semaphore_counter = (PFN_vkGetSemaphoreCounterValue)vkGetDeviceProcAddr(g_vk.dev, "vkGetSemaphoreCounterValue");
+        g_vk.wait_semaphores = (PFN_vkWaitSemaphores)vkGetDeviceProcAddr(g_vk.dev, "vkWaitSemaphores");
+        g_vk.fences = !g_vk.get_semaphore_counter || !g_vk.wait_semaphores;
+    }
+    if (g_vk.api11 || g_vk.fences)
+        LOG("[vk] Vulkan 1.1 path: api11 %d, fences %d, no mirror clamp %d\n", g_vk.api11, g_vk.fences, g_vk.no_mirror_clamp);
     vkGetDeviceQueue(g_vk.dev, g_vk.qfam, 0, &g_vk.queue);
-    LOG("[vk] features: divisor %d, custom border %d, BC %d, ASTC %d\n", g_vk.divisor, g_vk.custom_border,
-        h->textureCompressionBC, h->textureCompressionASTC_LDR);
+    LOG("[vk] features: divisor %d, custom border %d, BC %d, ASTC %d, exclusive full screen off %d\n", g_vk.divisor,
+        g_vk.custom_border, g_vk.bc, h->textureCompressionASTC_LDR, no_exclusive);
 
     // MSAA (settings): as many samples as asked for that colour and depth attachments both support and shaders can
     // read from depth (its resolve is a shader: exec.c vk_ms_resolve)
@@ -234,13 +316,13 @@ static void create_device(void) {
     if (g_vk.msaa != (uint32_t)g_config.msaa) LOG("[vk] MSAA %dx not supported: %ux\n", g_config.msaa, g_vk.msaa);
 
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.dev, .instance = g_vk.inst,
-                                 .vulkanApiVersion = VK_API_VERSION_1_2};
+                                 .vulkanApiVersion = g_vk.api11 ? VK_API_VERSION_1_1 : VK_API_VERSION_1_2};
     VK_CHECK(vmaCreateAllocator(&ai, &g_vk.vma));
 
     VkSemaphoreTypeCreateInfo st = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO,
                                     .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = 0};
     VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st};
-    VK_CHECK(vkCreateSemaphore(g_vk.dev, &si, NULL, &g_vk.timeline));
+    if (!g_vk.fences) VK_CHECK(vkCreateSemaphore(g_vk.dev, &si, NULL, &g_vk.timeline));
     VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                   .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = g_vk.qfam};
     VK_CHECK(vkCreateCommandPool(g_vk.dev, &pi, NULL, &g_vk.pool));
@@ -300,12 +382,15 @@ void vk_set_msaa(uint32_t n) {
 }
 
 // ================================================================== swapchain
+static int swapchain_vsync = -1;
+static int configured_msaa = -1;
 static VkPresentModeKHR present_mode(void) {
+    swapchain_vsync = config_live_vsync();
     // MAILBOX by default: no tearing, and the game paces itself (its own 30 fps vsync waits); with FIFO the game's frames
     // also queued behind the display's, dropping to ~26 fps on the R9. FIFO where there is no mailbox.
     const char *e = getenv("MHGU_VK_PRESENT"), *v = getenv("MHGU_VSYNC");
     if (!e && v) e = atoi(v) ? "fifo" : "immediate";
-    if (!e) e = g_config.vsync ? "mailbox" : "immediate";  // (mhgurecomp.ini VSync)
+    if (!e) e = swapchain_vsync ? "mailbox" : "immediate";  // (mhgurecomp.ini VSync)
     VkPresentModeKHR want = !strcmp(e, "fifo") ? VK_PRESENT_MODE_FIFO_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_MAILBOX_KHR;
     uint32_t n = 0;
@@ -340,14 +425,27 @@ static void create_swapchain(void) {
     uint32_t count = caps.minImageCount + 1 < 3 ? 3 : caps.minImageCount + 1;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;
+    // The window image is drawn upright and the system turns it to the screen (a phone's screen is portrait at
+    // heart: in landscape currentTransform is a quarter turn, which would show the upright image squashed).
+    VkSurfaceTransformFlagBitsKHR xf = caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
+                                           ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
+#ifdef __ANDROID__
+    // (the image then has the window's shape: some drivers give currentExtent in the screen's own portrait shape)
+    if (xf == VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR && (w > h) != (ext.width > ext.height))
+        ext = (VkExtent2D){ext.height, ext.width};
+    LOG("[vk] window %dx%d, screen turned %#x\n", w, h, caps.currentTransform);
+#endif
     VkSwapchainKHR old = g_vk.swapchain;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_vk.surface, .minImageCount = count,
         .imageFormat = sf.format, .imageColorSpace = sf.colorSpace, .imageExtent = ext, .imageArrayLayers = 1,
         .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform,
+        .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = xf,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = present_mode(), .clipped = VK_TRUE,
         .oldSwapchain = old};
+    FullScreenExclusiveInfo fse = {.sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT,
+                                   .fullScreenExclusive = FULL_SCREEN_EXCLUSIVE_DISALLOWED};
+    if (no_exclusive) ci.pNext = &fse;
     VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
         vkDestroyFramebuffer(g_vk.dev, sc_fb[i], NULL);
@@ -423,9 +521,15 @@ static bool frame_begin(void) {
     cur_frame.ok = false;
     int w, h;
     SDL_GetWindowSizeInPixels(ui_window(), &w, &h);
-    if (!w || !h) return false;  // minimised
-    if (g_sc_recreate) { g_sc_recreate = 0; recreate_swapchain(); }
-    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
+    if (!w || !h || ui_window_away()) return false;  // minimised (or the window going away: ui.c)
+    // All GPU mutations happen here under vk_lock(), after resolving the old
+    // scene. Existing attachment caches defer old image destruction safely.
+    int msaa = config_live_msaa();
+    if (configured_msaa < 0) configured_msaa = g_config.msaa;
+    if (msaa != configured_msaa) { vk_set_msaa((uint32_t)msaa); configured_msaa = msaa; }
+    if (g_sc_recreate) { g_sc_recreate = 0; recreate_swapchain(); }  // (the pause menu's VSync row: vk_set_vsync)
+    if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
+        config_live_vsync() != swapchain_vsync) recreate_swapchain();
     if (!g_vk.swapchain) return false;
     slot = (slot + 1) % FRAMES;
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
@@ -500,7 +604,13 @@ static void frame_end(const char *shot_path) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
+    // (Android says SUBOPTIMAL whenever the system turns the image: a new swapchain would be no better. A new
+    // window size is caught in frame_begin.)
+#ifdef __ANDROID__
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) recreate_swapchain();
+#else
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
+#endif
     cur_frame.ok = false;
     if (shot_path) {  // (the copy is taken here; the PNG is made on a thread of its own: encoding the window's size
                       // stalled the game ~0.8 s on a Retina Mac)
@@ -520,6 +630,10 @@ static void frame_end(const char *shot_path) {
 
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h) {
     SDL_Surface *s = SDL_CreateSurfaceFrom((int)w, (int)h, SDL_PIXELFORMAT_ABGR8888, (void *)rgba, (int)w * 4);
+#ifdef __ANDROID__
+    char abs[1400], cwd[1024];  // (Android's SDL opens a relative path inside the APK's assets: from the app's folder)
+    if (path[0] != '/' && getcwd(cwd, sizeof cwd)) snprintf(abs, sizeof abs, "%s/%s", cwd, path), path = abs;
+#endif
     if (!s || !SDL_SavePNG(s, path)) LOG("[vk] saving %s failed: %s\n", path, SDL_GetError());
     else LOG("[vk] saved %s (%ux%u)\n", path, w, h);
     SDL_DestroySurface(s);
@@ -588,6 +702,11 @@ void backend_present(NvnTexture *t) {
             if (--left > 0) { g_dump_frame++; g_dump_no = 0; }
             else g_dump_active = 0;
         } else if (g_dump_request) { left = g_dump_request; g_dump_request = 0; g_dump_no = 0; g_dump_frame = 0; g_dump_active = 1; }
+    }
+    {   // (debug) MHGU_CONTROL "hudtrace": the next whole frame's HUD quads (exec.c cbuf_info)
+        extern volatile int g_hudtrace_active, g_hudtrace_request;
+        if (g_hudtrace_active) { LOG("[hud] frame done\n"); g_hudtrace_active--; }  // (2: the frame recorded next may run late)
+        else if (g_hudtrace_request) { g_hudtrace_request = 0; g_hudtrace_active = 2; }
     }
     { void vk_gpuprof_frame(void); vk_gpuprof_frame(); }  // (debug) MHGU_CONTROL "gpuprof"
     vk_unlock();

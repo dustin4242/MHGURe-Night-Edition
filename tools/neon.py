@@ -153,6 +153,8 @@ class Neon:
             return self.lanes_i(d, n, m, Q, size, lambda a, b, ut, st: self.vshl_expr(b, a, ut, st, size, Ubit), swap=True)
         if A == 0xB and B and not Ubit:  # VPADD integer
             return self.pairwise_i(d, n, m, size)
+        if A == 0xA and size < 64:  # VPMAX / VPMIN integer (MH4U Port's subsdk1, interpreted: runtime/interp.c)
+            return self.pairwise_i(d, n, m, size, 'min' if B else 'max', not Ubit)
         if A == 1 and not B:  # VRHADD
             return self.lanes_i(d, n, m, Q, size, lambda a, b, ut, st: f'({ut})((({"uint64_t" if Ubit else "int64_t"})({"" if Ubit else "(" + st + ")"}{a}) + ({"" if Ubit else "(" + st + ")"}{b}) + 1) >> 1)')
         if A == 0 and not B:  # VHADD
@@ -192,11 +194,17 @@ class Neon:
         a0, a1, b0, b1 = fin(n, 0), fin(n, 1), fin(m, 0), fin(m, 1)
         return f'{{ float t0 = nftz({f(a0, a1)}), t1 = nftz({f(b0, b1)}); {flane(d, 0)} = t0; {flane(d, 1)} = t1; }}'
 
-    def pairwise_i(self, d, n, m, size):
+    def pairwise_i(self, d, n, m, size, op='add', signed=False):
         ut, st, k = LANE_T[size]
         per = 64 // size
         vals = [lane(n, i, size) for i in range(per)] + [lane(m, i, size) for i in range(per)]
-        out = [f'{ut} t{i} = ({ut})({vals[2 * i]} + {vals[2 * i + 1]});' for i in range(per)]
+        if op == 'add':
+            out = [f'{ut} t{i} = ({ut})({vals[2 * i]} + {vals[2 * i + 1]});' for i in range(per)]
+        else:
+            t = st if signed else ut
+            cmp = '>' if op == 'max' else '<'
+            out = [f'{ut} t{i} = ({t}){vals[2 * i]} {cmp} ({t}){vals[2 * i + 1]} ? {vals[2 * i]} : {vals[2 * i + 1]};'
+                   for i in range(per)]
         out += [f'{lane(d, i, size)} = t{i};' for i in range(per)]
         return '{ ' + ' '.join(out) + ' }'
 

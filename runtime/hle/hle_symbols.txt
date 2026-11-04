@@ -1,4 +1,7 @@
 # SDK functions replaced by host implementations (HLE_SDK in runtime/**/*.c; tools/hle_list.py)
+_ZN2nn4diag6detail10VAbortImplEPKcS3_S3_iPKNS_6ResultEPKNS_2os17UserExceptionInfoES3_St9__va_list
+abort
+exit
 __aeabi_uidiv
 __aeabi_uidivmod
 __udivsi3

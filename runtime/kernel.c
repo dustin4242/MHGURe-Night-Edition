@@ -509,6 +509,32 @@ static uint64_t get_info(uint32_t id0, uint32_t handle, uint64_t id1, uint32_t *
     }
 }
 
+// The game's calls that led here, guessed from the stack: words from sp up that point just past a BL / BLX in the
+// game's code (a heuristic backtrace; stale words can show up too)
+int kernel_stack_callers(uint32_t sp, char *line, size_t size) {
+    int n = 0, k = 0;
+    line[0] = 0;
+    for (uint32_t a = sp; a < sp + 0x600 && k < 10 && n < (int)size - 12; a += 4) {
+        uint32_t v = LD32(a);
+        if (v < MAIN_BASE + 4 || v >= SDK_BASE + 0x400000 || (v & 3)) continue;
+        uint32_t ins = LD32(v - 4);
+        if ((ins & 0x0F000000u) != 0x0B000000u && (ins & 0xFE000000u) != 0xFA000000u && (ins & 0x0FFFFFF0u) != 0x012FFF30u)
+            continue;
+        n += snprintf(line + n, size - n, " %x", v);
+        k++;
+    }
+    return k;
+}
+
+// Where the game is: its last return address (with the symbol it is in, when known) and its callers
+void kernel_log_guest_stack(const char *tag, const Cpu *c) {
+    char line[400];
+    uint32_t off = 0;
+    const char *s = loader_symbol_at(c->r[14], &off);
+    kernel_stack_callers(c->r[13], line, sizeof line);
+    LOG("%s: lr %x (%s+%x), callers:%s\n", tag, c->r[14], s ? s : "?", off, line);
+}
+
 static int trace_svc = -1;
 static void svc_impl(Cpu *c, uint32_t imm, uint32_t pc);
 
@@ -562,7 +588,7 @@ static void svc_impl(Cpu *c, uint32_t imm, uint32_t pc) {
         r[0] = R_OK_;
         r[1] = 0;
         break;
-    case 0x07: LOG("ExitProcess\n"); exit(0);
+    case 0x07: kernel_log_guest_stack("ExitProcess (the game quit)", c); exit(0);
     case 0x08: {  // CreateThread(prio r0, entry r1, arg r2, stack_top r3, core r4) -> r1 handle
         KThread *t = thread_new(r[1], r[2], r[3], (int)r[0], (int)r[4]);
         t->handle = kernel_new_handle(&t->obj);
@@ -756,20 +782,9 @@ static void *dump_threads(void *arg) {
             if (t->wait_kind == WAIT_MUTEX && t->wait_addr) LOG("[threads]     mutex word %x\n", LD32(t->wait_addr));
             if (t->in_sync_wait)
                 for (uint32_t i = 0; i < t->sync_count && i < 8; i++) LOG("[threads]     handle %x\n", LD32(t->sync_handles + 4 * i));
-            // callers: stack words that point just past a BL / BLX in the game's code (a heuristic backtrace)
             if (t->wait_kind != WAIT_NONE || t->in_sync_wait) {
                 char line[400];
-                int n = 0, k = 0;
-                for (uint32_t a = t->cpu.r[13]; a < t->cpu.r[13] + 0x600 && k < 10 && n < (int)sizeof line - 12; a += 4) {
-                    uint32_t v = LD32(a);
-                    if (v < MAIN_BASE + 4 || v >= SDK_BASE + 0x400000 || (v & 3)) continue;
-                    uint32_t ins = LD32(v - 4);
-                    if ((ins & 0x0F000000u) != 0x0B000000u && (ins & 0xFE000000u) != 0xFA000000u &&
-                        (ins & 0x0FFFFFF0u) != 0x012FFF30u)
-                        continue;
-                    n += snprintf(line + n, sizeof line - n, " %x", v);
-                    k++;
-                }
+                kernel_stack_callers(t->cpu.r[13], line, sizeof line);
                 LOG("[threads]     callers:%s\n", line);
             }
         }

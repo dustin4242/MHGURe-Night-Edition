@@ -9,6 +9,7 @@
 
 #include "../hle.h"
 #include "../ipc.h"
+#include "../config.h"
 
 // ------------------------------------------------------------------ audren: a CPU mixer modelled on
 // Ryujinx's AudioRenderer (VoiceState / DataSourceHelper / StateUpdater, copies in notes/ryujinx_audio).
@@ -77,6 +78,34 @@ typedef struct Effect Effect;
 typedef struct { uint32_t ndest; int32_t *dest; } SplitInfo;
 typedef struct { int32_t mix; uint8_t in_use; float vol[MIXBUF_MAX], prev[MIXBUF_MAX]; } SplitDest;
 
+// MHGU_AUDIO_TRACE=1: a line per second on render pacing (frames, game updates, the longest stretch without one),
+// device queue underruns and the aux rings, plus a line for every voice lifetime (first wave buffer appended to stop /
+// free / reuse) that played nothing (SKIP), played only into nowhere or at volume 0 (SILENT), or stopped before the
+// end of its non-looping buffers (CUT). =2 also logs the voices that played through and those never started.
+typedef struct {
+    uint8_t open, started, loop, fmt;
+    uint32_t rate, bufs, dropped;
+    int32_t mix_id;
+    uint32_t splitter_id;
+    uint64_t addr, size, start_frame, first_frame, updates;  // first_frame: frame of the first sample + 1
+    uint64_t expected, played, unrouted;  // samples (channel 0)
+    float vol_max;
+} VoiceTrace;
+
+typedef struct {
+    uint64_t updates_total;
+    uint32_t frames, updates, since_update, max_between, underruns, aux_glitches, send_overruns;
+    uint32_t started, skipped, silent, cut;
+    uint32_t in_use_min, in_use_max, playing_max, catch_ups, skips;  // voices the game holds / that rendered samples
+    double last_update_ms, max_gap_ms, max_render_ms;
+    int64_t queue_min;  // samples
+    // aux: cumulative positions (all channels) of the return ring's DSP read / CPU write and the send ring's DSP
+    // write / CPU read, advanced by the change of each offset per frame
+    uint8_t aux_seen;
+    uint32_t aux_ch, aux_last[4];
+    int64_t aux_pos[4], aux_lag_min, aux_lag_max;
+} TraceStats;
+
 typedef struct {
     uint32_t sample_rate, sample_count, mix_buffers, submixes, voices, sinks, effects, perf_frames;
     uint32_t splitters, revision;
@@ -100,9 +129,78 @@ typedef struct {
     uint32_t wav_bytes;
     pthread_t thread;
     volatile bool quit;  // reboot (audio_reset)
+    VoiceTrace *vt;  // MHGU_AUDIO_TRACE only
+    TraceStats ts;
 } Renderer;
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+static int audio_trace(void) {
+    static int level = -1;
+    if (level < 0) level = getenv("MHGU_AUDIO_TRACE") ? atoi(getenv("MHGU_AUDIO_TRACE")) : 0;
+    return level;
+}
+
+static double now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+static void trace_reset_second(TraceStats *ts) {
+    ts->frames = ts->updates = ts->max_between = ts->underruns = ts->aux_glitches = ts->send_overruns = 0;
+    ts->started = ts->skipped = ts->silent = ts->cut = 0;
+    ts->in_use_min = UINT32_MAX;
+    ts->in_use_max = ts->playing_max = ts->catch_ups = ts->skips = 0;
+    ts->max_gap_ms = ts->max_render_ms = 0;
+    ts->queue_min = INT64_MAX;
+    ts->aux_lag_min = INT64_MAX;
+    ts->aux_lag_max = INT64_MIN;
+}
+
+// A voice's first wave buffer since it was last closed opens a lifetime.
+static void vt_open(Renderer *r, uint32_t vi, const Voice *v, const WaveBuf *wb) {
+    VoiceTrace *t = &r->vt[vi];
+    if (!t->open) {
+        memset(t, 0, sizeof *t);
+        t->open = 1;
+        t->fmt = v->fmt;
+        t->rate = v->rate;
+        t->mix_id = v->mix_id;
+        t->splitter_id = v->splitter_id;
+        t->addr = wb->addr;
+        t->size = wb->size;
+        t->start_frame = r->elapsed_frames;
+        t->updates = r->ts.updates_total;
+        r->ts.started++;
+    }
+    t->bufs++;
+    if (wb->loop) t->loop = 1;
+    else if (wb->end > wb->start) t->expected += wb->end - wb->start;
+}
+
+static void vt_close(Renderer *r, uint32_t vi, const char *why) {
+    VoiceTrace *t = &r->vt[vi];
+    if (!t->open) return;
+    t->open = 0;
+    const char *kind = !t->started ? "unstarted"
+                     : !t->played ? "SKIP"
+                     : t->vol_max == 0 || t->unrouted >= t->played ? "SILENT"
+                     : !t->loop && t->played < t->expected ? "CUT" : "ok";
+    if (kind[0] == 'S' && kind[1] == 'K') r->ts.skipped++;
+    else if (kind[0] == 'S') r->ts.silent++;
+    else if (kind[0] == 'C') r->ts.cut++;
+    if (audio_trace() < 2 && (kind[0] == 'o' || kind[0] == 'u')) return;
+    char first[32] = "never";
+    if (t->first_frame) snprintf(first, sizeof first, "%llu", (unsigned long long)(t->first_frame - 1 - t->start_frame));
+    LOG("[atrace] f%llu v%u %s (%s): fmt %u %u Hz, %u buf%s (%u dropped), %llu/%llu%s samples, %llu unrouted, "
+        "vol max %.3f, first sample after %s frames, lived %llu frames / %llu updates, mix %d spl %d, wb %llx+%llx\n",
+        (unsigned long long)r->elapsed_frames, vi, kind, why, t->fmt, t->rate, t->bufs, t->bufs == 1 ? "" : "s",
+        t->dropped, (unsigned long long)t->played, (unsigned long long)t->expected, t->loop ? " (loops)" : "",
+        (unsigned long long)t->unrouted, t->vol_max, first, (unsigned long long)(r->elapsed_frames - t->start_frame),
+        (unsigned long long)(r->ts.updates_total - t->updates), t->mix_id, (int32_t)t->splitter_id,
+        (unsigned long long)t->addr, (unsigned long long)t->size);
+}
 
 // One sample of DSP ADPCM at absolute sample index s (frames of 8 bytes: header + 14 nibbles).
 static int16_t adpcm_next(const uint8_t *data, uint64_t size, uint32_t s, const int16_t *coefs, ChanState *cs) {
@@ -200,7 +298,9 @@ static int voice_prepare(Renderer *r, Voice *v) {
         v->prev_volume = v->volume;
         v->is_new = 0;
     }
+    uint32_t vi = (uint32_t)(v - r->voice);
     if (v->flush) {
+        if (r->vt) r->vt[vi].dropped += v->flush;
         uint32_t wi = 0;
         for (uint32_t i = 0; i < v->flush; i++) {
             for (int c = 0; c < nch; c++) {
@@ -225,6 +325,11 @@ static int voice_prepare(Renderer *r, Voice *v) {
         return 0;
     }
     if (v->play_state == 2) {  // stopping: drop everything queued
+        if (r->vt) {
+            ChanState *cs = &r->chst[v->chan_ids[0] % r->voices];
+            for (int i = 0; i < WB_COUNT; i++) r->vt[vi].dropped += cs->valid[i] || !v->wb[i].sent;
+            vt_close(r, vi, "stopped");
+        }
         for (int i = 0; i < WB_COUNT; i++) {
             v->wb[i].sent = 1;
             for (int c = 0; c < nch; c++) {
@@ -656,10 +761,39 @@ static uint32_t aux_ring(uint32_t info, uint32_t base, uint32_t count_max, int32
     return n;
 }
 
-static void aux_process(Effect *fx, Mix *m, uint32_t N, uint64_t frame) {
+// MHGU_AUDIO_TRACE: is the game's CPU side keeping pace with this frame? The return slots read now hold what the game
+// wrote one ring earlier while its write position stays behind ours by 0..count_max - n ("lag", steady when the game
+// keeps up); outside that they hold samples two rings old or ones written just now, a jump in the output. The send
+// ring overruns when this frame's write passes over samples the game has not read yet.
+static void aux_trace(TraceStats *ts, Effect *fx, uint32_t N) {
+    const uint32_t *s = (const uint32_t *)G2H(fx->aux.send), *rt = (const uint32_t *)G2H(fx->aux.ret);
+    uint32_t cm = fx->aux.count_max, n = fx->aux.ch * N;
+    if (!cm) return;
+    ts->aux_ch = fx->aux.ch;
+    uint32_t now[4] = {rt[16] % cm, rt[1] % cm, s[17] % cm, s[0] % cm};  // return DSP read / CPU write, send DSP write / CPU read
+    if (!ts->aux_seen) {
+        ts->aux_seen = 1;
+        memcpy(ts->aux_last, now, sizeof now);
+        ts->aux_pos[0] = (now[0] + cm - now[1]) % cm;  // assume the game's return writes trail ours
+        ts->aux_pos[2] = (now[2] + cm - now[3]) % cm;
+        ts->aux_pos[1] = ts->aux_pos[3] = 0;
+    }
+    for (int i = 0; i < 4; i++) ts->aux_pos[i] += (now[i] + cm - ts->aux_last[i]) % cm, ts->aux_last[i] = now[i];
+    int64_t lag = ts->aux_pos[0] - ts->aux_pos[1], unread = ts->aux_pos[2] - ts->aux_pos[3];
+    if (lag < 0 || lag + n > cm) ts->aux_glitches++;
+    if (unread + n > cm) ts->send_overruns++;
+    if (lag < ts->aux_lag_min) ts->aux_lag_min = lag;
+    if (lag > ts->aux_lag_max) ts->aux_lag_max = lag;
+}
+
+static void aux_process(Effect *fx, Mix *m, uint32_t N, uint64_t frame, TraceStats *ts) {
     uint32_t send_info = fx->aux.send + 0x40, ret_info = fx->aux.ret + 0x40;  // the DSP halves of the headers
     uint32_t send_base = fx->aux.send + 0x80, ret_base = fx->aux.ret + 0x80;
     if (!fx->aux.send || !fx->aux.ret || N > 4096) return;
+    if (ts) {
+        if (fx->enabled) aux_trace(ts, fx, N);
+        else ts->aux_seen = 0;
+    }
     int32_t tmp[4096];
     uint32_t wo = 0;
     static int aux_log = -1;
@@ -780,7 +914,7 @@ static void apply_effects(Renderer *r, int32_t mix_id, Mix *m) {
             if (fx->type == 2) {  // aux
                 static int no_aux = -1;
                 if (no_aux < 0) no_aux = getenv("MHGU_NO_AUX") ? 1 : 0;
-                if (!no_aux) aux_process(fx, m, N, r->elapsed_frames);
+                if (!no_aux) aux_process(fx, m, N, r->elapsed_frames, r->vt ? &r->ts : NULL);
                 continue;
             }
             if (!(fx->type == 4 && fx->rv.ready) && !(fx->type == 5 && fx->i3.ready)) continue;
@@ -818,6 +952,7 @@ static void render_frame(Renderer *r, float *stereo) {
         if (r->mix[m].buf) memset(r->mix[m].buf, 0, sizeof(float) * MIXBUF_MAX * N);
     int16_t tmp[HIST + 4096];
     float smp[4096];
+    uint32_t playing = 0;
     for (uint32_t vi = 0; vi < r->voices; vi++) {
         Voice *v = &r->voice[vi];
         if (!v->in_use) continue;
@@ -836,6 +971,14 @@ static void render_frame(Renderer *r, float *stereo) {
             memcpy(tmp, cs->hist, sizeof cs->hist);
             int got = decode_voice(v, c, cs, tmp + HIST, need);
             if (got < need) memset(tmp + HIST + got, 0, (need - got) * 2);
+            VoiceTrace *vtr = r->vt && c == 0 && got ? &r->vt[vi] : NULL;
+            int routed = dst != NULL;
+            if (vtr) {
+                playing++;
+                vtr->played += got;
+                if (!vtr->first_frame) vtr->first_frame = r->elapsed_frames + 1;
+                if (v->volume > vtr->vol_max) vtr->vol_max = v->volume;
+            }
             float pos = cs->fraction;
             for (uint32_t i = 0; i < N; i++, pos += ratio) {
                 int k = (int)pos;
@@ -876,10 +1019,12 @@ static void render_frame(Renderer *r, float *stereo) {
                     SplitDest *sd = split_dest(r, v->splitter_id, k);
                     if (!sd) { if (!r->spl || v->splitter_id >= r->splitters || k >= r->spl[v->splitter_id].ndest) break; continue; }
                     Mix *t = find_mix(r, sd->mix);
-                    if (t) mix_into(t, N, smp, sd->prev, sd->vol, v->prev_volume, v->volume);
+                    if (t) mix_into(t, N, smp, sd->prev, sd->vol, v->prev_volume, v->volume), routed = 1;
                 }
+                if (vtr && !routed) vtr->unrouted += got;
                 continue;
             }
+            if (vtr && !routed) vtr->unrouted += got;
             if (!dst) continue;
             if (solo == -2) solo = getenv("MHGU_AUDIO_SOLO") ? atoi(getenv("MHGU_AUDIO_SOLO")) : -1;
             if (solo >= 0 && (int)vi != solo) continue;
@@ -907,6 +1052,7 @@ static void render_frame(Renderer *r, float *stereo) {
         LOG("\n");
         memset(hf, 0, sizeof hf);
     }
+    if (playing > r->ts.playing_max) r->ts.playing_max = playing;
     for (uint32_t d = 0; d < r->nsdest; d++) memcpy(r->sdest[d].prev, r->sdest[d].vol, sizeof r->sdest[d].prev);
     // sub mixes, deepest first
     int depth[64] = {0};
@@ -966,7 +1112,7 @@ static void render_frame(Renderer *r, float *stereo) {
 static void apply_gain(SDL_AudioStream *st) {
     static double env = -1;
     if (env < 0) env = getenv("MHGU_AUDIO_GAIN") ? atof(getenv("MHGU_AUDIO_GAIN")) : 1.0;
-    float g = (float)(env * 1.0);
+    float g = (float)env * config_audio_gain();
     if (st && SDL_GetAudioStreamGain(st) != g) SDL_SetAudioStreamGain(st, g);
 }
 
@@ -984,39 +1130,84 @@ static void *renderer_tick(void *arg) {
     uint32_t N = r->sample_count > 4096 ? 4096 : r->sample_count;
     int frame_bytes = (int)(N * 2 * sizeof(float));
     uint64_t next = 0;
-    struct timespec now;
     int target = 4 * frame_bytes;  // queued audio to keep ahead of the device: >= 2 device periods
+    int dev_bytes = 0;
     if (r->stream) {
         SDL_AudioSpec dev;
         int dev_frames = 0;
         if (SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(r->stream), &dev, &dev_frames) && dev_frames > 0) {
-            int t = (2 * dev_frames * (int)r->sample_rate / (dev.freq ? dev.freq : 48000) + (int)N) * 2 * (int)sizeof(float);
+            dev_bytes = dev_frames * (int)r->sample_rate / (dev.freq ? dev.freq : 48000) * 2 * (int)sizeof(float);
+            int t = 2 * dev_bytes + frame_bytes;
             if (t > target) target = t;
             LOG("[audren] device %d Hz, %d frames/period; queue target %d samples\n", dev.freq, dev_frames,
                 target / (2 * (int)sizeof(float)));
         }
     }
+    // One frame per period by the clock, as the DSP renders, so the game gets an update between every two frames and
+    // a sound it starts is heard a frame later, not after the next burst of frames (the game ends sounds by its own
+    // clock, so that delay came off their ends). The device queue only corrects the clock's drift from the device's:
+    // a frame at once when it runs low, a frame skipped when it runs high. Frames go out back to back until the queue
+    // first holds half a device period less than the target (the device's pulls then swing it around the target).
+    uint64_t period = (uint64_t)N * 1000000000ull / r->sample_rate;
+    int low = target - dev_bytes - frame_bytes, high = target + dev_bytes + frame_bytes;
+    int prime = target - dev_bytes / 2;
+    bool primed = !r->stream;
     while (!r->quit) {
-        if (r->stream) {
-            while (SDL_GetAudioStreamQueued(r->stream) >= target && !r->quit) {
-                struct timespec ts = {0, 1000000};
-                nanosleep(&ts, NULL);
+        uint64_t t = plat_now_ns();
+        int q = r->stream ? SDL_GetAudioStreamQueued(r->stream) : 0;
+        if (!primed) {
+            if (q >= prime) primed = true, next = t;
+        } else if (!r->stream || q >= low) {
+            if (!next || t > next + 4 * period) next = t;  // (behind after a stall: no burst to make up for it)
+            plat_sleep_until_ns(next);  // (Windows: a high-resolution timer, not nanosleep's whole milliseconds)
+            next += period;
+            if (r->stream && SDL_GetAudioStreamQueued(r->stream) >= high) {
+                if (r->vt) r->ts.skips++;
+                continue;
             }
-        } else {
-            clock_gettime(CLOCK_MONOTONIC, &now);
-            uint64_t t = now.tv_sec * 1000000000ull + now.tv_nsec;
-            if (!next) next = t;
-            if (next > t) { struct timespec ts = {0, (long)(next - t)}; nanosleep(&ts, NULL); }
-            next += (uint64_t)N * 1000000000ull / r->sample_rate;
+        } else if (r->vt) {
+            r->ts.catch_ups++;
         }
+        int64_t queued = r->stream && r->vt ? SDL_GetAudioStreamQueued(r->stream) / (2 * (int)sizeof(float)) : -1;
         pthread_mutex_lock(&r->lock);
         if (r->state == 0) {
+            double t0 = r->vt ? now_ms() : 0;
             render_frame(r, out);
             r->elapsed_frames++;
+            if (r->vt) {
+                TraceStats *ts = &r->ts;
+                double dt = now_ms() - t0;
+                if (dt > ts->max_render_ms) ts->max_render_ms = dt;
+                if (++ts->since_update > ts->max_between) ts->max_between = ts->since_update;
+                if (queued >= 0 && queued < ts->queue_min) ts->queue_min = queued;
+                if (queued == 0 && r->elapsed_frames > r->sample_rate / N) ts->underruns++;  // not counting start-up
+            }
         } else {
             memset(out, 0, frame_bytes);
         }
+        TraceStats snap;
+        uint32_t open = 0;
+        int report = r->vt && r->state == 0 && ++r->ts.frames >= r->sample_rate / N;
+        if (report) {
+            snap = r->ts, trace_reset_second(&r->ts);
+            for (uint32_t i = 0; i < r->voices; i++) open += r->vt[i].open;
+        }
         pthread_mutex_unlock(&r->lock);
+        if (report) {
+            char aux[96] = "";
+            if (snap.aux_lag_max != INT64_MIN) {
+                double ms = 1000.0 / r->sample_rate / (snap.aux_ch ? snap.aux_ch : 1);
+                snprintf(aux, sizeof aux, "; aux lag %.1f..%.1f ms, %u glitch frames, %u send overruns",
+                         snap.aux_lag_min * ms, snap.aux_lag_max * ms, snap.aux_glitches, snap.send_overruns);
+            }
+            LOG("[atrace] f%llu 1s: %u frames, %u updates (max %u frames between, longest gap %.1f ms), render max "
+                "%.2f ms, queue min %lld, %u underruns, %u caught up, %u skipped%s; voices %u..%u in use, %u open, "
+                "max %u playing, %u opened, %u SKIP, %u SILENT, %u CUT\n",
+                (unsigned long long)r->elapsed_frames, snap.frames, snap.updates, snap.max_between, snap.max_gap_ms,
+                snap.max_render_ms, (long long)(snap.queue_min == INT64_MAX ? -1 : snap.queue_min), snap.underruns,
+                snap.catch_ups, snap.skips, aux, snap.in_use_min == UINT32_MAX ? 0 : snap.in_use_min, snap.in_use_max,
+                open, snap.playing_max, snap.started, snap.skipped, snap.silent, snap.cut);
+        }
         if (r->stream) { apply_gain(r->stream); SDL_PutAudioStreamData(r->stream, out, frame_bytes); }
         if (r->wav && r->state == 0) {
             fwrite(out, 1, frame_bytes, r->wav);
@@ -1032,7 +1223,9 @@ static void *renderer_tick(void *arg) {
 
 static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) {
     uint8_t is_new = p[8];
+    uint32_t vi = (uint32_t)(v - r->voice);
     if (is_new) {
+        if (r->vt) vt_close(r, vi, "reused");
         memset(v, 0, sizeof *v);
         v->play_state = 1;
         v->mix_id = -1;
@@ -1098,6 +1291,7 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) 
                 wb->loop_start = wb->loop_end = 0;
             }
             wb->sent = 0;
+            if (r->vt) vt_open(r, vi, v, wb);
             static int dumped;
             if (getenv("MHGU_AUDIO_DUMPWB") && !dumped && wb->size > 0x100000 && v->fmt == 6 && v->ds_addr) {
                 dumped = 1;
@@ -1131,6 +1325,7 @@ static void update_voice(Renderer *r, Voice *v, const uint8_t *p, uint8_t *out) 
             }
         }
     }
+    if (r->vt && r->vt[vi].open && v->play_state == 0) r->vt[vi].started = 1;
     // VoiceOutStatus
     if (is_new || v->is_new) {
         memset(out, 0, 0x10);
@@ -1191,6 +1386,14 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     oh[0] = h[0];
     uint32_t o = 0x40;
     pthread_mutex_lock(&r->lock);
+    if (r->vt) {
+        double t = now_ms();
+        if (r->ts.last_update_ms && t - r->ts.last_update_ms > r->ts.max_gap_ms) r->ts.max_gap_ms = t - r->ts.last_update_ms;
+        r->ts.last_update_ms = t;
+        r->ts.updates++;
+        r->ts.updates_total++;
+        r->ts.since_update = 0;
+    }
     // memory pools: acknowledge attach/detach requests
     const uint8_t *pin = ip + 0x40 + behavior_sz;
     oh[2] = npools * 0x10;
@@ -1215,6 +1418,14 @@ static void request_update(Renderer *r, IpcReq *req, IpcResp *resp) {
     for (uint32_t i = 0; i < nvoices && o + 0x10 <= out->size; i++, o += 0x10) {
         const uint8_t *v = vin + i * 0x170;
         if (v[9]) update_voice(r, &r->voice[i], v, op + o);
+    }
+    if (r->vt) {
+        uint32_t used = 0;
+        for (uint32_t i = 0; i < r->voices; i++)
+            if (!r->voice[i].in_use) vt_close(r, i, "freed");
+            else used++;
+        if (used < r->ts.in_use_min) r->ts.in_use_min = used;
+        if (used > r->ts.in_use_max) r->ts.in_use_max = used;
     }
     // effects: report them as enabled / disabled per request
     const uint8_t *ein = vin + voices_sz;
@@ -1327,7 +1538,7 @@ static void renderer_open_output(Renderer *r) {
     SDL_AudioSpec spec = {SDL_AUDIO_F32, 2, (int)r->sample_rate};
     r->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
     if (!r->stream) { LOG("[audren] SDL audio open failed: %s\n", SDL_GetError()); return; }
-    if (getenv("MHGU_AUDIO_GAIN")) SDL_SetAudioStreamGain(r->stream, (float)atof(getenv("MHGU_AUDIO_GAIN")));
+    apply_gain(r->stream);
     SDL_ResumeAudioStreamDevice(r->stream);
 }
 
@@ -1398,6 +1609,11 @@ SERVICE("audren:u", audren_u) {
         r->chst = calloc(r->voices, sizeof(ChanState));
         r->mix = calloc(r->nmix, sizeof(Mix));
         r->fx = calloc(r->effects ? r->effects : 1, sizeof(Effect));
+        if (audio_trace()) {
+            r->vt = calloc(r->voices, sizeof *r->vt);
+            trace_reset_second(&r->ts);
+            LOG("[atrace] audio trace on (level %d)\n", audio_trace());
+        }
         renderer_open_output(r);
         r->event = kernel_create_event_pair(&r->event_w, &r->event_r);
         pthread_create(&r->thread, NULL, renderer_tick, r);
@@ -1476,7 +1692,7 @@ RT_ON_RESET(audio_reset) {
             if (r->stream) SDL_DestroyAudioStream(r->stream);
             if (r->wav) { wav_header(r->wav, r->wav_bytes); fclose(r->wav); }
             for (uint32_t m = 0; m < r->nmix; m++) free(r->mix[m].buf);
-            free(r->voice), free(r->chres), free(r->chst), free(r->mix), free(r->fx);  // (reverb delay lines leak)
+            free(r->voice), free(r->chres), free(r->chst), free(r->mix), free(r->fx), free(r->vt);  // (reverb delay lines leak)
             free(r);
             g_rens[i] = NULL;
             n++;
@@ -1615,7 +1831,7 @@ SERVICE("audout:u", audout_u) {
             SDL_AudioSpec spec = {SDL_AUDIO_S16, (int)a->channels, (int)a->rate};
             a->stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
             if (a->stream) {
-                if (getenv("MHGU_AUDIO_GAIN")) SDL_SetAudioStreamGain(a->stream, (float)atof(getenv("MHGU_AUDIO_GAIN")));
+                apply_gain(a->stream);
                 SDL_ResumeAudioStreamDevice(a->stream);
             }
         }

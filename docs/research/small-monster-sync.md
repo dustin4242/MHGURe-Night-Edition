@@ -61,7 +61,31 @@ player's slot: `*(0x1a8ca48) + 0x30`. Area 0 = base camp, 255 = not in a quest.
 - Not tested: combat (hits by a follower, deaths, carving), aggressive small monsters (Jaggi...), 3-4 players,
   two PCs.
 
+## Open problems (2026-11-03)
+
+- Fixed: players dropped in some zones with sync on, e.g. Volcanic Hollow zone 7. uEms100 (Volcanic Hollow zones 2, 3, 7
+  of Harvest Tour: Volcano) never gets past its first action: `act` stays 0, no target, and it doesn't move. It starts
+  0:0 again every update, twice (from 0x2752d4 and 0x2755a8): about 120 starts a second per monster at 60 fps, 4x that at
+  240 fps. Harmless in the original game; with flag 8 each start would send a netEmAction. Reproduced with two instances
+  (windowed, [Multiplayer] Server = Off, hub -> Low 3 star Harvest Tour: Volcano, zone 1 -> 2 -> 3 -> 7): the host left
+  zone 3 for zone 7, the joiner became master of zone 3, and it left the hub after 576 more starts; before that the other
+  hunter was seen jumping back. emsync_tick now leaves a monster whose action word is 0 as the game made it. Checked:
+  the same route stayed connected, over 40 s with both hunters in zone 7 (host master; ~10000 uEms100 starts);
+  uEms100 at the same place on both games, uEms006 still synced (8 and 222 units apart, sampled once while moving). Not
+  checked: that the starts were what went over the network (no packet count; the disconnect going away is the evidence),
+  240 fps, 3-4 players, two PCs. A monster stuck looping a later action wouldn't be caught.
+- "Small monsters stop attacking": in solo, Maccao preferring Palicoes comes from their score table (docs/STATUS.md,
+  "Monsters' attention scores"), not from sync. Whether sync adds to it (reported "looks at the player, then stops") is
+  not tested.
+- Herds: sEnemy (0x1a51fe0, class sEnemyMure) +0x25c0 holds 10 herds of 0x50 bytes: +0 type, +1 id, +2 the herd's master
+  slot, +0xf target type (0 hunter, 1 Palico, 2 enemy, 0xff none), +0x10 target slot, +0x14 zone, +0x18 leader. Members
+  copy the herd's target (a monster's own target type is one higher: 1 hunter, 2 Palico, 3 enemy). emsync.c doesn't touch
+  herds, so their own master and netMureEm* messages run alongside it.
+
 ## Debug tools made for this
+
+- `MHGU_EMTRACE_ZAKO=1`: small monsters' new actions, and twice a second their distance, targets, attention scores and
+  rates, plus each species' score tables (runtime/hle/emtrace.c).
 
 - Control file (MHGU_CONTROL): `peek <hex addr> [words]`, `poke <hex addr> <hex word>`,
   `memsave <hex addr> <hex bytes> <file>`, `fntrace <lo> <hi> [n]` (log calls of guest functions in [lo, hi)),

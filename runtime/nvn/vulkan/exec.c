@@ -8,8 +8,12 @@
 //   MHGU_NO_PROGRAM_CACHE=1  don't keep translated programs / pipeline states in cache/ for the next run to prebuild
 //   MHGU_SAVE_GLSL=1      translated shaders -> build/glsl/<code address>_<stage>.glsl
 //   MHGU_VK_STATS=1       draw / pass / skip counts in the log every 2 s (and shader / pipeline build stats)
+//   MHGU_SKIP_LOG=1       every draw skipped for a building program / pipeline: its shaders and colour target
+//   MHGU_NO_PREWARM=1     don't translate the game's programs ahead of their first use (see "prewarm"; the ini's
+//                         [Performance] ShaderPrewarm = Off does the same)
 #include <math.h>
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +32,7 @@ static _Atomic int stat_compiles;
 // (MHGU_VK_STATS) shader / pipeline builds: skips by cause, frames with skips, the waits, build times per job kind
 // (translate, GLSL -> SPIR-V + modules, pipeline), request -> ready latency, the slowest frame (exec thread's view)
 static uint64_t stat_skip_prog, stat_skip_pipe, stat_skip_frames, stat_waited_ns, stat_waits, stat_rescued, stat_frame_max;
+static _Atomic uint64_t stat_pw_new, stat_pw_known, stat_pw_left;  // prewarm: translated, already cached, jobs queued
 static _Atomic uint64_t stat_job_n[3], stat_job_ns[3], stat_job_max[3], stat_lat_n, stat_lat_ns, stat_lat_max;
 static void atomic_max(_Atomic uint64_t *m, uint64_t v) {
     uint64_t o = atomic_load(m);
@@ -57,18 +62,80 @@ static pthread_mutex_t seq_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool in_pass;
 static void ss_forget(void);
 
+// Without timeline semaphores (g_vk.fences: Vulkan 1.1 devices): a fence per submission stands in for the timeline's
+// value. A fence that signals also covers everything submitted before it, so the numbers mean the same. The ring is much
+// larger than the SUBS submissions that can be in flight, so the submission a fence last served is long finished when
+// it comes round again. fence_lock guards all of this; a thread in vkWaitForFences keeps its fence from being reset.
+#define SEQ_FENCES 64
+static struct { VkFence fence; int waiters; } seq_fence[SEQ_FENCES];
+static uint64_t fence_done, fence_last;  // last submission known finished, last one submitted with its fence
+static pthread_mutex_t fence_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static VkFence seq_fence_take(uint64_t seq) {
+    int i = (int)(seq % SEQ_FENCES);
+    pthread_mutex_lock(&fence_lock);
+    while (seq_fence[i].waiters) {  // (finished long ago: they are on their way out of vkWaitForFences)
+        pthread_mutex_unlock(&fence_lock);
+        sched_yield();
+        pthread_mutex_lock(&fence_lock);
+    }
+    if (!seq_fence[i].fence) {
+        VkFenceCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        VK_CHECK(vkCreateFence(g_vk.dev, &fi, NULL, &seq_fence[i].fence));
+    } else {
+        VK_CHECK(vkResetFences(g_vk.dev, 1, &seq_fence[i].fence));
+    }
+    if (seq > SEQ_FENCES && fence_done < seq - SEQ_FENCES) fence_done = seq - SEQ_FENCES;  // (its fence is this one now)
+    VkFence f = seq_fence[i].fence;
+    pthread_mutex_unlock(&fence_lock);
+    return f;
+}
+
+static uint64_t fence_completed(void) {
+    pthread_mutex_lock(&fence_lock);
+    while (fence_done < fence_last && vkGetFenceStatus(g_vk.dev, seq_fence[(fence_done + 1) % SEQ_FENCES].fence) == VK_SUCCESS)
+        fence_done++;
+    uint64_t v = fence_done;
+    pthread_mutex_unlock(&fence_lock);
+    return v;
+}
+
+static VkResult fence_wait(uint64_t seq, uint64_t timeout) {
+    pthread_mutex_lock(&fence_lock);
+    if (seq > fence_last) seq = fence_last;  // not submitted yet (other thread): everything submitted so far
+    if (seq <= fence_done) { pthread_mutex_unlock(&fence_lock); return VK_SUCCESS; }
+    int i = (int)(seq % SEQ_FENCES);
+    VkFence f = seq_fence[i].fence;
+    seq_fence[i].waiters++;
+    pthread_mutex_unlock(&fence_lock);
+    VkResult r = vkWaitForFences(g_vk.dev, 1, &f, VK_TRUE, timeout);
+    pthread_mutex_lock(&fence_lock);
+    seq_fence[i].waiters--;
+    if (r == VK_SUCCESS && fence_done < seq) fence_done = seq;
+    pthread_mutex_unlock(&fence_lock);
+    return r;
+}
+
 uint64_t vk_completed_seq(void) {
+    if (g_vk.fences) return fence_completed();
     uint64_t v = 0;
-    vkGetSemaphoreCounterValue(g_vk.dev, g_vk.timeline, &v);
+    g_vk.get_semaphore_counter(g_vk.dev, g_vk.timeline, &v);
     return v;
 }
 
 void vk_wait_seq(uint64_t seq) {
     if (!seq || vk_exiting()) return;  // (exit in progress: never reach the driver from a late guest thread)
     uint64_t t0_ = plat_now_ns();
+    if (g_vk.fences) {
+        VkResult fr = fence_wait(seq, 10ull * 1000000000ull);
+        stat_wait_ns += plat_now_ns() - t0_;
+        if (fr == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
+        else if (fr != VK_SUCCESS) FATAL("vkWaitForFences: %d (device lost)\n", fr);
+        return;
+    }
     VkSemaphoreWaitInfo wi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_vk.timeline,
                               .pValues = &seq};
-    VkResult r = vkWaitSemaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
+    VkResult r = g_vk.wait_semaphores(g_vk.dev, &wi, 10ull * 1000000000ull);
     stat_wait_ns += plat_now_ns() - t0_;
     if (r == VK_TIMEOUT) LOG("[vk] GPU did not finish submission %llu within 10 s (device lost?)\n", (unsigned long long)seq);
     else if (r != VK_SUCCESS) FATAL("vkWaitSemaphores: %d (device lost)\n", r);
@@ -151,7 +218,19 @@ void vk_submit_extra(VkSemaphore wait, VkSemaphore signal) {
     VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &ts, .waitSemaphoreCount = wait ? 1 : 0,
                        .pWaitSemaphores = &wait, .pWaitDstStageMask = &wait_stage, .commandBufferCount = n,
                        .pCommandBuffers = cbs, .signalSemaphoreCount = signal ? 2 : 1, .pSignalSemaphores = sig};
-    VK_CHECK(vkQueueSubmit(g_vk.queue, 1, &si, VK_NULL_HANDLE));
+    VkFence fence = VK_NULL_HANDLE;
+    if (g_vk.fences) {
+        fence = seq_fence_take(submit_seq + 1);
+        si.pNext = NULL;
+        si.signalSemaphoreCount = signal ? 1 : 0;
+        si.pSignalSemaphores = &signal;
+    }
+    VK_CHECK(vkQueueSubmit(g_vk.queue, 1, &si, fence));
+    if (g_vk.fences) {
+        pthread_mutex_lock(&fence_lock);
+        fence_last = submit_seq + 1;
+        pthread_mutex_unlock(&fence_lock);
+    }
     pthread_mutex_lock(&seq_lock);
     submit_seq++;
     pthread_mutex_unlock(&seq_lock);
@@ -301,6 +380,33 @@ static VkSpan guest_copy(uint64_t addr, uint64_t size) {
     return s;
 }
 
+// Vertex streams: a draw binds the rest of a vertex pool from where its own vertices start, so the draws of one pool
+// (the equipment box's icons, one quad each) bind ranges that share their end. The first copy (or vertex cache buffer)
+// serves the later ones that start inside it, at their offset, until guest memory changes.
+#define VTAIL_TAB 1024
+static struct { uint64_t addr, end, gen; VkSpan span; } vtail[VTAIL_TAB];
+static uint32_t vtail_slot(uint64_t end) { uint64_t h = end * 0x9E3779B97F4A7C15ull; return (uint32_t)(h ^ (h >> 32)) & (VTAIL_TAB - 1); }
+static bool vtail_find(uint64_t addr, uint64_t size, VkSpan *out) {
+    uint32_t slot = vtail_slot(addr + size);
+    if (vtail[slot].gen != gcopy_gen || vtail[slot].end != addr + size || vtail[slot].addr > addr) return false;
+    uint64_t d = addr - vtail[slot].addr;
+    *out = vtail[slot].span;
+    out->off += d;
+    if (out->ptr) out->ptr = (uint8_t *)out->ptr + d;
+    return true;
+}
+static void vtail_put(uint64_t addr, uint64_t size, VkSpan span) {
+    uint32_t slot = vtail_slot(addr + size);
+    vtail[slot].addr = addr; vtail[slot].end = addr + size; vtail[slot].gen = gcopy_gen; vtail[slot].span = span;
+}
+static VkSpan guest_copy_vertex(uint64_t addr, uint64_t size) {
+    VkSpan s;
+    if (vtail_find(addr, size, &s)) return s;
+    s = guest_copy(addr, size);
+    vtail_put(addr, size, s);
+    return s;
+}
+
 static bool guest_range_ok(uint64_t addr, uint64_t size) { return addr && addr < GUEST_SPACE && size <= GUEST_SPACE - addr; }
 
 // ---- vertex cache: device-local copies of bound vertex ranges, kept across submissions and refreshed only when the
@@ -403,19 +509,28 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
 }
 
 // ================================================================== worker threads (shader / pipeline builds)
+// Two lists per queue: jobs a draw is (or may be) waiting for, and the start-up prewarm's (low: taken only when the
+// first list is empty).
 typedef struct Job { void (*fn)(void *); void *arg; struct Job *next; } Job;
-typedef struct { Job *head, *tail; pthread_mutex_t lock; pthread_cond_t cond; } JobQueue;
-static JobQueue compile_q = {NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
-static JobQueue translate_q = {NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER};
+typedef struct { Job *head, *tail, *lhead, *ltail; pthread_mutex_t lock; pthread_cond_t cond; bool started; } JobQueue;
+static JobQueue compile_q = {NULL, NULL, NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false};
+static JobQueue translate_q = {NULL, NULL, NULL, NULL, PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, false};
 
 static void *worker(void *a) {
     JobQueue *q = a;
     for (;;) {
         pthread_mutex_lock(&q->lock);
-        while (!q->head) pthread_cond_wait(&q->cond, &q->lock);
-        Job *j = q->head;
-        q->head = j->next;
-        if (!q->head) q->tail = NULL;
+        while (!q->head && !q->lhead) pthread_cond_wait(&q->cond, &q->lock);
+        Job *j;
+        if (q->head) {
+            j = q->head;
+            q->head = j->next;
+            if (!q->head) q->tail = NULL;
+        } else {
+            j = q->lhead;
+            q->lhead = j->next;
+            if (!q->lhead) q->ltail = NULL;
+        }
         pthread_mutex_unlock(&q->lock);
         j->fn(j->arg);
         free(j);
@@ -429,41 +544,46 @@ static bool sync_shaders(void) {
     return v;
 }
 
-static void enqueue(JobQueue *q, int nthreads, bool *started, void (*fn)(void *), void *arg) {
+static void enqueue(JobQueue *q, int nthreads, bool low, void (*fn)(void *), void *arg) {
     if (sync_shaders()) { fn(arg); return; }
-    if (!*started) {
-        *started = true;
+    pthread_mutex_lock(&q->lock);
+    if (!q->started) {
+        q->started = true;
         for (int i = 0; i < nthreads; i++) { pthread_t t; pthread_create(&t, NULL, worker, q); }
     }
     Job *j = malloc(sizeof *j);
     j->fn = fn; j->arg = arg; j->next = NULL;
-    pthread_mutex_lock(&q->lock);
-    if (q->tail) q->tail->next = j; else q->head = j;
-    q->tail = j;
+    Job **head = low ? &q->lhead : &q->head, **tail = low ? &q->ltail : &q->tail;
+    if (*tail) (*tail)->next = j; else *head = j;
+    *tail = j;
     pthread_cond_signal(&q->cond);
     pthread_mutex_unlock(&q->lock);
 }
 
 // The translator isn't re-entrant: one thread translates, the compiles run on a few workers.
 static pthread_mutex_t translate_lock = PTHREAD_MUTEX_INITIALIZER;
-static void run_translate(void (*fn)(void *), void *arg) { static bool s; enqueue(&translate_q, 1, &s, fn, arg); }
-static void run_job(void (*fn)(void *), void *arg) { static bool s; enqueue(&compile_q, 3, &s, fn, arg); }
+static void run_translate(void (*fn)(void *), void *arg) { enqueue(&translate_q, 1, false, fn, arg); }
+static void run_job(void (*fn)(void *), void *arg) { enqueue(&compile_q, 3, false, fn, arg); }
 void vk_run_job(void (*fn)(void *), void *arg) { run_job(fn, arg); }  // (fsr.c: its capture shaders / pipelines)
 
 // A queued job a draw is waiting for goes to the front of its queue (the queues are FIFO, and an area load queues a
-// few hundred builds at once).
+// few hundred builds at once), from the prewarm's list too.
 static void promote(JobQueue *q, void *arg) {
     pthread_mutex_lock(&q->lock);
-    for (Job *j = q->head, *prev = NULL; j; prev = j, j = j->next) {
-        if (j->arg != arg) continue;
-        if (prev) {
-            prev->next = j->next;
-            if (q->tail == j) q->tail = prev;
+    for (int low = 0; low < 2; low++) {
+        Job **head = low ? &q->lhead : &q->head, **tail = low ? &q->ltail : &q->tail;
+        for (Job *j = *head, *prev = NULL; j; prev = j, j = j->next) {
+            if (j->arg != arg) continue;
+            if (!low && !prev) goto done;  // (already first)
+            if (prev) prev->next = j->next; else *head = j->next;
+            if (*tail == j) *tail = prev;
             j->next = q->head;
             q->head = j;
+            if (!q->tail) q->tail = j;
+            goto done;
         }
-        break;
     }
+done:
     pthread_mutex_unlock(&q->lock);
 }
 
@@ -487,6 +607,19 @@ static void set_state(_Atomic int *state, int v, uint64_t t_req) {
 // than being skipped at once: most builds take a few ms (SPIR-V and pipeline caches), so the effect appears in its
 // first frame instead of a few frames later, and a slow (uncached) build costs at most the budget once per frame.
 // at_least_ns: a draw that mustn't be skipped waits that long whatever is left of the budget.
+//
+// The quest photo (Quest Rewards / Reward Box screen): at the clear the game copies the scene into its photo buffer
+// once and never again, so a draw skipped then leaves the photo as whatever the buffer's memory held: black (the R9),
+// or other textures' data (RADV, Steam Deck). The game's request (0xa6f97c, hooked in tools/gen.py) opens a window of
+// PHOTO_FRAMES frames in which every draw waits for its build, up to PHOTO_WAIT_NS: the capture and the scene it copies.
+#define PHOTO_FRAMES 8
+#define PHOTO_WAIT_NS 2000000000ll
+static _Atomic uint64_t photo_until;
+void backend_photo_requested(void) {
+    uint64_t f = vk_frame_counter();
+    if (atomic_exchange(&photo_until, f + PHOTO_FRAMES) < f)
+        LOG("[vk] quest photo requested (frame %llu): draws wait for their shaders until it is taken\n", (unsigned long long)f);
+}
 static int64_t wait_budget_ns;
 static uint64_t wait_frame = ~0ull;
 static bool await_build(_Atomic int *state, void *job, int64_t at_least_ns) {
@@ -501,6 +634,8 @@ static bool await_build(_Atomic int *state, void *job, int64_t at_least_ns) {
         if (budget < 0) budget = 0;
     }
     uint64_t f = vk_frame_counter();
+    uint64_t photo = atomic_load(&photo_until);
+    if (photo && f <= photo && at_least_ns < PHOTO_WAIT_NS) at_least_ns = PHOTO_WAIT_NS;
     if (f != wait_frame) wait_frame = f, wait_budget_ns = budget;
     int64_t allowed = wait_budget_ns > at_least_ns ? wait_budget_ns : at_least_ns;
     if (allowed <= 0) return false;
@@ -529,14 +664,6 @@ static bool await_build(_Atomic int *state, void *job, int64_t at_least_ns) {
     stat_waits++;
     if (s == 1) stat_rescued++;
     return s == 1;
-}
-
-static void skip_draw(uint64_t *cause) {
-    static uint64_t last = ~0ull;
-    uint64_t f = vk_frame_counter();
-    if (f != last) last = f, stat_skip_frames++;
-    stat_skipped++;
-    (*cause)++;
 }
 
 // ================================================================== state
@@ -577,6 +704,24 @@ static struct {
     float alpha_ref;
     uint64_t copy_row_stride, copy_image_stride;
 } st;
+
+// A draw skipped because its program / pipeline is still building. MHGU_SKIP_LOG=1 logs each one with its shaders and
+// colour target 0 (which pass lost it; a one-off pass, like the quest photo, stays wrong).
+static void skip_draw(uint64_t *cause) {
+    static uint64_t last = ~0ull;
+    static int log = -1;
+    uint64_t f = vk_frame_counter();
+    if (f != last) last = f, stat_skip_frames++;
+    stat_skipped++;
+    (*cause)++;
+    if (log < 0) log = getenv("MHGU_SKIP_LOG") != NULL;
+    if (log && st.program) {
+        NvnTexture *t = st.rt.ncolor ? st.rt.color[0] : NULL;
+        LOG("[skip] frame %llu %s vs %llx fs %llx | rt0 %p %ux%u f%#x\n", (unsigned long long)f,
+            cause == &stat_skip_prog ? "program" : "pipeline", (unsigned long long)st.program->stages[0].code_addr,
+            (unsigned long long)st.program->stages[1].code_addr, (void *)t, t ? t->width : 0, t ? t->height : 0, t ? t->format : 0);
+    }
+}
 
 uint32_t nvn_window_origin(void);
 uint32_t nvn_depth_mode(void);
@@ -688,12 +833,151 @@ void vk_framebuffers_forget_view(VkImageView v) {
 
 // ================================================================== passes
 static VkFormat pass_color[8], pass_depth;
+static bool pass_d24_as_float;  // the depth attachment is a DEPTH24_STENCIL8 made as D32S8 (polygon offsets in D24 steps)
 static uint32_t pass_ncolor, pass_samples = 1, pass_w, pass_h;
 static bool ui_relax_scissor;  // the draw being set up moved a HUD piece out from under the game's scissor
+static int ui_scissor_v = -1;  // 16:10: the draw being set up is a HUD piece anchored so (0 top, 1 centre, 2 bottom),
+                               // and its scissor moves with it
 static bool ui_menu_pass;  // this pass drew a layer 97 menu before (the windows of layer 100 then sit beside Top-anchored ones)
-static uint64_t ui_menu_latch_until;  // a layer 97/98 menu was drawn recently (also inside a depth-preview pass)
-static int ui_last_vanchor = 1;  // 0 top, 1 centre, 2 bottom: how the last HUD quad was anchored vertically (a model preview follows its window)
+// The HUD quads this pass drew last (16:9 canvas place, vertical anchor 0 top / 1 centre / 2 bottom, horizontal 0 left /
+// 1 right / 2 centre): a model preview follows the window drawn over it (ui_preview_map)
+#define UI_RECENT 256
+static struct { float x, y; uint8_t vanchor, hanchor; } ui_recent[UI_RECENT];
+static uint32_t ui_nrecent;  // (quads recorded this pass; the slot is the count modulo UI_RECENT)
 static bool ui_loading_pass;  // this pass draws the loading screen (its backdrop, layer 110, came first)
+static bool ui_title_pass;  // this pass draws the title screen (its layout, layer 108 at the canvas centre, came first)
+static bool ui_frontend_pass;  // this pass draws a front-end screen (Main Menu, Character Select: its 16:9 backdrop, layer
+                               // 250 at the canvas centre, came first)
+// The frame (g_present_count) whose backdrop that was: with FSR, Character Select's backdrop goes through FSR with the
+// hunter as the scene, so the HUD drawn over it starts a pass of its own, after the backdrop's
+static uint64_t ui_frontend_frame = UINT64_MAX;
+static bool ui_stamp_pass;  // this pass draws the Quest Complete stamp (its borders, layer 97 at x 640, y 53 / 687, came first)
+static bool ui_results_pass, ui_results_last;  // this pass / the last pass with HUD in it draws the quest results screen
+static bool ui_meownster_pass;  // this pass draws the Meownster Hunters return screen (its map frame, layer 105, came first)
+volatile int g_hudtrace_active;  // (debug) MHGU_CONTROL "hudtrace": log every HUD quad of the next frame and its anchor (device.c)
+
+// 16:10: a window is drawn as pieces (body, edges, corners, then its text), each placed by its own centre, so one rule
+// could send its top edge up and its bottom edge down (the chat window, the shoutout list, the Guild Card greeting).
+// The pieces drawn one after another on one layer, near each other, are a group; when their anchors disagree the whole
+// group takes one, from where it sits: by the nearer edge (top or bottom) or, with about as much room above as below,
+// the centre. Their matrices are still in transient memory (not submitted before the pass ends), so the group is
+// settled when it is complete: at the next piece that doesn't belong to it, a 3D draw (a model preview inside the
+// window follows its anchor) or the end of the pass.
+#define UI_GROUP_MAX 512
+static struct {
+    int n, predict;  // predict: the anchor this group got last frame (ui_group_known), -1 if not seen
+    float z, x0, y0, xmin, xmax, ymin, ymax;
+    uint8_t anchors;  // (bit per vertical anchor among its pieces)
+    struct { float *m, pos_x, pos_y; uint8_t vanchor; uint32_t recent; } p[UI_GROUP_MAX];
+} ui_group;
+// Each group's final anchor, by its first piece (layer and place): the HUD is drawn the same way every frame, so the
+// scissors of a group's pieces, recorded before the group is complete, take the anchor it got last frame
+#define UI_KNOWN 64
+static struct { float z, x, y; int v; } ui_group_known[UI_KNOWN];
+static uint32_t ui_nknown;
+static int ui_group_lookup(float z, float x, float y) {
+    for (int i = 0; i < UI_KNOWN; i++)
+        if (ui_group_known[i].z == z && ui_group_known[i].x == x && ui_group_known[i].y == y) return ui_group_known[i].v;
+    return -1;
+}
+static void ui_group_remember(int v) {
+    for (int i = 0; i < UI_KNOWN; i++)
+        if (ui_group_known[i].z == ui_group.z && ui_group_known[i].x == ui_group.x0 && ui_group_known[i].y == ui_group.y0) {
+            ui_group_known[i].v = v;
+            return;
+        }
+    int i = (int)(ui_nknown++ % UI_KNOWN);
+    ui_group_known[i].z = ui_group.z, ui_group_known[i].x = ui_group.x0, ui_group_known[i].y = ui_group.y0, ui_group_known[i].v = v;
+}
+// The anchor the group's pieces so far get: their own when they agree, else one from where the group sits (-1: agree)
+static int ui_group_vanchor(void) {
+    bool agree = true;
+    for (int i = 1; i < ui_group.n; i++) agree &= ui_group.p[i].vanchor == ui_group.p[0].vanchor;
+    if (agree) return -1;
+    float above = ui_group.ymin, below = 720.0f - ui_group.ymax;  // (piece centres: the edges and corners lie on the frame)
+    return above < 0.5f * below ? 0 : below < 0.5f * above ? 2 : 1;
+}
+// Wider than 16:9 (a menu window, cbuf_info) the group is placed sideways as one, from where the whole of it sits:
+// centred on the canvas (a dialog: its sides mirror about x 640) Centre, else the half it is in (a submenu beside the
+// menu it opened from stays with it)
+static int ui_group_hside(float x0, float x1) {
+    return x0 <= 640.0f && x1 >= 640.0f && fabsf(x0 + x1 - 1280.0f) < 8.0f ? 2 : x0 + x1 < 1280.0f ? 0 : 1;
+}
+static int ui_float_cmp(const void *a, const void *b) {
+    float x = *(const float *)a, y = *(const float *)b;
+    return (x > y) - (x < y);
+}
+static void ui_group_hend(int n) {
+    float x0 = ui_group.xmin, x1 = ui_group.xmax, cut = INFINITY, asp = g_render_aspect;
+    int h = ui_group_hside(x0, x1), h2 = h;
+    // Across the middle, not centred, with nothing of it over a quarter of the canvas: two things side by side on one
+    // row (the smithy's title at the top left and its page counter at the top right), each placed by its own side
+    if (h != 2 && x0 < 640.0f && x1 > 640.0f) {
+        static float xs[UI_GROUP_MAX];
+        for (int i = 0; i < n; i++) xs[i] = ui_group.p[i].pos_x;
+        qsort(xs, (size_t)n, sizeof xs[0], ui_float_cmp);
+        int k = 0;
+        for (int i = 1; i < n; i++)
+            if (xs[i] - xs[i - 1] > (k ? xs[k] - xs[k - 1] : 0.0f)) k = i;
+        if (k && xs[k] - xs[k - 1] > 320.0f) cut = xs[k], h = ui_group_hside(x0, xs[k - 1]), h2 = ui_group_hside(xs[k], x1);
+    }
+    float s = (16.0f / 9.0f) / asp, anchor = g_ui_anchor_aspect < asp ? g_ui_anchor_aspect : asp;
+    float left = 640.0f * (1.0f - anchor / asp);
+    for (int i = 0; i < n; i++) {
+        float x = ui_group.p[i].pos_x;
+        int a = x < cut ? h : h2;
+        ui_group.p[i].m[12] = a == 0 ? left + x * s : a == 1 ? 1280.0f - left - (1280.0f - x) * s : 640.0f + (x - 640.0f) * s;
+        if (ui_nrecent - ui_group.p[i].recent <= UI_RECENT) ui_recent[ui_group.p[i].recent % UI_RECENT].hanchor = (uint8_t)a;
+    }
+    if (g_hudtrace_active)
+        LOG("[hud] group z %.1f: %d pieces, x %.1f..%.1f -> %c%c (cut %.1f)\n", ui_group.z, n, x0, x1, "LRC"[h], "LRC"[h2], cut);
+}
+static void ui_group_end(void) {
+    int n = ui_group.n;
+    if (!n) return;
+    if (g_render_aspect > 16.0f / 9.0f) {
+        ui_group.n = 0;
+        ui_group_hend(n);
+        return;
+    }
+    int v = n < 2 ? -1 : ui_group_vanchor();
+    ui_group_remember(v >= 0 ? v : ui_group.p[0].vanchor);
+    ui_group.n = 0;
+    if (v < 0) return;
+    float sy = g_render_aspect / (16.0f / 9.0f);
+    for (int i = 0; i < n; i++) {
+        float y = ui_group.p[i].pos_y;
+        ui_group.p[i].m[13] = v == 0 ? y * sy : v == 2 ? 720.0f - (720.0f - y) * sy : 360.0f + (y - 360.0f) * sy;
+        if (ui_nrecent - ui_group.p[i].recent <= UI_RECENT) ui_recent[ui_group.p[i].recent % UI_RECENT].vanchor = (uint8_t)v;
+    }
+    if (g_hudtrace_active) LOG("[hud] group z %.1f: %d pieces, y %.1f..%.1f -> %c\n", ui_group.z, n, ui_group.ymin, ui_group.ymax, "TCB"[v]);
+}
+static void ui_group_add(float *m, float pos_z, float pos_x, float pos_y, int vanchor) {
+    // Not near: more than 400 above or below (a frame drawn as its corners only, the help windows' 336 high, is one group;
+    // the target cam at y 42..82 and the Hunter Arts prompts below y 600 are two), or a piece of another anchor beside the
+    // group both sideways and vertically (the Guild Card's page counter, top right, next to its page; a window's own
+    // pieces line up with the rest of it on one side: its other corner, its bottom edge). Wider than 16:9 by place alone:
+    // the pieces' own anchors are the ones that split a window there.
+    const float margin = 24.0f;
+    bool apart = (g_render_aspect > 16.0f / 9.0f || !(ui_group.anchors & (1u << vanchor))) &&
+                 (pos_x < ui_group.xmin - margin || pos_x > ui_group.xmax + margin) &&
+                 (pos_y < ui_group.ymin - margin || pos_y > ui_group.ymax + margin);
+    if (ui_group.n && (fabsf(pos_z - ui_group.z) > 0.5f || pos_y < ui_group.ymin - 400.0f || pos_y > ui_group.ymax + 400.0f ||
+                       apart || ui_group.n == UI_GROUP_MAX))
+        ui_group_end();
+    if (!ui_group.n) {
+        ui_group.z = pos_z, ui_group.x0 = ui_group.xmin = ui_group.xmax = pos_x, ui_group.y0 = ui_group.ymin = ui_group.ymax = pos_y;
+        ui_group.anchors = 0;
+        ui_group.predict = ui_group_lookup(pos_z, pos_x, pos_y);
+    }
+    ui_group.xmin = fminf(ui_group.xmin, pos_x), ui_group.xmax = fmaxf(ui_group.xmax, pos_x);
+    ui_group.ymin = fminf(ui_group.ymin, pos_y), ui_group.ymax = fmaxf(ui_group.ymax, pos_y);
+    ui_group.anchors |= (uint8_t)(1u << vanchor);
+    ui_group.p[ui_group.n].m = m, ui_group.p[ui_group.n].pos_x = pos_x, ui_group.p[ui_group.n].pos_y = pos_y;
+    ui_group.p[ui_group.n].vanchor = (uint8_t)vanchor;
+    ui_group.p[ui_group.n].recent = ui_nrecent - 1;  // (cbuf_info recorded it just before)
+    ui_group.n++;
+}
 static VkRenderPass pass_rp;
 static float pass_sx = 1.0f, pass_sy = 1.0f;  // FSR: the pass renders into output-size stand-ins (fsr.c): viewport, scissor x
 
@@ -704,7 +988,7 @@ static struct {
     uint32_t known, vb_known;
     VkPipeline pipe;
     uint32_t sten[2][3];  // compare mask, write mask, reference per face
-    float bc[4], db[3];
+    float bc[4], db[4];
     VkViewport vp;
     VkRect2D sc;
     VkBuffer ib; VkDeviceSize io; VkIndexType it;
@@ -718,7 +1002,7 @@ static inline bool ss_need(uint32_t bit, bool same) {
 }
 
 // ---- (debug) pass dumps: MHGU_CONTROL "dump" saves colour target 0 of every render pass of the next frame as
-// shots/pass_NNN_<format>_<w>x<h>.png (RGBA8 / BGRA8 / RGBA16F / B10G11R11; HDR values clamped to [0, 1] and also
+// shots/pass_NNN_<format>_<w>x<h>.png (RGBA8 / BGRA8 / RGBA16F / RGBA16 / B10G11R11; HDR values clamped to [0, 1] and also
 // listed as the max in the log line).
 volatile int g_dump_active;  // (device.c: set for one frame)
 static char dump_draw_info[4096];  // the pass's last draw: program and fragment textures
@@ -787,7 +1071,7 @@ static void dump_pass(void) {
     switch (b->format) {
     case VK_FORMAT_R8G8B8A8_UNORM: case VK_FORMAT_R8G8B8A8_SRGB: case VK_FORMAT_B8G8R8A8_UNORM: case VK_FORMAT_B8G8R8A8_SRGB:
     case VK_FORMAT_B10G11R11_UFLOAT_PACK32: bpp = 4; break;
-    case VK_FORMAT_R16G16B16A16_SFLOAT: bpp = 8; break;
+    case VK_FORMAT_R16G16B16A16_SFLOAT: case VK_FORMAT_R16G16B16A16_UNORM: bpp = 8; break;
     default:
         LOG("[dump] pass %03d: format %d %ux%u (not dumped, %llu draws)\n", g_dump_no++, b->format, w, h, (unsigned long long)draws);
         return;
@@ -808,6 +1092,9 @@ static void dump_pass(void) {
         if (b->format == VK_FORMAT_R16G16B16A16_SFLOAT) {
             const uint16_t *q = (const uint16_t *)s;
             for (int k = 0; k < 4; k++) f[k] = half_to_float(q[k]);
+        } else if (b->format == VK_FORMAT_R16G16B16A16_UNORM) {
+            const uint16_t *q = (const uint16_t *)s;
+            for (int k = 0; k < 4; k++) f[k] = q[k] / 65535.0f;
         } else if (b->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) {
             uint32_t v;
             memcpy(&v, s, 4);
@@ -882,9 +1169,30 @@ void vk_gpuprof_frame(void) {  // (device.c, after each presented frame's submis
 static bool pass_msaa;  // (MSAA, below) the pass renders through multisampled images (resolved when next read)
 static TexBackend *pass_att[9];
 static uint32_t pass_natt;
+// (MSAA) colour target 0 is a picture 3D models are drawn into (ms_expand). Its picture is copied into the samples
+// only for what tests depth (the models, and the depth clears before them): the menu's 2D draws around them stay
+// without MSAA. draw / clear set ms_want_depth before a pass begins; pass_want_depth: what the pass began for
+static bool pass_models, pass_want_depth, ms_want_depth;
+// Runs of depth-testing draws into such a picture, this frame and the last. A frame that alternates models and 2D would
+// start a pass, a resolve and a copy at each switch: from the frame after one, its 2D draws after the first model stay
+// in the samples, shaded per sample (else the seams between their quads show), which costs 4x or 8x as much as without.
+static uint64_t mr_frame;
+static int mr_runs, mr_runs_last;
+static bool mr_open;
+static void models_run_track(bool depth) {
+    if (mr_frame != g_present_count) {
+        mr_runs_last = mr_frame + 1 == g_present_count ? mr_runs : 0;
+        mr_frame = g_present_count, mr_runs = 0, mr_open = false;
+    }
+    if (depth && !mr_open) mr_runs++;
+    mr_open = depth;
+}
+static bool models_2d_in_samples(void) { return mr_frame == g_present_count && mr_runs && mr_runs_last > 1; }
 
 void vk_end_pass(void) {
     if (!in_pass) return;
+    ui_group_end();
+    if (ui_nrecent) ui_results_last = ui_results_pass;
     vkCmdEndRenderPass(vk_cmd());
     in_pass = false;
     if (gp_active) {
@@ -906,7 +1214,8 @@ void vk_end_pass(void) {
 // target (a pass without MSAA, a copy) makes it stale, and a pass with a stale companion that isn't cleared first
 // renders without MSAA. The target itself is brought up to date (resolved: vk_ms_resolve) only when something reads
 // it - a draw or dispatch sampling it, a copy, a pass without MSAA, presentation - so the scene's passes in a row
-// share one resolve: on the R9 270X a resolve is the expensive part of MSAA.
+// share one resolve: on the R9 270X a resolve is the expensive part of MSAA. (Menus: 3D models drawn over the finished
+// picture, ms_expand.)
 static uint64_t cur_rec;  // guest address of the command being executed (exec_list)
 static int rt_kind(uint32_t f);
 
@@ -944,7 +1253,11 @@ static uint32_t leading_clears(uint32_t w, uint32_t h, bool stencil) {
 static VkDescriptorSetLayout rs_set_layout;
 static VkPipelineLayout rs_layout;
 
-static VkPipeline resolve_pipeline(VkRenderPass rp, int kind) {  // kind 1 depth, 2 depth + stencil
+// kind 1 depth, 2 depth + stencil; into a multisampled target of `samples` (ms_expand): 3 colour, 4 depth, 5 depth +
+// stencil; 6 FXAA over menus' 3D models, colour without alpha (models_fxaa_end)
+static VkPipeline resolve_pipeline(VkRenderPass rp, int kind, uint32_t samples) {
+    static const char *frag[] = {NULL, "resolve.frag.depth", "resolve.frag.depth.s", "expand.frag", "expand.frag.depth",
+                                 "expand.frag.depth.s", "fxaa.frag.models"};
     static struct { VkRenderPass rp; int kind; VkPipeline p; } tab[32];
     static int n;
     for (int i = 0; i < n; i++) if (tab[i].rp == rp && tab[i].kind == kind) return tab[i].p;
@@ -963,7 +1276,7 @@ static VkPipeline resolve_pipeline(VkRenderPass rp, int kind) {  // kind 1 depth
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
          .module = vk_builtin_shader("resolve.vert"), .pName = "main"},
         {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-         .module = vk_builtin_shader(kind == 2 ? "resolve.frag.depth.s" : "resolve.frag.depth"),
+         .module = vk_builtin_shader(frag[kind]),
          .pName = "main"}};
     VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -973,13 +1286,15 @@ static VkPipeline resolve_pipeline(VkRenderPass rp, int kind) {  // kind 1 depth
     VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                                                  .polygonMode = VK_POLYGON_MODE_FILL, .lineWidth = 1};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+                                               .rasterizationSamples = (VkSampleCountFlagBits)samples};
     VkStencilOpState so = {VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE, VK_STENCIL_OP_REPLACE, VK_COMPARE_OP_ALWAYS, 0xFF, 0xFF, 0};
     VkPipelineDepthStencilStateCreateInfo ds = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-                                                .depthTestEnable = VK_TRUE, .depthWriteEnable = VK_TRUE,
-                                                .depthCompareOp = VK_COMPARE_OP_ALWAYS, .stencilTestEnable = kind == 2,
-                                                .front = so, .back = so};
-    VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+                                                .depthTestEnable = kind != 3 && kind != 6, .depthWriteEnable = kind != 3 && kind != 6,
+                                                .depthCompareOp = VK_COMPARE_OP_ALWAYS,
+                                                .stencilTestEnable = kind == 2 || kind == 4 || kind == 5, .front = so, .back = so};
+    VkPipelineColorBlendAttachmentState all = {.colorWriteMask = kind == 6 ? 0x7 : 0xF};
+    VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .attachmentCount = kind == 3 || kind == 6, .pAttachments = &all};
     VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2,
                                            .pDynamicStates = dyn};
@@ -1028,7 +1343,7 @@ void vk_ms_resolve(TexBackend *b) {
         VkFormat f = b->ms_fmt, none = VK_FORMAT_UNDEFINED;
         bool sten = (r->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) && g_vk.stencil_export;
         VkRenderPass rp = vk_render_pass(&none, 0, f, 1);
-        VkPipeline p = resolve_pipeline(rp, sten ? 2 : 1);
+        VkPipeline p = resolve_pipeline(rp, sten ? 2 : 1, 1);
         VkImageView dst = vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, f, 0, 1, 0, 1, id, b->aspect);
         if (!p || !dst) return;
         VkDescriptorSet set = vk_alloc_set(rs_set_layout);
@@ -1060,6 +1375,184 @@ void vk_ms_resolve(TexBackend *b) {
     gp_mark("  resolve");
 }
 
+// A pass that draws 3D models over a picture it did not clear: menus draw the hunter and Palicoes (Character Select,
+// Guild Card) straight into the finished picture, after the game's FXAA and outside the 3D scene's passes, so they
+// had no anti-aliasing. Such a target (TexBackend.ms_models: depth-writing draws went into it lately, the first ones
+// without MSAA) gets its picture copied into every sample of its multisampled image m as the frame's first pass of its
+// depth-testing draws begins (pass_models), which then renders with MSAA like the scene's passes. Its depth / stencil
+// target too, unless the pass clears it whole first (the smithy's preview draws over depth it doesn't clear). f: the
+// format the pass renders a colour target as. false: not possible (the pass goes without).
+static bool ms_expand(VkCommandBuffer cb, TexBackend *b, TexBackend *m, VkFormat f) {
+    static const VkComponentMapping id = {0};
+    bool depth = b->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    // (without stencil export, as vk_ms_resolve: depth only, the stencil set to 0)
+    bool sten = depth && (b->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) && g_vk.stencil_export;
+    VkFormat none = VK_FORMAT_UNDEFINED;
+    VkRenderPass rp = depth ? vk_render_pass(&none, 0, m->format, m->samples) : vk_render_pass(&f, 1, none, m->samples);
+    VkPipeline p = resolve_pipeline(rp, !depth ? 3 : sten ? 5 : 4, m->samples);
+    VkImageView src = vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, depth ? b->format : f, 0, 1, 0, 1, id,
+                                    depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT);
+    VkImageView src_s = sten ? vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, b->format, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_STENCIL_BIT)
+                             : VK_NULL_HANDLE;
+    VkImageView dst = vk_image_view(m, VK_IMAGE_VIEW_TYPE_2D, depth ? m->format : f, 0, 1, 0, 1, id,
+                                    depth ? m->aspect : VK_IMAGE_ASPECT_COLOR_BIT);
+    if (!p || !src || !dst || (sten && !src_s)) return false;  // (kind 4: the stencil test writes reference 0)
+    VkDescriptorSet set = vk_alloc_set(rs_set_layout);
+    VkDescriptorImageInfo ii[2] = {{vk_default_sampler(false), src, VK_IMAGE_LAYOUT_GENERAL},
+                                   {vk_default_sampler(false), src_s, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet w[2] = {
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[0]},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[1]}};
+    vkUpdateDescriptorSets(g_vk.dev, sten ? 2 : 1, w, 0, NULL);
+    VkRect2D area = {{0, 0}, {b->width, b->height}};
+    VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp,
+                                .framebuffer = vk_framebuffer(rp, &dst, 1, b->width, b->height), .renderArea = area};
+    vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rs_layout, 0, 1, &set, 0, NULL);
+    VkViewport vp = {0, 0, (float)b->width, (float)b->height, 0, 1};
+    vkCmdSetViewport(cb, 0, 1, &vp);
+    vkCmdSetScissor(cb, 0, 1, &area);
+    vkCmdDraw(cb, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cb);
+    vk_full_barrier(cb);
+    ss_forget();
+    gp_mark(depth ? "  MSAA: depth into the samples (3D models)" : "  MSAA: the picture into the samples (3D models over it)");
+    static bool logged;
+    if (!logged) logged = true, LOG("[vk] MSAA %ux for 3D models drawn over a finished %ux%u picture (menus)\n", m->samples,
+                                    b->width, b->height);
+    return true;
+}
+// The anti-aliasing such models get: the player's (models_aa), though every other anti-aliasing has run before they
+// are drawn. MSAA on: they are drawn through its samples (ms_expand; the 2D draws after them need per-sample shading,
+// sampleRateShading). FXAA on: FXAA 3.11 over them (models_fxaa_end). FSR never sees them (it runs at its start of
+// the HUD, before them): none, as with anti-aliasing off. full_picture: a picture they are drawn over: the render
+// size, once the game's FXAA pass drew this frame (before it, the 3D scene's passes, which keep their own rules).
+enum { MODELS_AA_NONE, MODELS_AA_MSAA, MODELS_AA_FXAA };
+static uint64_t aa_pass_frame;  // the frame the game's FXAA pass last drew in (fxaa_skipped)
+static int models_aa(void) {
+    if (g_fsr_on) return MODELS_AA_NONE;
+    if (g_vk.msaa > 1) return g_vk.sample_shading ? MODELS_AA_MSAA : MODELS_AA_NONE;
+    return config_live_fxaa() ? MODELS_AA_FXAA : MODELS_AA_NONE;
+}
+static bool full_picture(uint32_t w, uint32_t h) {
+    return models_aa() != MODELS_AA_NONE && aa_pass_frame == g_present_count && w == g_render_size[0] &&
+           h == g_render_size[1];
+}
+
+// FXAA over such models (MODELS_AA_FXAA): the picture is copied before each run of their depth-testing draws (and
+// depth clears) and again after it, then FXAA 3.11 is drawn into it from the second copy, only where the models
+// changed it and next to that ("fxaa.frag.models"), so the 2D draws around them stay sharp. That test reads 18 texels
+// for each pixel it covers, so FXAA covers only what the run's draws could reach (a smithy preview: its panel).
+static void snapshots_invalidate(NvnTexture *t);
+static NvnTexture *mf_tex;        // the picture of the run of models open (NULL none)
+static uint64_t mf_frame;         // the frame it opened in
+static TexBackend mf_before, mf_after;
+static int mf_x0, mf_y0, mf_x1, mf_y1;  // the area the run's draws could reach so far (none: x1 <= x0)
+// (draw) the viewport and scissor this draw was just recorded with
+static void models_fxaa_note(void) {
+    float vy0 = fminf(ss.vp.y, ss.vp.y + ss.vp.height), vy1 = fmaxf(ss.vp.y, ss.vp.y + ss.vp.height);
+    int x0 = (int)fmaxf(floorf(ss.vp.x), (float)ss.sc.offset.x), y0 = (int)fmaxf(floorf(vy0), (float)ss.sc.offset.y);
+    int x1 = (int)fminf(ceilf(ss.vp.x + ss.vp.width), (float)(ss.sc.offset.x + (int)ss.sc.extent.width));
+    int y1 = (int)fminf(ceilf(vy1), (float)(ss.sc.offset.y + (int)ss.sc.extent.height));
+    if (x1 <= x0 || y1 <= y0) return;
+    if (x0 < mf_x0) mf_x0 = x0;
+    if (y0 < mf_y0) mf_y0 = y0;
+    if (x1 > mf_x1) mf_x1 = x1;
+    if (y1 > mf_y1) mf_y1 = y1;
+}
+static bool picture_copy(TexBackend *b, TexBackend *d) {  // d: a copy of b (made as b's size and format)
+    VkCommandBuffer cb = vk_cmd();
+    if (d->image && (d->width != b->width || d->height != b->height || d->format != b->format)) {
+        vk_views_forget(d);
+        vk_defer_image(d->image, d->mem);
+        d->image = VK_NULL_HANDLE;
+    }
+    if (!d->image) {
+        VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = b->format,
+                                .extent = {b->width, b->height, 1}, .mipLevels = 1, .arrayLayers = 1,
+                                .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                                .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+        VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+        if (vmaCreateImage(g_vk.vma, &ci, &ai, &d->image, &d->mem, NULL) != VK_SUCCESS) return d->image = VK_NULL_HANDLE, false;
+        d->format = b->format; d->width = b->width; d->height = b->height; d->depth = d->layers = d->levels = d->samples = 1;
+        d->aspect = VK_IMAGE_ASPECT_COLOR_BIT; d->base_type = VK_IMAGE_VIEW_TYPE_2D;
+        vk_image_init_layout(cb, d->image, d->aspect);
+    }
+    vk_full_barrier(cb);
+    VkImageCopy rg = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                      .extent = {b->width, b->height, 1}};
+    vkCmdCopyImage(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rg);
+    vk_full_barrier(cb);
+    return true;
+}
+static void models_fxaa_begin(NvnTexture *t) {
+    vk_end_pass();
+    st.rt_dirty = true;
+    mf_x0 = mf_y0 = 1 << 30, mf_x1 = mf_y1 = 0;
+    if (picture_copy(t->backend, &mf_before)) mf_tex = t, mf_frame = g_present_count;
+}
+static void models_fxaa_end(void) {
+    NvnTexture *t = mf_tex;
+    TexBackend *b = t->backend;
+    mf_tex = NULL;
+    vk_end_pass();
+    st.rt_dirty = true;
+    if (mf_x1 <= mf_x0 || mf_y1 <= mf_y0) return;  // (only depth clears: the picture is as it was)
+    if (!picture_copy(b, &mf_after)) return;
+    static const VkComponentMapping id = {0};
+    VkFormat f = b->format;
+    VkRenderPass rp = vk_render_pass(&f, 1, VK_FORMAT_UNDEFINED, 1);
+    VkPipeline p = resolve_pipeline(rp, 6, 1);
+    VkImageView dst = vk_image_view(b, VK_IMAGE_VIEW_TYPE_2D, f, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    VkImageView after = vk_image_view(&mf_after, VK_IMAGE_VIEW_TYPE_2D, f, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    VkImageView before = vk_image_view(&mf_before, VK_IMAGE_VIEW_TYPE_2D, f, 0, 1, 0, 1, id, VK_IMAGE_ASPECT_COLOR_BIT);
+    if (!p || !dst || !after || !before) return;
+    VkCommandBuffer cb = vk_cmd();
+    VkDescriptorSet set = vk_alloc_set(rs_set_layout);
+    VkDescriptorImageInfo ii[2] = {{vk_default_sampler(true), after, VK_IMAGE_LAYOUT_GENERAL},
+                                   {vk_default_sampler(false), before, VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet w[2] = {
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[0]},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii[1]}};
+    vkUpdateDescriptorSets(g_vk.dev, 2, w, 0, NULL);
+    // (the run's area and the pixels next to it)
+    int ax0 = mf_x0 > 1 ? mf_x0 - 1 : 0, ay0 = mf_y0 > 1 ? mf_y0 - 1 : 0;
+    int ax1 = mf_x1 + 1 < (int)b->width ? mf_x1 + 1 : (int)b->width, ay1 = mf_y1 + 1 < (int)b->height ? mf_y1 + 1 : (int)b->height;
+    VkRect2D area = {{ax0, ay0}, {(uint32_t)(ax1 - ax0), (uint32_t)(ay1 - ay0)}};
+    VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp,
+                                .framebuffer = vk_framebuffer(rp, &dst, 1, b->width, b->height), .renderArea = area};
+    vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, rs_layout, 0, 1, &set, 0, NULL);
+    VkViewport vp = {0, 0, (float)b->width, (float)b->height, 0, 1};
+    vkCmdSetViewport(cb, 0, 1, &vp);
+    vkCmdSetScissor(cb, 0, 1, &area);
+    vkCmdDraw(cb, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cb);
+    vk_full_barrier(cb);
+    ss_forget();
+    snapshots_invalidate(t);
+    gp_mark("  FXAA over 3D models (menus)");
+    static bool logged;
+    if (!logged) logged = true, LOG("[vk] FXAA for 3D models drawn over a finished %ux%u picture (menus)\n", b->width, b->height);
+}
+// Before a draw or clear: models (it tests or clears depth) into a picture they are drawn over open a run, anything
+// else ends it. A run still open at the frame's end is dropped (the picture is presented without it).
+static void models_fxaa_track(bool models) {
+    if (models_aa() != MODELS_AA_FXAA) { mf_tex = NULL; return; }
+    if (mf_tex && mf_frame != g_present_count) mf_tex = NULL;
+    NvnTexture *t = st.rt.ncolor ? st.rt.color[0] : NULL;
+    TexBackend *b = t ? t->backend : NULL;
+    models = models && b && b->ms_models && b->ms_models + 2 >= g_present_count && full_picture(b->width, b->height);
+    if (mf_tex && !(models && t == mf_tex)) models_fxaa_end();
+    if (!mf_tex && models) models_fxaa_begin(t);
+}
+
 // Before a draw / dispatch: the textures it samples up to date (attachments of the pass: resolve_feedback).
 static NvnTexture *shader_texture_object(int stage, ShaderTexture *t);
 static void ms_resolve_sampled(int stage, ShaderInfo *si) {
@@ -1089,6 +1582,7 @@ static void begin_pass(void) {
         NvnTexture *t = st.rt.color[i];
         pass_color[i] = VK_FORMAT_UNDEFINED;
         if (!t) continue;
+        vk_rt_widen(t, vk_wide_rt_on() && !vk_fsr_input(t));  // (the game's own target: FSR 3 / 4 take no RGBA16 UNORM)
         if (g_fsr_on) {  // FSR: from the start of the HUD on, an output-size stand-in (fsr.c)
             NvnTexture *s = vk_fsr_map(t, false);
             if (s != t) pass_sx = (float)s->width / (float)t->width, pass_sy = (float)s->height / (float)t->height, t = s;
@@ -1110,6 +1604,7 @@ static void begin_pass(void) {
         pass_samples = b->samples;
     }
     pass_depth = VK_FORMAT_UNDEFINED;
+    pass_d24_as_float = false;
     NvnTexture *dt = st.rt.depth && pass_sx != 1.0f ? vk_fsr_map(st.rt.depth, true) : st.rt.depth;  // (FSR: as above)
     if (dt) {
         renderer_mark_gpu_owned(dt);
@@ -1117,6 +1612,7 @@ static void begin_pass(void) {
         TexBackend *b = dt->backend;
         if (v && renderer_format_is_depth(dt->format) && b->aspect != VK_IMAGE_ASPECT_COLOR_BIT) {
             pass_depth = b->format;
+            pass_d24_as_float = dt->format == 0x35 && b->format == VK_FORMAT_D32_SFLOAT_S8_UINT;  // (0x35: DEPTH24_STENCIL8)
             att[nviews] = b, att_fmt[nviews] = b->format, att_index[nviews] = -1;
             views[nviews++] = v;
             uint32_t lv = st.rt.has_dview && (st.rt.dview.setmask & 1) ? st.rt.dview.base_level : 0;
@@ -1131,16 +1627,41 @@ static void begin_pass(void) {
     if (minw == UINT32_MAX) minw = minh = 16;
     pass_w = minw; pass_h = minh;
     ui_loading_pass = false;
+    ui_title_pass = false;
+    ui_frontend_pass = ui_frontend_frame == g_present_count;
+    ui_stamp_pass = false;
+    ui_results_pass = false;
+    ui_meownster_pass = false;
     ui_menu_pass = false;
+    ui_nrecent = 0;
     pass_msaa = false;
-    if (ms_ok && pass_depth != VK_FORMAT_UNDEFINED && minw == g_render_size[0] && minh == g_render_size[1]) {
+    // (MSAA: a colour target 3D models were drawn into lately (ms_expand), while they are; once they are not, it is like
+    // any other target again)
+    pass_models = false;
+    pass_want_depth = ms_want_depth;
+    for (uint32_t k = 0; k < nviews; k++) {
+        TexBackend *b = att[k];
+        if (att_index[k] < 0 || !b->ms_models) continue;
+        if (b->ms_models + 2 >= g_present_count) {
+            pass_models |= att_index[k] == 0 && models_aa() == MODELS_AA_MSAA && full_picture(minw, minh);
+            continue;
+        }
+        b->ms_models = 0;
+        vk_ms_resolve(b);
+        b->ms_valid = false;
+    }
+    if (ms_ok && pass_depth != VK_FORMAT_UNDEFINED && minw == g_render_size[0] && minh == g_render_size[1] &&
+        !(pass_models && !pass_want_depth && !models_2d_in_samples())) {  // (2D: not even with samples still valid)
         bool stencil = pass_depth == VK_FORMAT_D24_UNORM_S8_UINT || pass_depth == VK_FORMAT_D32_SFLOAT_S8_UINT;
         uint32_t cleared = leading_clears(minw, minh, stencil);
-        bool ok = true;
+        bool ok = true, expand[9] = {false};
         for (uint32_t k = 0; k < nviews && ok; k++) {
             TexBackend *b = att[k];
             bool clr = (cleared >> (att_index[k] < 0 ? 8 : att_index[k])) & 1;
-            ok = b->width == minw && b->height == minh && (clr || (b->ms && b->ms_valid && b->ms->samples == msaa));
+            bool valid = b->ms && b->ms_valid && b->ms->samples == msaa;
+            // (its picture, and the depth the models test against, into the samples first, as the models begin)
+            expand[k] = pass_models && pass_want_depth && !clr && !valid && (att_index[k] < 0 || b->ms_models);
+            ok = b->width == minw && b->height == minh && (clr || valid || expand[k]);
         }
         VkImageView msv[9];
         VkFormat ms_depth_fmt = pass_depth;
@@ -1150,6 +1671,8 @@ static void begin_pass(void) {
                                               (VkComponentMapping){0}, m->aspect));
             if (ok && att_index[k] < 0) ms_depth_fmt = m->format;
         }
+        for (uint32_t k = 0; k < nviews && ok; k++)
+            if (expand[k]) ok = ms_expand(cb, att[k], att[k]->ms, att_fmt[k]);
         if (ok) {  // rendered into the multisampled images (resolved at the end: vk_end_pass)
             memcpy(views, msv, nviews * sizeof *views);
             memcpy(pass_att, att, nviews * sizeof *att);
@@ -1161,6 +1684,9 @@ static void begin_pass(void) {
         }
     }
     for (uint32_t k = 0; k < nviews; k++) {
+        // (pass_models, its 2D draws around the models: they don't use the depth / stencil target, left as it is (a
+        // resolve of it is slow) and its multisampled image valid)
+        if (!pass_msaa && pass_models && !pass_want_depth && att_index[k] < 0) continue;
         if (!pass_msaa) vk_ms_resolve(att[k]);  // (rendered into directly: up to date first)
         att[k]->ms_valid = pass_msaa;
     }
@@ -1213,33 +1739,56 @@ static void pass_guest_size(float *w, float *h) { *w = roundf((float)pass_w / pa
 // and squeezed by cbuf_info (the same anchoring), so the model would stay where the window was before it moved and spill
 // past its frame: on a picture wider than 16:9 sideways, on a narrower one (16:10) up or down. x' = sx + x * kx (and
 // likewise y) puts the rectangle where the window went: sideways left / right / centre by where it is, vertically as the
-// last HUD quad (the window's frame, drawn just before) was anchored. The scissor follows it exactly; the viewport keeps
-// its size and only its centre moves (the game's projection is made for that shape; squeezing it squeezes the model).
+// window's frame (the last HUD quad drawn over the viewport, ui_recent) was anchored. The scissor follows it exactly; the
+// viewport keeps its size and only its centre moves (the game's projection is made for that shape; squeezing it squeezes
+// the model).
 // Returns false when the draw is not such a rectangle.
 typedef struct { float sx, kx, sy, ky; } PreviewMap;
 static bool ui_preview_map(PreviewMap *pm) {
     float asp = g_render_aspect, pw, ph;
     pass_guest_size(&pw, &ph);
     if (fabsf(asp - 16.0f / 9.0f) <= 0.01f || !st.ds[0] || !pass_w || ph != (float)g_render_size[1]) return false;
+    ui_group_end();  // (the window drawn before it is complete: its anchor is the one to follow)
     const float *vp = st.viewport[0];
     float w = vp[2], h = fabsf(vp[3]);
     if (w < 8.0f || w > 0.9f * pw || h > 0.98f * ph) return false;  // (the scene itself: the whole picture)
     *pm = (PreviewMap){0, 1, 0, 1};
+    // The window it is drawn in: the last quad over the viewport (inside it sideways, not below it). The last quad of all
+    // can be a button prompt under the window ("Rotate" under the Palico Scout preview), anchored apart from it.
+    int vanchor = ui_nrecent ? ui_recent[(ui_nrecent - 1) % UI_RECENT].vanchor : 1, hanchor = -1;
+    {
+        float x0 = vp[0] / pw * 1280.0f, x1 = (vp[0] + w) / pw * 1280.0f, y1 = (fminf(vp[1], vp[1] + vp[3]) + h) / ph * 720.0f;
+        for (uint32_t i = ui_nrecent; i > 0 && ui_nrecent - i < UI_RECENT; i--) {
+            uint32_t k = (i - 1) % UI_RECENT;
+            if (ui_recent[k].x >= x0 && ui_recent[k].x <= x1 && ui_recent[k].y <= y1) {
+                vanchor = ui_recent[k].vanchor, hanchor = ui_recent[k].hanchor;
+                break;
+            }
+        }
+    }
     if (asp > 16.0f / 9.0f) {
-        // HUD-window previews (Smithy, equipment, item-box appearance/pigment) belong to
-        // menu windows, and those are centred on every shape. Keep the preview in the
-        // middle of the picture with its window; anchoring by the old left/right window
-        // x split left the model on the right edge after the menu itself moved in.
         float s = (16.0f / 9.0f) / asp;
+        float ui = ui_frontend_pass ? 16.0f / 9.0f : g_ui_anchor_aspect;  // (front-end screens: as their HUD, cbuf_info)
+        float anchor = ui < asp ? ui : asp;
+        float left_px = 640.0f * (1.0f - anchor / asp) * (pw / 1280.0f);
+        float cx = (vp[0] + w * 0.5f) / pw * 1280.0f;
+        // sideways as its window went (the smithy's parchment, layer 100, goes Right: by its own place the model went
+        // Left, out of it), or by where it is when no window is over it
+        if (hanchor < 0) hanchor = cx <= 430.0f ? 0 : cx >= 650.0f ? 1 : 2;
         pm->kx = s;
-        pm->sx = pw * 0.5f * (1.0f - s);
+        if (hanchor == 0) pm->sx = left_px;
+        else if (hanchor == 1) pm->sx = pw - left_px - pw * s;
+        else pm->sx = pw * 0.5f * (1.0f - s);
     } else {
         float sy = asp / (16.0f / 9.0f);
         pm->ky = sy;
-        if (ui_last_vanchor == 0) pm->sy = 0;
-        else if (ui_last_vanchor == 2) pm->sy = ph * (1.0f - sy);
+        if (vanchor == 0) pm->sy = 0;
+        else if (vanchor == 2) pm->sy = ph * (1.0f - sy);
         else pm->sy = ph * 0.5f * (1.0f - sy);
     }
+    if (g_hudtrace_active)
+        LOG("[hud] preview vp %.0f,%.0f %.0fx%.0f sc %d,%d %dx%d (pass %.0fx%.0f) -> sx %.1f kx %.3f sy %.1f ky %.3f\n", vp[0], vp[1], w, h,
+            st.scissor[0][0], st.scissor[0][1], st.scissor[0][2], st.scissor[0][3], pw, ph, pm->sx, pm->kx, pm->sy, pm->ky);
     return true;
 }
 
@@ -1249,6 +1798,16 @@ static VkRect2D scissor_rect(void) {
     if (!w) return (VkRect2D){{0, 0}, {pass_w, pass_h}};
     int x = st.scissor[0][0], y = st.scissor[0][1], sw = st.scissor[0][2], sh = st.scissor[0][3];
     if (ui_relax_scissor) { x = y = 0; sw = w; sh = h; }
+    if (ui_scissor_v >= 0 && !ui_relax_scissor) {  // (16:10: a HUD piece's scissor moves with it, unless it is the whole pass)
+        float pw, ph;
+        pass_guest_size(&pw, &ph);
+        if (x > 0 || y > 0 || sw < (int)pw || sh < (int)ph) {
+            float sy = g_render_aspect / (16.0f / 9.0f), y0 = (float)y, y1 = (float)(y + sh);
+            float off = ui_scissor_v == 0 ? 0.0f : ui_scissor_v == 2 ? ph * (1.0f - sy) : ph * 0.5f * (1.0f - sy);
+            y = (int)floorf(off + y0 * sy);
+            sh = (int)ceilf(off + y1 * sy) - y;
+        }
+    }
     {
         PreviewMap pm;
         if (!ui_relax_scissor && ui_preview_map(&pm)) {
@@ -1512,6 +2071,11 @@ volatile int g_clear_draw = -1;  // colour clears as draws (MHGU_CLEAR_DRAW, F9 
 
 static void clear(int index, int kind, const void *color, uint32_t mask, bool depth, float dval, bool stencil, uint32_t sval,
                   uint32_t smask) {
+    if (depth || stencil) {  // (MSAA, a picture 3D models are drawn into: their depth clear into the samples, pass_models)
+        ms_want_depth = true;
+        if (in_pass && pass_models && !pass_msaa && !pass_want_depth) st.rt_dirty = true;
+    }
+    models_fxaa_track(depth || stencil);  // (FXAA: the same, models_fxaa_end)
     begin_pass();
     if (g_dump_active) LOG("[dump]   clear %d mask %#x depth %d stencil %d (after %llu draws)\n", index, mask, depth, stencil,
                            (unsigned long long)(stat_draws - pass_draws_at));
@@ -1569,9 +2133,13 @@ typedef struct {
     int nbinds;
     VkDescriptorSetLayout set_layout[2];
     VkPipelineLayout layout;
-    _Atomic int state;  // 0 building, 1 ready, 2 failed
+    _Atomic int state;  // 0 building, 1 ready, 2 failed, 3 dormant (in programs.bin, not built: prog_want)
     uint64_t t_req;     // (stats) when first needed
     uint64_t chash[2], ck;  // program cache: hashes of the vertex / fragment code, the lookup key
+    long src_off;           // program cache: where its sources are in programs.src (when src_saved)
+    uint32_t vlen, flen;
+    bool src_saved;
+    bool wanted;            // (under ready_lock) a draw needs it: a prewarm build goes on to make its modules
     struct Pipe *prewarm;   // pipelines of earlier runs to build once this is (pipeline cache)
     FsrCapProg *fsrcap;     // FSR object motion: the capture variant of its vertex shader (fsr.c)
 } Prog;
@@ -1640,8 +2208,10 @@ static void compile_program(void *arg) {
 
 static void progcache_store(Prog *p);
 
-static void translate_program(void *arg) {
-    Prog *p = arg;
+// Translates p and records it in programs.bin; false: failed (state 2). quiet: the prewarm's (not logged: a program
+// no draw uses may hit translator gaps no one sees)
+static _Atomic uint64_t stat_pw_failed;
+static bool translate_core(Prog *p, bool quiet) {
     uint64_t t0 = plat_now_ns();
     maxwell_gmem_base = HEAP_BASE;
     maxwell_gmem_size = HEAP_MAX;
@@ -1653,17 +2223,15 @@ static void translate_program(void *arg) {
     }
     pthread_mutex_unlock(&translate_lock);
     job_stat(0, t0);
-    if (!p->vi->msl) {
-        LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
+    if (!p->vi->msl || !p->fi->msl) {
+        if (quiet) stat_pw_failed++;
+        else if (!p->vi->msl) LOG("[shader] VS translate failed: %s (code %llx)\n", p->vi->error, (unsigned long long)p->code[0]);
+        else LOG("[shader] FS translate failed: %s (code %llx)\n", p->fi->error, (unsigned long long)p->code[1]);
         set_state(&p->state, 2, p->t_req);
-        return;
+        prewarm_pipelines(p);  // (a pipeline list's, waiting for it: failed too)
+        return false;
     }
-    if (!p->fi->msl) {
-        LOG("[shader] FS translate failed: %s (code %llx)\n", p->fi->error, (unsigned long long)p->code[1]);
-        set_state(&p->state, 2, p->t_req);
-        return;
-    }
-    if (p->vi->uses_gmem || p->fi->uses_gmem) {
+    if (!quiet && (p->vi->uses_gmem || p->fi->uses_gmem)) {
         static int n;
         if (n++ < 10) LOG("[shader] program %llx/%llx reads global memory (not available: zeros)\n",
                           (unsigned long long)p->code[0], (unsigned long long)p->code[1]);
@@ -1674,29 +2242,43 @@ static void translate_program(void *arg) {
         snprintf(fsuf, sizeof fsuf, "fs_at%d%s", p->fkey.alpha_func, p->fkey.alpha_coverage ? "c" : "");
     save_glsl(p->fi->msl, p->code[1], fsuf);
     progcache_store(p);
-    run_job(compile_program, p);
+    return true;
 }
 
-// ---- program cache: cache/programs.bin keeps every translated program (sources + reflection, keyed by a hash of the
-// guest code the translator reads and the shader keys), and the next run builds them all on the workers at its first
-// draw, as Ryujinx's shader cache does: an area's programs are then ready when it is entered (translation is serial
-// and was most of the wait). The file is tied to this executable (size + time stamp: any rebuild may have changed the
-// translator) and appended to as programs are translated (a killed run keeps them). MHGU_NO_PROGRAM_CACHE=1: off
+static void translate_program(void *arg) {
+    Prog *p = arg;
+    if (translate_core(p, false)) run_job(compile_program, p);
+}
+
+// ---- program cache: cache/programs.bin keeps every translated program (reflection, keyed by a hash of the guest code
+// the translator reads and the shader keys; the sources in programs.src), and the next run builds the ones draws used
+// on the workers at its first draw, as Ryujinx's shader cache does: an area's programs are then ready when it is
+// entered (translation is serial and was most of the wait); the prewarm's (below) wait dormant until a draw needs one.
+// The files are tied to the translator (the Makefile's SHADER_ID, a hash of its sources, and CACHE_FORMAT below), so
+// they outlive updates that leave the translator alone, as Ryujinx's cache does; they are appended to as programs are
+// translated (a killed run keeps them). MHGU_NO_PROGRAM_CACHE=1: off
 // (also off with the translator debug options MHGU_SAVE_GLSL / MHGU_SAVE_MSL / MHGU_NO_DISCARD).
-#define PROG_TAB 4096
+#define PROG_TAB 16384
+// The records are an index read whole at start-up; the sources (~27 KB a program, read back only when a dormant program
+// is built) are kept apart in programs.src.
 typedef struct {
-    uint32_t magic, size;  // size: the whole record, sources included
+    uint32_t magic, size;  // size: sizeof (ProgRec)
     uint64_t ck, chash[2], code[2], cmax[2];
     ShaderKey vkey, fkey;
-    ShaderInfo vi, fi;  // (msl: NULL; the sources follow, vlen + flen bytes)
+    ShaderInfo vi, fi;  // (msl: NULL)
+    uint64_t src_off;   // its sources in programs.src: vlen + flen bytes there
     uint32_t vlen, flen;
 } ProgRec;
 #define PROGREC_MAGIC 0x31475250u  // "PRG1"
 #define PROGCACHE_PATH "cache/programs.bin"
-static FILE *progcache_f;
+#define PROGSRC_PATH "cache/programs.src"
+static FILE *progcache_f, *progsrc_f;
 static bool progcache_on;
 typedef struct { char magic[8]; uint64_t stamp; } CacheHeader;
+#define CACHE_FORMAT 1  // bump when what a programs.bin / pipelines.bin record means changes here (ProgRec, PipeKey)
 static void pipecache_init(const CacheHeader *hdr);
+static void plist_load(void);
+static void plist_export_finish(void);
 static uint64_t stat_prog_cached;
 static struct { uint64_t ck; Prog *prog; } progcache_tab[PROG_TAB];
 
@@ -1742,46 +2324,76 @@ static Prog **progcache_slot(uint64_t ck, bool insert) {
     return NULL;
 }
 
-static void progcache_init(void) {
-    static bool done;
-    if (done) return;
-    done = true;
+// progcache_tab is shared by the render thread (draws) and the translate thread (the prewarm): under progcache_lock
+// once progcache_init has run (progcache_ready; the prewarm waits for it).
+static pthread_mutex_t progcache_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t progcache_cond = PTHREAD_COND_INITIALIZER;
+static bool progcache_ready;
+static FILE *progcache_rf;  // reads dormant programs' sources back from programs.src (load_program; under progcache_rlock)
+static pthread_mutex_t progcache_rlock = PTHREAD_MUTEX_INITIALIZER;
+
+// A dormant program's sources, read back from programs.bin, then built (its SPIR-V is in cache/spirv: file reads).
+static void load_program(void *arg) {
+    Prog *p = arg;
+    char *vs = malloc(p->vlen + 1), *fs = malloc(p->flen + 1);
+    pthread_mutex_lock(&progcache_rlock);
+    bool ok = progcache_rf && !fseek(progcache_rf, p->src_off, SEEK_SET) && fread(vs, 1, p->vlen, progcache_rf) == p->vlen &&
+              fread(fs, 1, p->flen, progcache_rf) == p->flen;
+    pthread_mutex_unlock(&progcache_rlock);
+    if (!ok) { free(vs); free(fs); set_state(&p->state, 2, p->t_req); prewarm_pipelines(p); return; }
+    vs[p->vlen] = fs[p->flen] = 0;
+    p->vi->msl = vs;
+    p->fi->msl = fs;
+    compile_program(p);
+}
+
+static void progcache_open(void) {
     if (getenv("MHGU_NO_PROGRAM_CACHE") || getenv("MHGU_SAVE_GLSL") || getenv("MHGU_SAVE_MSL") || getenv("MHGU_NO_DISCARD"))
         return;
     CacheHeader hdr = {"MHGUPRG", sizeof(ProgRec)}, fh;
+    hdr.stamp = hash_words(hdr.stamp, (uint64_t[]){CACHE_FORMAT}, 8);
+#ifdef SHADER_ID
+    hdr.stamp = hash_words(hdr.stamp, SHADER_ID, sizeof SHADER_ID - 1);
+#else  // (built without the Makefile's id: tied to this executable, size + time stamp)
     char exe[1024];
     struct stat es;
     if (!plat_exe_path(exe, sizeof exe) || stat(exe, &es)) return;
     hdr.stamp = hash_words(hdr.stamp, (uint64_t[]){(uint64_t)es.st_size, (uint64_t)es.st_mtime}, 16);
+#endif
     mkdir("cache", 0755);
     uint64_t t0 = plat_now_ns();
-    int n = 0;
+    int n = 0, used = 0;
     long good = 0;
-    FILE *f = fopen(PROGCACHE_PATH, "r+b");
-    if (f && fread(&fh, sizeof fh, 1, f) == 1 && !memcmp(&fh, &hdr, sizeof hdr)) {
+    FILE *f = fopen(PROGCACHE_PATH, "r+b"), *sf = fopen(PROGSRC_PATH, "r+b");
+    if (f && sf && fread(&fh, sizeof fh, 1, f) == 1 && !memcmp(&fh, &hdr, sizeof hdr)) {
         good = (long)sizeof hdr;
+        fseek(sf, 0, SEEK_END);
+        uint64_t send = (uint64_t)ftell(sf);
         ProgRec r;
         while (fread(&r, sizeof r, 1, f) == 1) {
-            if (r.magic != PROGREC_MAGIC || r.size != sizeof r + r.vlen + r.flen || r.vlen > (16u << 20) || r.flen > (16u << 20)) break;
-            char *vs = malloc(r.vlen + 1), *fs = malloc(r.flen + 1);
-            if (fread(vs, 1, r.vlen, f) != r.vlen || fread(fs, 1, r.flen, f) != r.flen) { free(vs); free(fs); break; }
-            vs[r.vlen] = fs[r.flen] = 0;
+            if (r.magic != PROGREC_MAGIC || r.size != sizeof r || r.vlen > (16u << 20) || r.flen > (16u << 20)) break;
+            if (r.src_off + r.vlen + r.flen > send) break;  // (its sources cut short by a killed run)
             good = ftell(f);
+            long src = (long)r.src_off;
             Prog **slot = progcache_slot(r.ck, true);
-            if (!slot || *slot) { free(vs); free(fs); continue; }  // (a duplicate: translated twice in a run)
+            if (!slot || *slot) continue;  // (a duplicate: translated twice in a run)
             Prog *p = calloc(1, sizeof *p);
             p->vi = malloc(sizeof *p->vi);
             p->fi = malloc(sizeof *p->fi);
             *p->vi = r.vi;
             *p->fi = r.fi;
-            p->vi->msl = vs;
-            p->fi->msl = fs;
+            p->vi->msl = p->fi->msl = NULL;
+            p->src_off = src;
+            p->src_saved = true;
+            p->vlen = r.vlen;
+            p->flen = r.flen;
             memcpy(p->code, r.code, sizeof p->code);
             memcpy(p->cmax, r.cmax, sizeof p->cmax);
             memcpy(p->chash, r.chash, sizeof p->chash);
             p->ck = r.ck;
             p->vkey = r.vkey;
             p->fkey = r.fkey;
+            atomic_store(&p->state, 3);
             *slot = p;
             n++;
         }
@@ -1789,16 +2401,43 @@ static void progcache_init(void) {
         if (ftruncate(fileno(f), good)) {}  // (a record cut short by a killed run)
     } else {
         if (f) fclose(f);
+        if (sf) fclose(sf);
         f = fopen(PROGCACHE_PATH, "wb");
+        sf = fopen(PROGSRC_PATH, "wb");
         if (f) fwrite(&hdr, sizeof hdr, 1, f);
     }
-    if (!f) return;
+    if (!f || !sf) { if (f) fclose(f); if (sf) fclose(sf); return; }
+    fflush(f);
+    fseek(sf, 0, SEEK_END);
     progcache_f = f;
+    progsrc_f = sf;
+    progcache_rf = fopen(PROGSRC_PATH, "rb");
     progcache_on = true;
     pipecache_init(&hdr);  // (attaches the recorded pipelines to their programs before these are built)
-    for (int i = 0; i < PROG_TAB; i++)
-        if (progcache_tab[i].prog) run_job(compile_program, progcache_tab[i].prog);
-    LOG("[shader] program cache: %d programs, read in %.0f ms (building on the workers)\n", n, (plat_now_ns() - t0) / 1e6);
+    plist_load();          // (and the shipped list's whose programs are in programs.bin)
+    plist_export_finish();
+    // Programs a draw has used (each has recorded pipelines) are built now; the others (the prewarm's) stay dormant
+    // until a draw wants one (prog_want)
+    for (int i = 0; i < PROG_TAB; i++) {
+        Prog *p = progcache_tab[i].prog;
+        if (!p || !p->prewarm) continue;
+        atomic_store(&p->state, 0);
+        run_job(load_program, p);
+        used++;
+    }
+    LOG("[shader] program cache: %d programs (%d used before: building on the workers), read in %.0f ms\n", n, used,
+        (plat_now_ns() - t0) / 1e6);
+}
+
+static void progcache_init(void) {
+    static bool done;
+    if (done) return;
+    done = true;
+    progcache_open();
+    pthread_mutex_lock(&progcache_lock);
+    progcache_ready = true;
+    pthread_cond_broadcast(&progcache_cond);
+    pthread_mutex_unlock(&progcache_lock);
 }
 
 // (translate thread only: the one writer)
@@ -1818,11 +2457,123 @@ static void progcache_store(Prog *p) {
     r.vi.msl = r.fi.msl = NULL;
     r.vlen = (uint32_t)strlen(p->vi->msl);
     r.flen = (uint32_t)strlen(p->fi->msl);
-    r.size = (uint32_t)sizeof r + r.vlen + r.flen;
-    fwrite(&r, sizeof r, 1, progcache_f);
-    fwrite(p->vi->msl, 1, r.vlen, progcache_f);
-    fwrite(p->fi->msl, 1, r.flen, progcache_f);
+    r.size = (uint32_t)sizeof r;
+    long at = ftell(progsrc_f);
+    if (at < 0 || fwrite(p->vi->msl, 1, r.vlen, progsrc_f) != r.vlen || fwrite(p->fi->msl, 1, r.flen, progsrc_f) != r.flen) return;
+    fflush(progsrc_f);  // (the sources before the record that points at them)
+    r.src_off = (uint64_t)at;
+    if (fwrite(&r, sizeof r, 1, progcache_f) == 1) {
+        p->src_off = at;
+        p->src_saved = true;
+        p->vlen = r.vlen;
+        p->flen = r.flen;
+    }
     fflush(progcache_f);
+}
+
+// A draw needs p (found in the program cache): a dormant one is loaded on the workers; one the prewarm is still
+// building goes on to make its modules.
+static void prog_want(Prog *p) {
+    bool load = false;
+    pthread_mutex_lock(&ready_lock);
+    p->wanted = true;
+    if (atomic_load(&p->state) == 3) { atomic_store(&p->state, 0); load = true; }
+    pthread_mutex_unlock(&ready_lock);
+    if (!atomic_load(&p->state)) p->t_req = plat_now_ns();
+    if (load) run_job(load_program, p);
+}
+
+// ---- prewarm: the game makes all its programs at start-up (nvnProgramSetShaders, ~6300 vertex / fragment pairs
+// before its first frame). Each one not in programs.bin yet is translated with the keys most draws use (float vertex
+// inputs and colour targets, no alpha test) on the translate thread and its SPIR-V compiled into cache/spirv on the
+// workers, behind every build a draw asked for (the queues' low lists), then left dormant: when a draw first needs it
+// its modules come from the SPIR-V cache in about a millisecond, within the per-frame wait. So a program is ready
+// the first time it is drawn even on a first run once the prewarm has got to it (it starts at the first frame; a
+// draw needing one it has not reached yet is skipped, as before, never waited for past the budget). Variants with
+// other keys (integer vertex inputs: skinned models; alpha-tested materials) are still made on first use.
+// MHGU_NO_PREWARM=1: off.
+typedef struct { uint64_t code[2], cmax[2]; } PrewarmReq;
+static void plist_seen(const uint64_t code[2], const uint64_t cmax[2], const uint64_t chash[2]);  // (pipelines.list)
+static uint64_t pw_t0;
+static _Atomic uint64_t pw_total_new, pw_total_known;
+
+static void prewarm_done(void) {
+    if (atomic_fetch_sub(&stat_pw_left, 1) != 1) return;
+    LOG("[shader] prewarm: %llu programs translated, %llu already cached, %llu failed, %.1f s after the first one\n",
+        (unsigned long long)atomic_load(&pw_total_new), (unsigned long long)atomic_load(&pw_total_known),
+        (unsigned long long)atomic_load(&stat_pw_failed), (plat_now_ns() - pw_t0) / 1e9);
+}
+
+// (workers, low list) the SPIR-V into cache/spirv; then the sources go and the program is dormant, unless a draw
+// already wants it.
+static void prewarm_compile(void *arg) {
+    Prog *p = arg;
+    size_t n;
+    free(vk_glsl_to_spirv(p->vi->msl, STAGE_VERTEX, "vs", &n));
+    free(vk_glsl_to_spirv(p->fi->msl, STAGE_FRAGMENT, "fs", &n));
+    pthread_mutex_lock(&ready_lock);
+    bool wanted = p->wanted || !p->src_saved;
+    if (!wanted) {
+        free(p->vi->msl);
+        free(p->fi->msl);
+        p->vi->msl = p->fi->msl = NULL;
+        atomic_store(&p->state, 3);
+    }
+    pthread_mutex_unlock(&ready_lock);
+    if (wanted) compile_program(p);
+    prewarm_done();
+}
+
+// (translate thread, low list)
+static void prewarm_translate(void *arg) {
+    PrewarmReq *r = arg;
+    pthread_mutex_lock(&progcache_lock);
+    while (!progcache_ready) pthread_cond_wait(&progcache_cond, &progcache_lock);
+    pthread_mutex_unlock(&progcache_lock);
+    Prog *p = NULL;
+    if (progcache_on) {
+        ShaderKey vkey = {0}, fkey = {0};  // (as draw() makes them)
+        vkey.glsl = fkey.glsl = 1;
+        vkey.flip_y = fkey.flip_y = nvn_window_origin() == 0;
+        vkey.depth_minus_one = nvn_depth_mode() == 0;
+        uint64_t chash[2];
+        for (int i = 0; i < 2; i++) chash[i] = code_hash(r->code[i], r->cmax[i], i);
+        uint64_t ck = prog_content_key(chash, &vkey, &fkey);
+        plist_seen(r->code, r->cmax, chash);  // (the pipeline list's variants of this code: made on the render thread)
+        pthread_mutex_lock(&progcache_lock);
+        Prog **c = progcache_slot(ck, true);
+        if (c && !*c) {
+            p = calloc(1, sizeof *p);
+            memcpy(p->code, r->code, sizeof p->code);
+            memcpy(p->cmax, r->cmax, sizeof p->cmax);
+            memcpy(p->chash, chash, sizeof chash);
+            p->ck = ck;
+            p->vkey = vkey;
+            p->fkey = fkey;
+            *c = p;
+        }
+        pthread_mutex_unlock(&progcache_lock);
+    }
+    free(r);
+    if (!p) { atomic_fetch_add(&stat_pw_known, 1); atomic_fetch_add(&pw_total_known, 1); prewarm_done(); return; }
+    atomic_fetch_add(&stat_pw_new, 1);
+    atomic_fetch_add(&pw_total_new, 1);
+    if (translate_core(p, true)) enqueue(&compile_q, 3, true, prewarm_compile, p);
+    else prewarm_done();
+}
+
+// (game thread) nvnProgramSetShaders
+void backend_program_created(const NvnProgram *np) {
+    static int on = -1;
+    if (on < 0) on = g_config.shader_prewarm && !getenv("MHGU_NO_PREWARM") && !sync_shaders();
+    if (!on || !(np->stage_mask & 1) || !(np->stage_mask & 2)) return;
+    PrewarmReq *r = malloc(sizeof *r);
+    for (int i = 0; i < 2; i++) {
+        r->code[i] = np->stages[i].code_addr;
+        r->cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
+    }
+    if (atomic_fetch_add(&stat_pw_left, 1) == 0 && !pw_t0) pw_t0 = plat_now_ns();
+    enqueue(&translate_q, 1, true, prewarm_translate, r);
 }
 
 static struct { uint64_t key; Prog *prog; } prog_tab[PROG_TAB];
@@ -1846,30 +2597,32 @@ static Prog *get_program(NvnProgram *np, ShaderKey *vkey, ShaderKey *fkey) {
         cmax[i] = np->stages[i].const_offset ? np->stages[i].const_offset : 0x10000;
         if (progcache_on) chash[i] = code_hash(code[i], cmax[i], i);
     }
+    Prog *p = NULL;
     if (progcache_on) {
         ck = prog_content_key(chash, vkey, fkey);
-        Prog **c = progcache_slot(ck, false);
-        if (c && *c) {  // (translated in an earlier run: built at startup, or still building)
+        pthread_mutex_lock(&progcache_lock);
+        Prog **c = progcache_slot(ck, true);
+        Prog *q = c ? *c : NULL;
+        if (c && !q) *c = p = calloc(1, sizeof *p);  // (an identical program at another address is found by its contents)
+        pthread_mutex_unlock(&progcache_lock);
+        if (q) {  // (translated in an earlier run or by the prewarm: dormant, building, or built)
             prog_tab[slot].key = h;
-            prog_tab[slot].prog = *c;
+            prog_tab[slot].prog = q;
             stat_prog_cached++;
-            if (!atomic_load(&(*c)->state)) (*c)->t_req = plat_now_ns();
-            return *c;
+            prog_want(q);
+            return q;
         }
     }
-    Prog *p = calloc(1, sizeof *p);
+    if (!p) p = calloc(1, sizeof *p);
     prog_tab[slot].key = h;
     prog_tab[slot].prog = p;
     memcpy(p->code, code, sizeof code);
     memcpy(p->cmax, cmax, sizeof cmax);
     memcpy(p->chash, chash, sizeof chash);
     p->ck = ck;
-    if (progcache_on) {  // (an identical program at another address is found by its contents from now on)
-        Prog **c = progcache_slot(ck, true);
-        if (c) *c = p;
-    }
     p->vkey = *vkey;
     p->fkey = *fkey;
+    p->wanted = true;
     p->t_req = plat_now_ns();
     run_translate(translate_program, p);
     return p;
@@ -1892,6 +2645,7 @@ typedef struct {
     uint8_t cull, front_ccw, prim_restart, depth_bias, depth_clamp;
     uint8_t depth_test, depth_write, depth_op, stencil_test;
     uint8_t sten_ops[2][4];  // per face: fail, pass, depth fail, compare
+    uint8_t sample_shading;  // (MSAA) every sample shaded (exec.c pass_models)
 } PipeKey;
 
 typedef struct Pipe {
@@ -1936,13 +2690,17 @@ static FILE *pipecache_f;
 
 static void build_pipeline(void *arg);
 static void prewarm_pipelines(Prog *p) {
-    for (Pipe *q = p->prewarm, *next; q; q = next) {
+    pthread_mutex_lock(&ready_lock);  // (the render thread adds to the list too: plist_attach)
+    Pipe *q = p->prewarm;
+    p->prewarm = NULL;
+    pthread_mutex_unlock(&ready_lock);
+    for (Pipe *next; q; q = next) {
         next = q->next;
         if (atomic_load(&p->state) == 1) run_job(build_pipeline, q);
         else set_state(&q->state, 2, 0);
     }
-    p->prewarm = NULL;
 }
+static void plist_export_add(const Prog *p, const PipeRec *r);
 
 static void pipecache_init(const CacheHeader *hdr) {
     CacheHeader fh;
@@ -1957,6 +2715,7 @@ static void pipecache_init(const CacheHeader *hdr) {
             good = ftell(f);
             Prog **c = progcache_slot(r.ck, false);
             if (!c || !*c) continue;
+            plist_export_add(*c, &r);
             r.k.prog = *c;
             r.k.rp = vk_render_pass(r.color, r.k.ncolor, r.depth, r.k.samples);
             bool created;
@@ -1994,6 +2753,215 @@ static void pipecache_store(const Pipe *pp) {
     fflush(pipecache_f);
 }
 
+// ---- shipped pipeline list: pipelines.list beside the executable, the pipelines recorded while playing the common
+// areas, so a first run builds them in the background before an area needs them (cache/pipelines.bin only knows the
+// ones this computer drew). Unlike pipelines.bin it outlives translator changes and other GPUs: a record names its
+// program by the game's own shader code (code_hash) and shader keys, not by a translated program, and the formats
+// the GPU decides are made again here (DEPTH24_STENCIL8's: D32S8 on AMD; vertex formats it lacks: widened). A record
+// whose program is in programs.bin is attached at start-up like pipelines.bin's; the others wait until the prewarm
+// meets their shader code (plist_seen, translate thread), then the render thread (plist_drain) makes the program
+// variant and its pipelines. Recording: MHGU_PIPELIST_EXPORT=<file> writes the list (pipelines.bin's records and the
+// shipped list's, without duplicates) at the first draw. MHGU_PIPELIST=<file> reads another list; MHGU_NO_PIPELIST=1:
+// none.
+typedef struct {
+    uint32_t magic, pad;
+    uint64_t chash[2];
+    ShaderKey vkey, fkey;
+    VkFormat color[8], depth;
+    PipeKey k;  // (prog, rp: NULL)
+} ListRec;
+typedef struct { char magic[8]; uint32_t key_size, pipe_size, rec_size, count; } ListHeader;
+#define LISTREC_MAGIC 0x314c5050u  // "PPL1"
+static ListRec *plist;
+static int plist_n, plist_left;
+static uint8_t *plist_done;
+static struct { uint64_t code[2], cmax[2], chash[2]; } plist_q[256];  // shader code the prewarm met (plist_seen)
+static int plist_qn;
+static _Atomic int plist_qpending;
+static pthread_mutex_t plist_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// (translate thread, prewarm) the game made a program with this code: the render thread looks for list records
+static void plist_seen(const uint64_t code[2], const uint64_t cmax[2], const uint64_t chash[2]) {
+    if (!plist_left) return;
+    bool any = false;
+    for (int i = 0; i < plist_n && !any; i++)
+        any = !plist_done[i] && plist[i].chash[0] == chash[0] && plist[i].chash[1] == chash[1];
+    if (!any) return;
+    for (;;) {
+        pthread_mutex_lock(&plist_lock);
+        if (plist_qn < (int)(sizeof plist_q / sizeof *plist_q)) {
+            memcpy(plist_q[plist_qn].code, code, 16);
+            memcpy(plist_q[plist_qn].cmax, cmax, 16);
+            memcpy(plist_q[plist_qn].chash, chash, 16);
+            plist_qn++;
+            atomic_store(&plist_qpending, 1);
+            pthread_mutex_unlock(&plist_lock);
+            return;
+        }
+        pthread_mutex_unlock(&plist_lock);
+        struct timespec ts = {0, 2000000};  // (full: the render thread empties it at its next command list)
+        nanosleep(&ts, NULL);
+    }
+}
+
+// (render thread) r's pipeline for program p, built once p is (as pipelines.bin's)
+static int plist_attach(Prog *p, const ListRec *r) {
+    PipeKey k = r->k;
+    k.prog = p;
+    for (int i = 0; i < 32; i++)
+        if (k.attr_mask & (1u << i)) k.attr_fmt[i] = vertex_format_supported(k.attr_fmt[i]);
+    VkFormat depth = r->depth;
+    if (depth == VK_FORMAT_D24_UNORM_S8_UINT || depth == VK_FORMAT_D32_SFLOAT_S8_UINT) depth = vk_depth24_stencil8();
+    k.rp = vk_render_pass(r->color, k.ncolor, depth, k.samples);
+    bool created;
+    Pipe *pp = pipe_slot(&k, &created);
+    if (!pp || !created) return 0;
+    pthread_mutex_lock(&ready_lock);
+    int s = atomic_load(&p->state);
+    if (s != 1 && s != 2) pp->next = p->prewarm, p->prewarm = pp;
+    pthread_mutex_unlock(&ready_lock);
+    if (s == 1) run_job(build_pipeline, pp);
+    else if (s == 2) set_state(&pp->state, 2, 0);
+    return 1;
+}
+
+static void plist_load(void) {
+    if (getenv("MHGU_NO_PIPELIST")) return;
+    char path[1100];
+    const char *e = getenv("MHGU_PIPELIST");
+    if (e && *e) {
+        snprintf(path, sizeof path, "%s", e);
+    } else {
+#ifdef __ANDROID__
+        snprintf(path, sizeof path, "pipelines.list");  // (the APK's copy, unpacked into the app's folder: android.c)
+#else
+        char exe[1024];
+        if (!plat_exe_path(exe, sizeof exe)) return;
+        char *s = strrchr(exe, '/'), *bs = strrchr(exe, '\\');
+        if (bs > s) s = bs;
+        if (s) s[1] = 0; else exe[0] = 0;
+        snprintf(path, sizeof path, "%spipelines.list", exe);
+#endif
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    ListHeader h;
+    if (fread(&h, sizeof h, 1, f) != 1 || memcmp(h.magic, "MHGUPL1", 8) || h.key_size != sizeof(ShaderKey) ||
+        h.pipe_size != sizeof(PipeKey) || h.rec_size != sizeof(ListRec) || h.count > 1000000) {
+        LOG("[vk] %s: not a pipeline list of this version, not used\n", path);
+        fclose(f);
+        return;
+    }
+    plist = calloc(h.count ? h.count : 1, sizeof *plist);
+    plist_done = calloc(h.count ? h.count : 1, 1);
+    plist_n = plist ? (int)fread(plist, sizeof *plist, h.count, f) : 0;
+    fclose(f);
+    int now = 0, built = 0;
+    for (int i = 0; i < plist_n; i++) {
+        if (plist[i].magic != LISTREC_MAGIC || plist[i].k.ncolor > 8) { plist_done[i] = 1; continue; }
+        uint64_t ck = prog_content_key(plist[i].chash, &plist[i].vkey, &plist[i].fkey);
+        Prog **c = progcache_slot(ck, false);
+        if (!c || !*c) continue;  // (its program waits for the prewarm: plist_seen)
+        plist_done[i] = 1;
+        now++;
+        built += plist_attach(*c, &plist[i]);
+    }
+    for (int i = 0; i < plist_n; i++) plist_left += !plist_done[i];
+    LOG("[vk] pipeline list %s: %d pipelines, %d new to build now, %d when the prewarm meets their programs\n", path,
+        plist_n, built, plist_left);
+    (void)now;
+}
+
+// (render thread) the programs of the records whose shader code the prewarm met, then their pipelines
+static void plist_drain(void) {
+    if (!atomic_load(&plist_qpending)) return;
+    pthread_mutex_lock(&plist_lock);
+    int n = plist_qn;
+    static struct { uint64_t code[2], cmax[2], chash[2]; } q[256];
+    memcpy(q, plist_q, sizeof *q * (size_t)n);
+    plist_qn = 0;
+    atomic_store(&plist_qpending, 0);
+    pthread_mutex_unlock(&plist_lock);
+    for (int j = 0; j < n; j++)
+        for (int i = 0; i < plist_n; i++) {
+            ListRec *r = &plist[i];
+            if (plist_done[i] || r->chash[0] != q[j].chash[0] || r->chash[1] != q[j].chash[1]) continue;
+            plist_done[i] = 1;
+            plist_left--;
+            uint64_t ck = prog_content_key(r->chash, &r->vkey, &r->fkey);
+            Prog *p = NULL, *have = NULL;
+            pthread_mutex_lock(&progcache_lock);
+            Prog **c = progcache_slot(ck, true);
+            if (c) { have = *c; if (!have) *c = p = calloc(1, sizeof *p); }
+            pthread_mutex_unlock(&progcache_lock);
+            if (have) {
+                prog_want(have);  // (a dormant one is loaded)
+                plist_attach(have, r);
+                continue;
+            }
+            if (!p) continue;
+            memcpy(p->code, q[j].code, sizeof p->code);
+            memcpy(p->cmax, q[j].cmax, sizeof p->cmax);
+            memcpy(p->chash, r->chash, sizeof p->chash);
+            p->ck = ck;
+            p->vkey = r->vkey;
+            p->fkey = r->fkey;
+            p->wanted = true;
+            plist_attach(p, r);  // (before it is translated: its pipelines follow it)
+            run_translate(translate_program, p);
+        }
+    if (!plist_left) LOG("[vk] pipeline list: every program met\n");
+}
+
+// MHGU_PIPELIST_EXPORT: pipelines.bin's records (as pipecache_init reads them) and the shipped list's
+static FILE *plist_ex;
+static uint64_t *plist_ex_seen;
+static int plist_ex_n, plist_ex_cap;
+static void plist_export_rec(const ListRec *r) {
+    uint64_t h = hash_words(0xcbf29ce484222325ull, r, sizeof *r);
+    for (int i = 0; i < plist_ex_n; i++)
+        if (plist_ex_seen[i] == h) return;
+    if (plist_ex_n == plist_ex_cap) plist_ex_seen = realloc(plist_ex_seen, sizeof *plist_ex_seen * (size_t)(plist_ex_cap = plist_ex_cap ? plist_ex_cap * 2 : 4096));
+    plist_ex_seen[plist_ex_n++] = h;
+    fwrite(r, sizeof *r, 1, plist_ex);
+}
+static void plist_export_add(const Prog *p, const PipeRec *pr) {
+    static int tried;
+    if (!tried) {
+        tried = 1;
+        const char *e = getenv("MHGU_PIPELIST_EXPORT");
+        if (e && *e && (plist_ex = fopen(e, "wb"))) {
+            ListHeader h = {"MHGUPL1", sizeof(ShaderKey), sizeof(PipeKey), sizeof(ListRec), 0};
+            fwrite(&h, sizeof h, 1, plist_ex);
+        }
+    }
+    if (!plist_ex || !p) return;
+    ListRec r;
+    memset(&r, 0, sizeof r);
+    r.magic = LISTREC_MAGIC;
+    memcpy(r.chash, p->chash, sizeof r.chash);
+    r.vkey = p->vkey;
+    r.fkey = p->fkey;
+    memcpy(r.color, pr->color, sizeof r.color);
+    r.depth = pr->depth;
+    r.k = pr->k;
+    r.k.prog = NULL;
+    r.k.rp = VK_NULL_HANDLE;
+    plist_export_rec(&r);
+}
+static void plist_export_finish(void) {
+    plist_export_add(NULL, NULL);  // (opens the file when pipelines.bin had nothing)
+    if (!plist_ex) return;
+    for (int i = 0; i < plist_n; i++)
+        if (plist[i].magic == LISTREC_MAGIC) plist_export_rec(&plist[i]);
+    ListHeader h = {"MHGUPL1", sizeof(ShaderKey), sizeof(PipeKey), sizeof(ListRec), (uint32_t)plist_ex_n};
+    fseek(plist_ex, 0, SEEK_SET);
+    fwrite(&h, sizeof h, 1, plist_ex);
+    fclose(plist_ex);
+    plist_ex = NULL;
+    LOG("[vk] pipeline list exported: %s (%d pipelines)\n", getenv("MHGU_PIPELIST_EXPORT"), plist_ex_n);
+}
+
 static void build_pipeline(void *arg) {
     Pipe *pp = arg;
     uint64_t t0 = plat_now_ns();
@@ -2028,7 +2996,8 @@ static void build_pipeline(void *arg) {
                                                  .frontFace = k->front_ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE,
                                                  .depthClampEnable = k->depth_clamp, .depthBiasEnable = k->depth_bias, .lineWidth = 1};
     VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-                                               .rasterizationSamples = (VkSampleCountFlagBits)k->samples, .alphaToCoverageEnable = k->a2c};
+                                               .rasterizationSamples = (VkSampleCountFlagBits)k->samples, .alphaToCoverageEnable = k->a2c,
+                                               .sampleShadingEnable = k->sample_shading, .minSampleShading = 1};
     VkStencilOpState so[2];
     for (int f = 0; f < 2; f++)
         so[f] = (VkStencilOpState){(VkStencilOp)k->sten_ops[f][0], (VkStencilOp)k->sten_ops[f][1], (VkStencilOp)k->sten_ops[f][2],
@@ -2206,53 +3175,42 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
     if (size > r.size && r.size) size = r.size;
     if (size < 16) size = 16;
     if (!guest_range_ok(r.addr, size)) return zero_buffer(size);
-    if (stage == 0 && k == 3) ui_relax_scissor = false;
-    if (stage == 0 && k == 3 && (pass_h == g_render_size[1] || pass_sy != 1.0f) &&  // (FSR: stand-ins)
+    if (stage == 0 && k == 3) ui_relax_scissor = false, ui_scissor_v = -1;
+    if (stage == 0 && k == 3 && !st.ds[0] && (pass_h == g_render_size[1] || pass_sy != 1.0f) &&  // (FSR: stand-ins)
         fabsf(g_render_aspect - 16.0f / 9.0f) > 0.01f) {
         if (size >= 64) {
             float m[16];
             memcpy(m, G2H((uint32_t)r.addr), 64);
             float pos_x = m[12], pos_y = m[13], pos_z = m[14];
-            // Most HUD/menu draws are in a pass without depth, but screens with a 3D preview
-            // (item box appearance/pigment, the Multiplayer Connect window, Smithy/equipment)
-            // put their 2D layer in the preview's depth pass. The old !st.ds[0] guard skipped
-            // those, so the window was placed on frame one and snapped back to native once the
-            // preview pass started. Transform the 2D UI (orthographic matrix, UI layers) there
-            // too; leave real 3D geometry (projected/rotated matrices) alone.
-            // A layer 97/98 menu is itself enough to say this is UI, even when it is drawn
-            // in a depth-preview pass. Latch it first, so the menu's own frame and the
-            // layer-100 windows over it get the same transform instead of waiting for a
-            // depthless frame that only the opening animation had.
-            if ((fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f) &&
-                fabsf(m[1]) < 0.001f && fabsf(m[4]) < 0.001f) {
-                ui_menu_latch_until = plat_now_ns() + 300000000ull;
-            }
-            bool ui_in_depth = st.ds[0] && plat_now_ns() < ui_menu_latch_until &&
-                               pos_z >= 93.5f && pos_z <= 110.5f &&
-                               fabsf(m[1]) < 0.001f && fabsf(m[4]) < 0.001f;
-            if (!st.ds[0] || ui_in_depth) {
 
             // Ignore fullscreen overlays (e.g. screen fade / full backdrop)
             bool is_fullscreen = (fabsf(pos_x - 640.0f) < 1.0f && fabsf(pos_y - 360.0f) < 1.0f &&
                                   (fabsf(m[0]) >= 1200.0f || fabsf(m[5]) >= 700.0f)) ||
                                  (fabsf(pos_x) <= 1.0f && fabsf(pos_y) <= 1.0f);
 
+            if (is_fullscreen && g_hudtrace_active)
+                LOG("[hud] z %.1f pos %.1f,%.1f m %.2f %.2f %.2f %.2f: whole screen, kept\n", pos_z, pos_x, pos_y, m[0], m[1], m[4], m[5]);
             if (!is_fullscreen) {
                 // The HUD keeps the 16:9 shape it is laid out in: on a wider picture its parts are narrowed (s) and moved
-                // toward their side; on a narrower one (16:10, 3:2, 4:3) the elements are flattened (sy) and moved toward
-                // the top, bottom or middle, which is what lets 4:3 still fit edge to edge without overlapping.
+                // toward their side, on a narrower one (16:10) flattened (sy) and moved toward the top or bottom.
                 float s = g_render_aspect > 16.0f / 9.0f ? (16.0f / 9.0f) / g_render_aspect : 1.0f;
                 float sy = g_render_aspect < 16.0f / 9.0f ? g_render_aspect / (16.0f / 9.0f) : 1.0f;
                 // Layer 110 is the loading screen's scrolling backdrop: strips at y 168 / 433 / 570 that must stay one picture.
                 // The generic rule anchored each strip to a different edge and flattened it, leaving gaps between them.
                 // They keep their height (as on a stretched 16:9 canvas), so nothing moves vertically.
+                bool loading_strip = false;
                 if (fabsf(pos_z - 110.0f) < 0.5f) {
                     sy = 1.0f;
                     // (only the strips: the lock-on markers and other effects use layer 110 too, mid-hunt, and made
                     // everything after them center-anchored, so the HUD jumped down)
-                    if (fabsf(pos_y - 168.0f) < 0.3f || fabsf(pos_y - 433.0f) < 0.3f || fabsf(pos_y - 570.0f) < 0.3f) ui_loading_pass = true;
+                    loading_strip = fabsf(pos_y - 168.0f) < 0.3f || fabsf(pos_y - 433.0f) < 0.3f || fabsf(pos_y - 570.0f) < 0.3f;
+                    if (loading_strip) ui_loading_pass = true;
                 }
-                float anchor_aspect = g_ui_anchor_aspect;  // (config.c: 16:9 .. the screen's)
+                // Front-end screens keep their backdrop 16:9: the HUD stays on it as with the 16:9 anchor. Edges / 21:9 / 32:9
+                // took their centred menus (layer 100, x 640, anchored Right) and the help box (96) off it, to the sides.
+                if (fabsf(pos_z - 250.0f) < 0.5f && fabsf(pos_x - 640.0f) < 0.5f && fabsf(pos_y - 360.0f) < 0.5f)
+                    ui_frontend_pass = true, ui_frontend_frame = g_present_count;
+                float anchor_aspect = ui_frontend_pass ? 16.0f / 9.0f : g_ui_anchor_aspect;  // (config.c: 16:9 .. the screen's)
                 if (anchor_aspect > g_render_aspect) anchor_aspect = g_render_aspect;
                 float a_ratio = anchor_aspect / g_render_aspect;
                 float anchor_left = 640.0f * (1.0f - a_ratio);
@@ -2260,67 +3218,24 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 
                 bool is_3d_overlay = (pos_z > 180.0f);
                 float new_pos_x = pos_x, new_pos_y = pos_y;
-                // The village Minus help menu (Village/Hub, World Map, Multiplayer Menu, ...) is a
-                // centred two-column window on layer 100: its columns are at x ~330/484 and ~796/958,
-                // y ~199..535. The generic right anchor for that layer would drag it right on an
-                // Edges/ultrawide picture; detect its distinctive bottom-left cell and keep the
-                // whole window centred (also vertically, which helps 4:3/3:2).
-                extern int g_help_menu_latch;
-                static uint64_t help_until;
-                uint64_t unow = plat_now_ns();
-                if (fabsf(pos_z - 100.0f) < 0.5f && fabsf(pos_x - 330.0f) < 1.0f && fabsf(pos_y - 433.0f) < 1.0f) {
-                    help_until = unow + 200000000ull;
-                    g_help_menu_latch = 1;
-                }
-                bool help_menu = g_help_menu_latch || unow < help_until;
-                // The chat window (ZR + Minus) is a left-hand log on layer 97 and a
-                // right-hand player list/entry box on layer 100. Below 16:10 and on
-                // ultrawide both halves would be dragged to opposite edges, so latch
-                // the log's distinctive centre panel and keep the window together.
-                static uint64_t chat_until;
-                if (fabsf(pos_z - 97.0f) < 0.5f && pos_x > 20.0f && pos_x < 620.0f &&
-                    pos_y > 80.0f && pos_y < 700.0f && m[0] > 9.0f) {
-                    chat_until = unow + 300000000ull;
-                }
-                bool chat_menu = unow < chat_until;
-                // The village Connect window is layer 100: a left background/preview panel
-                // (x ~782) plus the list panel (x ~1018), with the rows on layers 96/100.
-                // Its top and bottom were anchored apart, so at 4:3 the preview stretched
-                // into an empty dark header above the rows. Latch the panel fills and keep
-                // the whole window centred.
-                static uint64_t mpmenu_until;
-                if (fabsf(pos_z - 100.0f) < 0.5f && pos_y > 100.0f && pos_y < 260.0f &&
-                    ((pos_x > 1000.0f && pos_x < 1030.0f && m[0] > 20.0f) ||
-                     (pos_x > 770.0f && pos_x < 800.0f && m[0] > 200.0f))) {
-                    mpmenu_until = unow + 300000000ull;
-                }
-                bool mp_menu = unow < mpmenu_until;
-                // The item box's Change Armor Pigment screen is another layer-100 window:
-                // x ~926..1254, y ~56..318, with the colour diamonds at x ~1071,y 154..298
-                // drawn rotated 45 deg (m[0] == m[5] == 0.707). Its top/list used to get
-                // different anchors; latch the diamonds and centre the window as one piece.
-                static uint64_t pigment_until;
-                if (fabsf(pos_z - 100.0f) < 0.5f && pos_x > 1060.0f && pos_x < 1082.0f &&
-                    pos_y > 145.0f && pos_y < 305.0f && fabsf(m[0] - 0.707107f) < 0.001f &&
-                    fabsf(m[5] - 0.707107f) < 0.001f) {
-                    pigment_until = unow + 300000000ull;
-                }
-                bool pigment_menu = unow < pigment_until;
-                // Picking an armor piece opens the colour-select screen: a larger layer-100
-                // window (x ~885..1254, y ~56..479; fill at x ~1070,y ~268). Latch it so its
-                // swatch panel and the title/list below stay one centred window too.
-                static uint64_t color_until;
-                if (fabsf(pos_z - 100.0f) < 0.5f && pos_x > 1060.0f && pos_x < 1080.0f &&
-                    pos_y > 260.0f && pos_y < 276.0f && m[0] > 17.0f && m[5] > 20.0f) {
-                    color_until = unow + 300000000ull;
-                }
-                bool color_menu = unow < color_until;
+                bool grouped = false;
+                int vgroup = 1;
+
+                if (is_3d_overlay && g_hudtrace_active)
+                    LOG("[hud] z %.1f pos %.1f,%.1f m %.2f %.2f %.2f %.2f: 3D overlay, not moved\n", pos_z, pos_x, pos_y, m[0], m[1], m[4], m[5]);
                 if (!is_3d_overlay) {
                     enum { ANCHOR_LEFT, ANCHOR_RIGHT, ANCHOR_CENTER } anchor = ANCHOR_CENTER;
                     // vertically one anchor per layer (or per part of one), so a window drawn in pieces stays together
                     enum { V_TOP, V_BOTTOM, V_CENTER } vanchor = V_CENTER;
 
-                    if (ui_loading_pass && pos_z >= 94.0f && pos_z < 109.5f) {
+                    // Title screen: its layout (layer 108) is placed at the canvas centre and carries the copyright line at
+                    // its bottom (y ~698), which the centre anchor moved up into "PRESS A" (layer 100, y 653 / 671, bottom
+                    // anchor). Both scale about the centre, so they keep their spacing.
+                    if (fabsf(pos_z - 108.0f) < 0.5f && fabsf(pos_x - 640.0f) < 0.5f && fabsf(pos_y - 360.0f) < 0.5f) ui_title_pass = true;
+                    if (ui_title_pass && fabsf(pos_z - 100.0f) < 0.5f) {
+                        anchor = ANCHOR_CENTER;
+                        vanchor = V_CENTER;
+                    } else if (ui_loading_pass && pos_z >= 94.0f && pos_z < 109.5f) {
                         // Loading screen: the quest panel's headers (layer 100), its text (101) and the title (105) are one
                         // picture. The generic rules moved them by different amounts (bottom, center, top) and the
                         // "Summary" header landed on the text. All of it scales about the center instead.
@@ -2328,61 +3243,44 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         vanchor = V_CENTER;
                     } else if (pos_z < 95.0f) {
                         // 94.0: Central notifications & banners ("Time limit: 50 min.")
+                        // 60.0: the Guild Card's name plate (top right, under its page counter): by which third it is in
                         anchor = ANCHOR_CENTER;
+                        vanchor = pos_y < 240.0f ? V_TOP : pos_y > 480.0f ? V_BOTTOM : V_CENTER;
                     } else if (fabsf(pos_z - 96.0f) < 0.5f) {
-                        // 96.0: Dialogue & Help text box (bottom left), but the village shortcut panel
-                        // (Multiplayer Menu / World Map / Hunter Search) uses this layer too, at the
-                        // top-right. Keep that one right/top-anchored so Edges does not pull it into
-                        // the middle with the 16:9 compression. The red title strip of the Minus help
-                        // menu is also on this layer: when the help menu is up, keep that strip with
-                        // the centred help window instead.
-                        // The interaction prompt ("A Item Box", "A Ranch Paw", ...) is a
-                        // small top-left bar on this layer. Keep it at the top-left corner
-                        // instead of treating it as bottom-left dialogue text.
-                        if (pos_x < 500.0f && pos_y < 120.0f) {
-                            anchor = ANCHOR_LEFT;
-                            vanchor = V_TOP;
-                        } else if ((help_menu && pos_x > 900.0f && pos_y > 150.0f && pos_y < 800.0f) ||
-                            ((chat_menu && pos_x > 900.0f && pos_y > 120.0f && pos_y < 560.0f) ||
-                             (mp_menu && pos_x > 700.0f && pos_y < 560.0f))) {
-                            anchor = ANCHOR_CENTER;
-                            vanchor = V_CENTER;
-                        } else if (pos_x > 900.0f && pos_y < 300.0f) {
+                        // 96.0: Dialogue & Help text box (bottom left), and the button guides of the village / Hub (top
+                        // left and right)
+                        anchor = pos_x >= 650.0f ? ANCHOR_RIGHT : ANCHOR_LEFT;
+                        vanchor = pos_y < 360.0f ? V_TOP : V_BOTTOM;
+                    } else if (fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f) {
+                        // 97.0: Menus and Submenus
+                        // 98.0: text drawn over them (the Qty. label of the quantity box): it used the generic rule, which
+                        // centered it 36 px below its top-anchored box
+                        // Left window (Quest Info: x <= 430) -> Left anchor
+                        // Submenu & Pause Menu (Combine, Items, Menu 1/2: x > 430) -> Right anchor
+                        if (pos_x > 430.0f) {
                             anchor = ANCHOR_RIGHT;
-                            vanchor = V_TOP;
                         } else {
                             anchor = ANCHOR_LEFT;
-                            vanchor = V_BOTTOM;
                         }
-                    } else if (fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f) {
-                        // 97.0: Menus and Submenus (pause, item box and every sub-menu, the village
-                        // multiplayer menu, the chat log, quest info).
-                        // 98.0: text drawn over them (the Qty. label of the quantity box).
-                        // These are 16:9 windows, not edge HUD: keep each one centred on both axes
-                        // so Edges does not pull its panels to opposite sides and 4:3/3:2 do not
-                        // pull its top and bottom apart. At 16:9 s/sy are 1, so nothing changes there.
-                        anchor = ANCHOR_CENTER;
-                        vanchor = V_CENTER;
+                        // The Quest Complete banner's lower border slides in from y 739: it belongs to the bottom edge.
+                        vanchor = pos_y > 650.0f ? V_BOTTOM : V_TOP;
                         if (fabsf(pos_z - 97.0f) < 0.5f) ui_menu_pass = true;
+                        // The Quest Complete stamp is one picture, after its borders (x 640, by the top and bottom edges; the
+                        // lower one slides in from y 739). Right / Left by place split it on a wide picture, its tilted
+                        // "QUEST" (x -17) left of the rest.
+                        if (fabsf(pos_z - 97.0f) < 0.5f && fabsf(pos_x - 640.0f) < 0.5f && (pos_y < 60.0f || pos_y > 680.0f))
+                            ui_stamp_pass = true;
+                        if (ui_stamp_pass) anchor = ANCHOR_CENTER;
                     } else if (fabsf(pos_z - 100.0f) < 0.5f) {
                         // 100.0: Hunter Arts HUD and bottom right prompts (y > 600) -> Bottom anchor
                         // Target cam selector (right edge, y 42..82: x > 1000, y < 360) -> Top anchor, so it stays by the minimap.
                         // (Windows centered on this layer, x 640, must stay one piece: they keep the Bottom anchor.)
-                        if ((help_menu && pos_x > 300.0f && pos_x < 1300.0f && pos_y > 150.0f && pos_y < 800.0f) ||
-                            (chat_menu && pos_x > 900.0f && pos_y < 560.0f) ||
-                            (mp_menu && pos_x > 700.0f && pos_y < 560.0f) ||
-                            (pigment_menu && pos_x > 900.0f && pos_y < 700.0f) ||
-                            (color_menu && pos_x > 800.0f && pos_y < 600.0f)) {
-                            anchor = ANCHOR_CENTER;
-                            vanchor = V_CENTER;
-                        } else {
                         anchor = ANCHOR_RIGHT;
                         // The black bar at the top of a cinematic (y 0, its twin at y 720 is Bottom) must stay at the top edge, or the scene shows above it.
                         // The left windows (Request Log info panel, quest card: x < 630, y < 560) are drawn here too, beside the Top-anchored menus
                         // of layer 97: one anchor for the whole window, or it splits. Without a menu in the pass (the results screen, whose
                         // labels on the left and numbers on the right are one table) they stay Bottom like the rest of the layer.
                         vanchor = ((pos_x > 1000.0f && pos_y < 360.0f) || pos_y < 10.0f || (ui_menu_pass && pos_x < 630.0f && pos_y < 560.0f)) ? V_TOP : V_BOTTOM;
-                        }
                     } else if (fabsf(pos_z - 103.0f) < 0.5f) {
                         // 103.0: In-hunt Status HUD & Item Selector
                         // Status HUD (Clock, HP bar, Stamina, gauges, palico status: y < 500) -> Left anchor
@@ -2411,17 +3309,66 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         if (fabsf(pos_z - 99.0f) < 0.5f && vanchor == V_CENTER) vanchor = V_BOTTOM;
                     }
 
-                    if (anchor == ANCHOR_LEFT) {
+                    // Quest results screen: its header and page counter at the top, the Time Left bar at the bottom (layer
+                    // 99, its ends at x 80 / 1180, y 643: what marks the screen), and in the middle the Quest Complete
+                    // stamp, the reward table, the item lists' parchment (101), its lines (99) and rows (100). The layers'
+                    // rules sent those different ways (the rows top, the parchment centre: the first row sat above the
+                    // parchment, the header went down). The bar is drawn after the stamp, so the last pass also tells.
+                    if (fabsf(pos_z - 99.0f) < 0.5f && fabsf(pos_y - 643.0f) < 0.5f && (fabsf(pos_x - 80.0f) < 0.5f || fabsf(pos_x - 1180.0f) < 0.5f))
+                        ui_results_pass = true;
+                    // Sideways the middle is one table, centred (layer 100's Right took it right of the stamp it sits on, with
+                    // Edges / 21:9), and the header and page counter go to their side.
+                    if ((ui_results_pass || ui_results_last) && pos_z > 98.5f && pos_z < 101.5f) {
+                        vanchor = pos_y < 60.0f ? V_TOP : pos_y > 600.0f ? V_BOTTOM : V_CENTER;
+                        if (vanchor == V_CENTER) anchor = ANCHOR_CENTER;
+                        else if (vanchor == V_TOP) anchor = pos_x <= 430.0f ? ANCHOR_LEFT : pos_x >= 650.0f ? ANCHOR_RIGHT : ANCHOR_CENTER;
+                    }
+                    // Meownster Hunters return screen: a map in a black frame at the top (the frame on layers 105 and 100,
+                    // its corner at 215, 0; the map 105; its icons 102 / 103, bubbles 98), the Palicoes' tokens and the
+                    // reward list over it (100), the Reward List header and the prompts at the bottom. Layer 100 went to the
+                    // bottom with its rule: the tokens sat too low on the map, the lead Palico below the frame, and the
+                    // frame's lower edge slid away from it. All of it but the header and prompts (below y 600) goes top.
+                    if (fabsf(pos_z - 105.0f) < 0.5f && pos_x == 215.0f && pos_y == 0.0f) ui_meownster_pass = true;
+                    if (ui_meownster_pass && pos_z > 97.5f && pos_z < 105.5f) vanchor = pos_y > 600.0f ? V_BOTTOM : V_TOP;
+                    // The loading backdrop's tiles (x -30, 549, 1128...: one every 579, past 1280) are one picture sideways
+                    // too, from the screen's left edge: by place they went Left / Centre / Right, three copies with gaps
+                    // between them with Edges / 21:9; centred (or Center), nothing covered the left of the first tile.
+                    if (loading_strip) {
+                        new_pos_x = pos_x * s;
+                    } else if (anchor == ANCHOR_LEFT) {
                         new_pos_x = anchor_left + pos_x * s;
                     } else if (anchor == ANCHOR_RIGHT) {
                         new_pos_x = anchor_right - (1280.0f - pos_x) * s;
                     } else {
                         new_pos_x = 640.0f + (pos_x - 640.0f) * s;
                     }
-                    ui_last_vanchor = vanchor == V_TOP ? 0 : vanchor == V_BOTTOM ? 2 : 1;
+                    int v = vanchor == V_TOP ? 0 : vanchor == V_BOTTOM ? 2 : 1;
+                    ui_recent[ui_nrecent % UI_RECENT].x = pos_x, ui_recent[ui_nrecent % UI_RECENT].y = pos_y;
+                    ui_recent[ui_nrecent % UI_RECENT].vanchor = (uint8_t)v;
+                    ui_recent[ui_nrecent % UI_RECENT].hanchor = (uint8_t)anchor;
+                    ui_nrecent++;
                     if (vanchor == V_TOP) new_pos_y = pos_y * sy;
                     else if (vanchor == V_BOTTOM) new_pos_y = 720.0f - (720.0f - pos_y) * sy;
                     else new_pos_y = 360.0f + (pos_y - 360.0f) * sy;
+                    // One anchor per window (ui_group_end), on a picture narrower than 16:9. Not for the hunt's status HUD
+                    // and item bar (103), the minimap (105), the loading screen, or the bars that belong to an edge (a
+                    // cinematic's at y 0 / 720, the Quest Complete border sliding in from y 739).
+                    grouped = sy < 1.0f && !(ui_loading_pass && pos_z >= 94.0f && pos_z < 109.5f) && fabsf(pos_z - 103.0f) >= 0.5f &&
+                              fabsf(pos_z - 105.0f) >= 0.5f && pos_y >= 10.0f && pos_y <= 712.0f;
+                    // Wider than 16:9 one anchor per window sideways, for the menus (97, the text over them 98) and the
+                    // windows and prompts of 100. By its own place a piece went left of x 430 and right of it (all of 100
+                    // right): the item box's Manage Equipment submenu (x 333..563) lost its body and right corners to the
+                    // right, its Rotate / Camera prompts (100, x 18..98, under the menu) and the Multiplayer dialog (over
+                    // the middle) went right. Not on the screens placed whole above, nor the bars that belong to an edge.
+                    if (s < 1.0f && (fabsf(pos_z - 97.0f) < 0.5f || fabsf(pos_z - 98.0f) < 0.5f || fabsf(pos_z - 100.0f) < 0.5f) &&
+                        !ui_frontend_pass && !ui_title_pass && !ui_loading_pass && !ui_stamp_pass && !ui_results_pass &&
+                        !ui_results_last && !ui_meownster_pass && pos_y >= 10.0f && pos_y <= 712.0f)
+                        grouped = true;
+                    vgroup = v;
+                    if (g_hudtrace_active)
+                        LOG("[hud] z %.1f pos %.1f,%.1f m %.2f %.2f %.2f %.2f -> %c%c %.1f,%.1f%s sc %d,%d %dx%d\n", pos_z, pos_x, pos_y, m[0], m[1], m[4],
+                            m[5], "LRC"[anchor], "TBC"[vanchor], new_pos_x, new_pos_y, ui_menu_pass ? " menu" : "", st.scissor[0][0],
+                            st.scissor[0][1], st.scissor[0][2], st.scissor[0][3]);
                 }
 
                 m[0] *= s; m[4] *= s; m[8] *= s;
@@ -2431,15 +3378,21 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 
                 VkSpan sp = vk_transient_copy(G2H((uint32_t)r.addr), size, 256);  // (all of it, the matrix changed)
                 memcpy(sp.ptr, m, 64);
+                if (grouped) ui_group_add((float *)sp.ptr, pos_z, pos_x, pos_y, vgroup);
+                // The game clips some windows (a list, the help windows' body) with a scissor laid out for the 16:9 window:
+                // it moves with the piece, as its group was anchored last frame (the group is not complete yet), or for a
+                // group not seen before as the pieces so far are.
+                if (sy < 1.0f && !is_3d_overlay) {
+                    int gv = !grouped ? -1 : ui_group.predict >= 0 ? ui_group.predict : ui_group_vanchor();
+                    ui_scissor_v = gv >= 0 ? gv : vgroup;
+                }
                 return ubo_span(sp, size);
-            }
             }
         }
     }
     return ubo_span(guest_copy(r.addr, size), size);
 }
 
-int g_help_menu_latch;  // (village Minus help index; input.c clears it on B/Plus/Minus)
 static int32_t fsr_cap_base;  // (FSR capture draw: its FSR_CAP_BASE_BINDING value, stage_set)
 
 static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo *out) {
@@ -2493,8 +3446,9 @@ static VkDescriptorSet stage_set(int nbinds, const VkBindingInfo *binds, VkDescr
             bi[n] = ubo_span(vk_transient_copy(base, sizeof base, 256), sizeof base);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding == 18) {  // rscale: no scaling here
-            float rs[66][4];
-            for (int k = 0; k < 66; k++) rs[k][0] = rs[k][1] = 1, rs[k][2] = rs[k][3] = 0;
+            float rs[67][4];
+            for (int k = 0; k < 67; k++) rs[k][0] = rs[k][1] = 1, rs[k][2] = rs[k][3] = 0;
+            memset(rs[66], 0xFF, 4);  // [66].x: the front-face mask's all-ones word (translate.c)
             bi[n] = ubo_span(vk_transient_copy(rs, sizeof rs, 256), sizeof rs);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding == ALPHA_REF_BUFFER_INDEX) {
@@ -2629,14 +3583,108 @@ static uint64_t prog_fs_hash(Prog *p) {
     return p->chash[1];
 }
 
-// FXAA off (settings): the game's FXAA pass (recognised by its shader) copies its input instead.
+// FXAA 3.11 (FXAAMode = 3_11): the game's FXAA pass draws shaders.c "fxaa.frag" instead, from the same input into the
+// same target. False: not possible, the game's own pass draws.
+static VkDescriptorSetLayout fxaa_set_layout;
+static VkPipelineLayout fxaa_layout;
+
+static VkPipeline fxaa_pipeline(VkRenderPass rp) {
+    static struct { VkRenderPass rp; VkPipeline p; } tab[8];
+    static int n;
+    for (int i = 0; i < n; i++) if (tab[i].rp == rp) return tab[i].p;
+    if (!fxaa_layout) {
+        VkDescriptorSetLayoutBinding b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
+        VkDescriptorSetLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 1, .pBindings = &b};
+        VK_CHECK(vkCreateDescriptorSetLayout(g_vk.dev, &li, NULL, &fxaa_set_layout));
+        VkPipelineLayoutCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                         .pSetLayouts = &fxaa_set_layout};
+        VK_CHECK(vkCreatePipelineLayout(g_vk.dev, &ci, NULL, &fxaa_layout));
+    }
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT,
+         .module = vk_builtin_shader("resolve.vert"), .pName = "main"},
+        {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+         .module = vk_builtin_shader("fxaa.frag"), .pName = "main"}};
+    VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+                                                 .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST};
+    VkPipelineViewportStateCreateInfo vs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1,
+                                            .scissorCount = 1};
+    VkPipelineRasterizationStateCreateInfo rs = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+                                                 .polygonMode = VK_POLYGON_MODE_FILL, .lineWidth = 1};
+    VkPipelineMultisampleStateCreateInfo ms = {.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+                                               .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT};
+    VkPipelineColorBlendAttachmentState att = {.colorWriteMask = 0xF};
+    VkPipelineColorBlendStateCreateInfo cb = {.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+                                              .attachmentCount = 1, .pAttachments = &att};
+    VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2,
+                                           .pDynamicStates = dyn};
+    VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2,
+                                       .pStages = stages, .pVertexInputState = &vi, .pInputAssemblyState = &ia,
+                                       .pViewportState = &vs, .pRasterizationState = &rs, .pMultisampleState = &ms,
+                                       .pColorBlendState = &cb, .pDynamicState = &dy, .layout = fxaa_layout, .renderPass = rp};
+    VkPipeline p = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(g_vk.dev, g_vk.pcache, 1, &pi, NULL, &p) != VK_SUCCESS) LOG("[vk] FXAA pipeline failed\n");
+    if (n < 8) tab[n].rp = rp, tab[n++].p = p;
+    return p;
+}
+
+static bool fxaa_311(NvnTexture *src) {
+    NvnTexture *dt = st.rt.color[0];
+    TexBackend *s = vk_tex(src, false), *d = vk_tex(dt, true);
+    if (s->samples != 1 || d->samples != 1) return false;
+    vk_end_pass();
+    st.rt_dirty = true;
+    vk_ms_resolve(s);
+    vk_ms_resolve(d);
+    bool has = st.rt.has_cview[0];
+    VkImageView sv = vk_view(src, NULL, false, false, TEXTYPE_2D), dv = vk_view(dt, &st.rt.cview[0], has, true, TEXTYPE_2D);
+    VkFormat f = has && (st.rt.cview[0].setmask & 4) && vk_format(dt->format) == d->format ? vk_format(st.rt.cview[0].format)
+                                                                                           : d->format;
+    VkRenderPass rp = vk_render_pass(&f, 1, VK_FORMAT_UNDEFINED, 1);
+    VkPipeline p = sv && dv ? fxaa_pipeline(rp) : VK_NULL_HANDLE;
+    if (!p) return false;
+    d->ms_valid = false;
+    renderer_mark_gpu_owned(dt);
+    uint32_t lv = has && (st.rt.cview[0].setmask & 1) ? st.rt.cview[0].base_level : 0;
+    uint32_t w = level_extent(d->width, lv), h = level_extent(d->height, lv);
+    VkCommandBuffer cb = vk_cmd();
+    vk_full_barrier(cb);
+    VkDescriptorSet set = vk_alloc_set(fxaa_set_layout);
+    VkDescriptorImageInfo ii = {vk_default_sampler(true), sv, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 0, .descriptorCount = 1,
+                               .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
+    vkUpdateDescriptorSets(g_vk.dev, 1, &wr, 0, NULL);
+    VkRect2D area = {{0, 0}, {w, h}};
+    VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp,
+                                .framebuffer = vk_framebuffer(rp, &dv, 1, w, h), .renderArea = area};
+    vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, fxaa_layout, 0, 1, &set, 0, NULL);
+    VkViewport vp = {0, 0, (float)w, (float)h, 0, 1};
+    vkCmdSetViewport(cb, 0, 1, &vp);
+    vkCmdSetScissor(cb, 0, 1, &area);
+    vkCmdDraw(cb, 3, 1, 0, 0);
+    vkCmdEndRenderPass(cb);
+    ss_forget();
+    stat_draws++;
+    return true;
+}
+
+// FXAA off (settings): the game's FXAA pass (recognised by its shader) copies its input instead; FXAAMode = 3_11 draws
+// FXAA 3.11 there (fxaa_311).
 #define FXAA_FS_HASH 0x8530ded68f4407dfull
 static void copy_texture(const TexRef *src, const TexRef *dst, uint64_t flags);
 static bool fxaa_skipped(Prog *pr) {
-    if (g_config.fxaa || prog_fs_hash(pr) != FXAA_FS_HASH || pr->fi->ntex != 1 || !st.rt.ncolor || !st.rt.color[0])
+    if (prog_fs_hash(pr) == FXAA_FS_HASH) aa_pass_frame = g_present_count;  // (menus: full_picture)
+    bool fxaa_311_on = config_live_fxaa() && config_live_fxaa_mode() == FXAA_311;
+    if ((config_live_fxaa() && !fxaa_311_on) || prog_fs_hash(pr) != FXAA_FS_HASH || pr->fi->ntex != 1 || !st.rt.ncolor ||
+        !st.rt.color[0])
         return false;
     NvnTexture *src = shader_texture_object(1, &pr->fi->tex[0]);
     if (!src || src == st.rt.color[0]) return false;
+    if (fxaa_311_on) return fxaa_311(src);
     TexRef s = {.tex = (uint64_t)(uintptr_t)src}, d = {.tex = (uint64_t)(uintptr_t)st.rt.color[0]};
     if (st.rt.has_cview[0]) d.view = st.rt.cview[0], d.has_view = 1;
     copy_texture(&s, &d, 0);
@@ -2698,11 +3746,16 @@ static void draw(CmdRec *r, bool indexed) {
     if (!native && mode != 6 && mode != 7 && mode != 9) { stat_skipped++; return; }
     if (g_fsr_on) {  // FSR: the frame's structure; at the start of the HUD FSR runs before this draw (fsr.c)
         FsrDraw fd = {.color0 = st.rt.ncolor ? st.rt.color[0] : NULL, .depth = st.rt.depth, .count = (uint32_t)r->x[2],
-                      .depth_write = st.ds[0] && st.ds[1], .vubuf = &st.ubuf[0][0].addr, .nvubuf = 18};
+                      .depth_write = st.ds[0] && st.ds[1], .vubuf = &st.ubuf[0][0].addr, .nvubuf = 18,
+                      .vp_w = st.viewport[0][2], .vp_h = st.viewport[0][3]};
         for (int i = 0; i < pr->fi->ntex && fd.ntex < 16; i++) fd.tex[fd.ntex++] = shader_texture_object(1, &pr->fi->tex[i]);
         vk_fsr_draw(&fd);
     }
 
+    ms_want_depth = st.ds[0] && st.rt.depth;  // (MSAA, a picture 3D models are drawn into: pass_models)
+    if (in_pass && pass_models && !pass_msaa && ms_want_depth && !pass_want_depth) st.rt_dirty = true;
+    if (in_pass && pass_models && pass_msaa && !ms_want_depth && !models_2d_in_samples()) st.rt_dirty = true;
+    models_fxaa_track(ms_want_depth);  // (FXAA: the same, models_fxaa_end)
     if (st.rt_dirty) vk_end_pass();  // (MSAA: the ending pass marks its targets for resolving before they are read)
     ms_resolve_sampled(0, pr->vi);
     ms_resolve_sampled(1, pr->fi);
@@ -2778,6 +3831,14 @@ static void draw(CmdRec *r, bool indexed) {
     k.depth_write = k.depth_test && st.ds[1];
     k.depth_op = (uint8_t)(k.depth_test ? compare_fn(st.ds[2]) : VK_COMPARE_OP_ALWAYS);
     k.stencil_test = st.ds[3] && has_stencil;
+    // (3D models drawn over the finished picture, without MSAA: from the next frame on, for as long as they are drawn,
+    // the player's anti-aliasing for them: ms_expand, models_fxaa_end)
+    if (k.depth_write) {
+        TexBackend *c0 = st.rt.ncolor && st.rt.color[0] ? st.rt.color[0]->backend : NULL;
+        if (c0 && (!pass_msaa || c0->ms_models) && full_picture(pass_w, pass_h)) c0->ms_models = g_present_count;
+    }
+    if (pass_models) models_run_track(k.depth_test);
+    k.sample_shading = pass_msaa && pass_models && !k.depth_test;  // (2D alternating with models: models_2d_in_samples)
     if (k.stencil_test) {
         uint32_t ops = st.ds[5] | st.ds[6] << 8 | st.ds[7] << 16;
         for (int f = 0; f < 2; f++) {
@@ -2816,9 +3877,26 @@ static void draw(CmdRec *r, bool indexed) {
     }
     if (ss_need(SS_BC, !memcmp(ss.bc, st.blend_color, sizeof ss.bc))) { memcpy(ss.bc, st.blend_color, sizeof ss.bc); vkCmdSetBlendConstants(cb, st.blend_color); }
     {
-        float f[3] = {0, 0, 0};
-        if (k.depth_bias) memcpy(f, st.poly_offset, sizeof f);
-        if (ss_need(SS_DB, !memcmp(ss.db, f, sizeof f))) { memcpy(ss.db, f, sizeof f); vkCmdSetDepthBias(cb, f[1], f[2], f[0]); }
+        // (f[3]: D24 steps on a D32S8, VK_EXT_depth_bias_control: a float format's steps follow each triangle's depth
+        // and can be finer than D24's, too small for the game's decal offsets)
+        float f[4] = {0, 0, 0, 0};
+        if (k.depth_bias) memcpy(f, st.poly_offset, 3 * sizeof *f);
+        bool d24 = k.depth_bias && pass_d24_as_float && g_vk.set_depth_bias2;
+        f[3] = d24;
+        if (ss_need(SS_DB, !memcmp(ss.db, f, sizeof f))) {
+            memcpy(ss.db, f, sizeof f);
+#ifdef VK_EXT_depth_bias_control
+            if (d24) {
+                VkDepthBiasRepresentationInfoEXT rep = {
+                    .sType = VK_STRUCTURE_TYPE_DEPTH_BIAS_REPRESENTATION_INFO_EXT,
+                    .depthBiasRepresentation = VK_DEPTH_BIAS_REPRESENTATION_LEAST_REPRESENTABLE_VALUE_FORCE_UNORM_EXT};
+                VkDepthBiasInfoEXT bi = {.sType = VK_STRUCTURE_TYPE_DEPTH_BIAS_INFO_EXT, .pNext = &rep,
+                                         .depthBiasConstantFactor = f[1], .depthBiasClamp = f[2], .depthBiasSlopeFactor = f[0]};
+                g_vk.set_depth_bias2(cb, &bi);
+            } else
+#endif
+                vkCmdSetDepthBias(cb, f[1], f[2], f[0]);
+        }
     }
     float *vp = st.viewport[0], movie_vp[4], v[4];
     PreviewMap pm;
@@ -2836,9 +3914,9 @@ static void draw(CmdRec *r, bool indexed) {
     VkDescriptorSet sets[2] = {stage_set(pr->nbinds, pr->binds, pr->set_layout[0], 0, 0, pr->vi, 0, 0, 0),
                                stage_set(pr->nbinds, pr->binds, pr->set_layout[1], 1, 1, pr->fi, 0, 0, 0)};
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pr->layout, 0, 2, sets, 0, NULL);
-    if (ui_relax_scissor) {  // (set while the constants above were built: for this draw only; the next draw and any
-        apply_scissor(cb);   // clear before it get the game's scissor again)
-        ui_relax_scissor = false;
+    if (ui_relax_scissor || ui_scissor_v >= 0) {  // (set while the constants above were built: for this draw only; the
+        apply_scissor(cb);                         // next draw and any clear before it get the game's scissor again)
+        ui_relax_scissor = false, ui_scissor_v = -1;
     }
 
     // ---- indices (copied; the largest index bounds the vertex data copied below)
@@ -2909,8 +3987,11 @@ static void draw(CmdRec *r, bool indexed) {
             if (v.size && (need > v.size || v.size <= (4u << 20))) need = v.size;
             VkBuffer cached;
             if (!v.addr || !guest_range_ok(v.addr, need)) { static const uint8_t zero[256]; sp = vk_transient_copy(zero, 256, 16); }
-            else if (v.size && guest_range_ok(v.addr, v.size) && vcache(v.addr, v.size, &cached)) sp = (VkSpan){cached, 0, NULL};
-            else sp = guest_copy(v.addr, need ? need : 16);
+            else if (v.size && guest_range_ok(v.addr, v.size) && vtail_find(v.addr, v.size, &sp)) {}
+            else if (v.size && guest_range_ok(v.addr, v.size) && vcache(v.addr, v.size, &cached)) {
+                sp = (VkSpan){cached, 0, NULL};
+                vtail_put(v.addr, v.size, sp);
+            } else sp = guest_copy_vertex(v.addr, need ? need : 16);
         }
         VkDeviceSize off = sp.off;
         if ((ss.vb_known >> s & 1) && ss.vb[s] == sp.buf && ss.vo[s] == off) continue;
@@ -2994,6 +4075,7 @@ static void draw(CmdRec *r, bool indexed) {
             }
         }
     }
+    if (mf_tex) models_fxaa_note();
     if (!use_index) vkCmdDraw(cb, count, inst, first, base_inst);
     else vkCmdDrawIndexed(cb, icount, inst, 0, base_vertex, base_inst);
     stat_draws++;
@@ -3061,24 +4143,36 @@ static void copy_buffer_to_texture(uint64_t src, const TexRef *dst) {
     vk_ms_resolve(b);
     b->ms_valid = false;
     renderer_mark_gpu_owned(t);
-    if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) || b->astc_bw) return;
+    if (b->aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) return;
     bool array = b->layers > 1 && b->depth == 1;
     uint32_t hb = ((uint32_t)rg[4] + fi->bh - 1) / fi->bh, wb = ((uint32_t)rg[3] + fi->bw - 1) / fi->bw;
-    uint32_t out_bpb = fi->bpb == 3 ? 4 : fi->bpb;
+    uint32_t out_bpb = b->wide ? 8 : fi->bpb == 3 ? 4 : fi->bpb;  // (wide: RGBA8 texels widened to RGBA16)
     uint32_t nz = (uint32_t)rg[5];
     if (!guest_range_ok(src, img * nz)) return;
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
-    uint64_t out_row = (uint64_t)wb * out_bpb;
-    VkSpan s = vk_transient(out_row * hb * nz, 16);
-    for (uint32_t z = 0; z < nz; z++)
+    bool decode = vk_tex_decoded(b);  // (blocks the GPU can't read: decoded texels, the region's size)
+    uint64_t out_row = decode ? (uint64_t)rg[3] * vk_tex_texel_size(b) : (uint64_t)wb * out_bpb;
+    VkSpan s = vk_transient(out_row * (decode ? (uint32_t)rg[4] : hb) * nz, 16);
+    uint8_t *blocks = decode ? malloc((uint64_t)wb * fi->bpb * hb) : NULL;
+    for (uint32_t z = 0; z < nz; z++) {
+        if (decode) {
+            for (uint32_t y = 0; y < hb; y++)
+                memcpy(blocks + (uint64_t)y * wb * fi->bpb, G2H((uint32_t)(src + (uint64_t)z * img + (uint64_t)y * row)), (uint64_t)wb * fi->bpb);
+            vk_tex_decode(b, blocks, (uint32_t)rg[3], (uint32_t)rg[4], (uint8_t *)s.ptr + (uint64_t)z * rg[4] * out_row);
+            continue;
+        }
         for (uint32_t y = 0; y < hb; y++) {
             const uint8_t *sr = (const uint8_t *)G2H((uint32_t)(src + (uint64_t)z * img + (uint64_t)y * row));
             uint8_t *dr = (uint8_t *)s.ptr + ((uint64_t)z * hb + y) * out_row;
             if (out_bpb == fi->bpb) memcpy(dr, sr, out_row);
+            else if (b->wide) for (uint32_t x = 0; x < wb * 4; x++) ((uint16_t *)dr)[x] = (uint16_t)(sr[x] * 257);
             else for (uint32_t x = 0; x < wb; x++) { memcpy(dr + x * 4, sr + x * 3, 3); dr[x * 4 + 3] = 255; }
         }
-    VkBufferImageCopy c = {.bufferOffset = s.off, .bufferRowLength = wb * fi->bw, .bufferImageHeight = hb * fi->bh,
+    }
+    free(blocks);
+    VkBufferImageCopy c = {.bufferOffset = s.off, .bufferRowLength = decode ? (uint32_t)rg[3] : wb * fi->bw,
+                           .bufferImageHeight = decode ? (uint32_t)rg[4] : hb * fi->bh,
                            .imageSubresource = {b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect,
                                                 (uint32_t)level, array ? (uint32_t)rg[2] : 0, array ? nz : 1},
                            .imageOffset = {rg[0], rg[1], array ? 0 : rg[2]},
@@ -3105,7 +4199,7 @@ static void copy_texture_to_buffer(const TexRef *src, uint64_t dst) {
     if (!guest_range_ok(dst, total)) return;
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
-    VkSpan out = vk_readback(total);
+    VkSpan out = vk_readback(b->wide ? total * 2 : total);  // (wide: RGBA16 read back, narrowed to the guest's RGBA8)
     VkBufferImageCopy c = {.bufferOffset = out.off, .bufferRowLength = (uint32_t)(row / fi->bpb) * fi->bw,
                            .bufferImageHeight = (uint32_t)(img / row) * fi->bh,
                            .imageSubresource = {b->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : b->aspect,
@@ -3115,7 +4209,10 @@ static void copy_texture_to_buffer(const TexRef *src, uint64_t dst) {
     vkCmdCopyImageToBuffer(cb, b->image, VK_IMAGE_LAYOUT_GENERAL, out.buf, 1, &c);
     renderer_submit();  // the CPU may read the result right after the fence
     vk_wait_seq(submit_seq);
-    memcpy(G2H((uint32_t)dst), out.ptr, total);
+    if (b->wide) {
+        uint8_t *d = (uint8_t *)G2H((uint32_t)dst);
+        for (uint64_t i = 0; i < total; i++) d[i] = (uint8_t)((((const uint16_t *)out.ptr)[i] + 128) / 257);
+    } else memcpy(G2H((uint32_t)dst), out.ptr, total);
 }
 
 static void copy_texture(const TexRef *src, const TexRef *dst, uint64_t flags) {
@@ -3436,6 +4533,7 @@ static void exec_list(uint64_t handle, int depth) {
 
 void backend_execute(uint64_t handle) {
     vk_lock();
+    plist_drain();  // (the pipeline list's programs the prewarm met)
     uint64_t t0 = plat_now_ns();
     exec_list(handle, 0);
     stat_exec_ns += plat_now_ns() - t0;
@@ -3468,11 +4566,13 @@ void backend_execute(uint64_t handle) {
             double lat = ln ? atomic_exchange(&stat_lat_ns, 0) / 1e6 / ln : 0, lmax = atomic_exchange(&stat_lat_max, 0) / 1e6;
             LOG("[vk] 2s builds: %llu programs from the cache | skipped %llu (program %llu, pipeline %llu) in %llu frames | waited %.0f ms in %llu waits, %llu "
                 "ready in time | translate %llu x %.1f ms (max %.0f), spirv %llu x %.1f (max %.0f), pipeline %llu x %.1f "
-                "(max %.0f) | needed -> ready %.0f ms avg, %.0f max | slowest frame %.1f ms\n",
+                "(max %.0f) | needed -> ready %.0f ms avg, %.0f max | slowest frame %.1f ms | prewarm %llu new, %llu cached, %llu queued\n",
                 (unsigned long long)stat_prog_cached, (unsigned long long)stat_skipped, (unsigned long long)stat_skip_prog,
                 (unsigned long long)stat_skip_pipe, (unsigned long long)stat_skip_frames, stat_waited_ns / 1e6, (unsigned long long)stat_waits,
                 (unsigned long long)stat_rescued, (unsigned long long)n[0], ms[0], mx[0], (unsigned long long)n[1], ms[1],
-                mx[1], (unsigned long long)n[2], ms[2], mx[2], lat, lmax, stat_frame_max / 1e6);
+                mx[1], (unsigned long long)n[2], ms[2], mx[2], lat, lmax, stat_frame_max / 1e6,
+                (unsigned long long)atomic_exchange(&stat_pw_new, 0), (unsigned long long)atomic_exchange(&stat_pw_known, 0),
+                (unsigned long long)atomic_load(&stat_pw_left));
         }
         stat_prog_cached = stat_skip_prog = stat_skip_pipe = stat_skip_frames = stat_waited_ns = stat_waits = stat_rescued = stat_frame_max = 0;
         stat_draws = stat_skipped = stat_passes = stat_dispatches = stat_snapshots = 0;

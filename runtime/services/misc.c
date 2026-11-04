@@ -79,17 +79,13 @@ static void pctl_service(Service *s, IpcReq *req, IpcResp *resp) {
     case 1031: case 1035: case 1018: OUT(uint8_t, 0) = 0; resp_size(resp, 1); break;  // restrictions off
     case 1032: OUT(uint32_t, 0) = 0; resp_size(resp, 4); break;
     default: {
-        // The game polls some of these every frame (e.g. cmd 1001); log each distinct cmd once so the log stays readable.
-        static uint32_t seen[64];
-        static int n_seen;
-        bool known = false;
-        for (int i = 0; i < n_seen; i++) if (seen[i] == req->cmd) { known = true; break; }
-        if (!known) {
-            LOG("[pctl] IParentalControlService cmd %u (ok)\n", req->cmd);
-            if (n_seen < 64) seen[n_seen++] = req->cmd;
+        // (logged once per command: the game asks 1001, CheckFreeCommunicationPermission, many times a second online)
+        static uint8_t seen[4096 / 8];
+        if (req->cmd >= 4096 || !(seen[req->cmd / 8] & (1u << (req->cmd % 8)))) {
+            if (req->cmd < 4096) seen[req->cmd / 8] |= (uint8_t)(1u << (req->cmd % 8));
+            LOG("[pctl] IParentalControlService cmd %u (ok; logged once)\n", req->cmd);
         }
         resp_size(resp, 0x10);
-        break;
     }
     }
 }

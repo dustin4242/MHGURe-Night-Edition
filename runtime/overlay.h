@@ -16,6 +16,12 @@ extern "C" {
 void overlay_init(const char *font_path, float font_size, int menu_key);
 bool overlay_enabled(void);
 bool overlay_menu_open(void);
+bool overlay_wants_text(void);  // a text field of the open menu (a Forge plugin's) has the focus
+void overlay_request_close(void); // Close / Alt+F4 routes to controller confirmation inside settings.
+void overlay_face_positions(const int positions[4]);
+int overlay_face_position(int semantic); // A, B, X, Y -> physical south/east/west/north.
+// Any thread: a notice shown over the game for a few seconds (title on its own line; the latest replaces any other).
+void overlay_notice(const char *title, const char *text);
 
 // Host main thread: an event for ImGui while the menu is open (true: taken, not for the game) - and the menu key.
 bool overlay_event(const SDL_Event *e);
