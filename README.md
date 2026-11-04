@@ -55,7 +55,7 @@ Read [armor-class.md](docs/research/armor-class.md) if you want to dig in deeper
 
 ### Options menu
 
-The Options screen from the pause menu is one long list of 27 entries spread over several pages. This fork compacts it into a single page of categories, the way the newer Monster Hunter titles lay their settings out: **Gameplay**, **Audio**, **Controls**, **Graphics**, **Multiplayer**, then **Default Settings** and **Reset All Settings**. Each category opens its own submenu, the help box under the list describes whatever is highlighted, and every stock row still edits the same setting as before, only the way to reach it changed.
+The Options screen from the pause menu is one long list of 27 entries spread over several pages. This fork compacts it into a single page of categories, how modern Monster Hunter games lay their settings out: **Gameplay**, **Audio**, **Controls**, **Graphics**, **Multiplayer**, then **Default Settings** and **Reset All Settings**. Each category opens its own submenu.
 
 ![The compact Options list: Gameplay, Audio, Controls, Graphics, Multiplayer, Default Settings and Reset All Settings](docs/images/options-menu.jpg)
 
@@ -66,8 +66,6 @@ The Options screen from the pause menu is one long list of 27 entries spread ove
 ![The Graphics page: Display, FXAA, MSAA, FSR, FSR Quality, FSR Sharpness and Shader Prewarm](docs/images/options-graphics.jpg)
 
 *The Graphics page. These are the same keys as `[Anti-aliasing]`, `[Upscaler]` and `[Display]` in `mhgurecomp.ini`, and changing one writes it back there. The rows the renderer builds at start-up (resolution, aspect ratio, FSR, Shader Prewarm) say so and take effect on the next start. FSR 4 needs an AMD RDNA 4 card and the FSR 4 build: [FSR4-PORT.md](docs/FSR4-PORT.md).*
-
-Gameplay also gains the HD UI and controller **Icons** rows when the Pixel Pack 4 textures are installed, and Controls gathers all 19 controller entries on one submenu.
 
 Multiplayer keeps hosting in the same window:
 
