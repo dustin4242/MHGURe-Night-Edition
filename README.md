@@ -75,7 +75,7 @@ Multiplayer keeps hosting in the same window:
 
 *Type an address on the IP row, then Connect; that address is used for this session's Local Wireless scan and is not written to the ini.*
 
-A few of the fork's own rows still show placeholder help text in the box under the list, like "Custom Graphics Description"; the stock rows show the game's own descriptions. Everything else about the menu is the original game's.
+I still need to write custom descriptions for a lot of these menu items, but that will take some time so for now I'm going to continue working on other features first.
 
 ### Runs without AVX2
 
