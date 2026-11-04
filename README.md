@@ -11,7 +11,7 @@ This section is specific to this fork. Everything else in here is MHGURecomp's b
 
 ### Armor for either weapon class
 
-The game usually splits armor into Blademaster and Gunner sets and only lets you equip the half that matches the weapon, the Item Box shows the other half as unusable. This fork removes that restriction. With a Blademaster weapon equipped you can equip and wear Gunner armor, and with a Gunner weapon, Blademaster armor, from the Item Box's *Select Equip.* screens.
+The game usually splits armor into Blademaster and Gunner sets and only lets you equip the half that matches the weapon, the Item Box shows the other half as unusable. This fork removes that restriction. With a Blademaster weapon equipped you can equip and wear Gunner armor, and with a Gunner weapon, Blademaster armor, from the Equipment Select section of the Item Box.
 
 ![The Gunner-only Jaggi Guards selectable from the Item Box's armor list while the Blademaster Petrified Hunting Horn is equipped](docs/images/armor-from-either-class.png)
 
