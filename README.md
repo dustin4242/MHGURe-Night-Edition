@@ -34,6 +34,17 @@ If your CPU does have AVX2, the port uses it by itself.
 
 Setting `MHGU_NO_AVX2=1` before starting forces the old-CPU path, if you want to check it on a newer machine.
 
+### Pixel Pack 4 support
+
+Pixel Pack 4 is a community HD texture pack for the game. You don't install it as a mod here: put the contents of the unpacked manual install pack in `addons\pp4\` in the repository before building, and `make` merges its textures into `data\romfs`. The game then loads them the same way it loads its own files, so nothing extra ends up in your game folder.
+
+With the pack built in, Options -> Gameplay has two extra rows:
+
+- `Icons`: the button prompts, Switch / Xbox / Playstation.
+- `HD UI`: the HD menus and HUD, on or off.
+
+Both switch live while you play. Without the pack neither row shows up and the game looks exactly as it did before. The build section below covers the pack's options and how to merge again after changing it.
+
 ## Requirements
 
 - OS: Windows 10/11 64-bit, or Linux
