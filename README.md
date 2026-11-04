@@ -307,7 +307,9 @@ The most used ones are also in `mhgurecomp.ini` before you start: resolution, MS
   340 MB). `pipelines.list` next to the exe lists the shader combinations the common areas use; with the prewarm on,
   they are prepared in the background as well, so entering those areas for the first time no longer shows surfaces
   briefly black. Only made with MSAA Off; the rest is still prepared the first time it is needed. Recording more of
-  it: [docs/PIPELINE_LIST.md](docs/PIPELINE_LIST.md).
+  it: [docs/PIPELINE_LIST.md](docs/PIPELINE_LIST.md). `Precompile` (Off / On) starts the game just far enough to
+  translate every shader and build the caches in `cache\`, then exits without playing: the same as starting
+  `mhgurecomp --prewarm`, for preparing a machine or a release without anyone playing.
 - `[UI]`: `HDUi` (On / Off: the pp4 HD UI textures, also Options -> Gameplay -> HD UI; the row is omitted without
   the pack)
 - `[Controls]`: `FaceButtons` (Position / Label), `Icons` (Switch / Xbox / Playstation: the pp4 button prompts, also

@@ -285,9 +285,31 @@ void ui_toggle_fullscreen(void) {
     set_fullscreen(!(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
 }
 
+// --prewarm / [Performance] Precompile (runtime/main.c, exec.c): the renderer translates the game's programs as it
+// presents; this waits for that batch, gives the cache writes a moment, then exits without anyone playing.
+extern int g_precompile;
+bool vk_prewarm_finished(void);
+
 int ui_run(void) {
     int background = config_live_background_input();
     for (;;) {
+        if (g_precompile) {
+            static uint64_t t0, done_ns;
+            uint64_t now = plat_now_ns();
+            if (!t0) t0 = now;
+            if (!done_ns && vk_prewarm_finished()) {
+                done_ns = now;
+                LOG("[precompile] the shader caches are ready; exiting in 2 s (cache/)\n");
+            }
+            if (done_ns && now - done_ns >= 2000000000ull) {
+                LOG("[precompile] done\n");
+                exit(0);
+            }
+            if (!done_ns && now - t0 >= 180000000000ull) {  // (3 minutes: no programs were made)
+                LOG("[precompile] the prewarm did not start: nothing to precompile\n");
+                exit(0);
+            }
+        }
         int wanted_background = config_live_background_input();
         if (wanted_background != background) {
             SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, wanted_background ? "1" : "0");

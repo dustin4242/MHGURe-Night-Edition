@@ -7,6 +7,7 @@
 #include <dirent.h>
 #include <strings.h>
 
+#include "config.h"
 #include "camera_jitter.h"
 #include "gamelib.h"
 #include "hle.h"
@@ -209,8 +210,11 @@ bool android_offer_import(const char *msg, char *data, size_t size);  // (runtim
 void android_game_folder(char *out, size_t size);
 #endif
 
+int g_precompile;  // --prewarm / [Performance] Precompile: fill the shader caches, then exit (ui.c waits for it)
+
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
+        if (!strcmp(argv[i], "--prewarm") || !strcmp(argv[i], "--precompile")) { g_precompile = 1; continue; }
         if (!strncmp(argv[i], "--recomp-wait=", 14)) {
             char *end; unsigned long pid = strtoul(argv[i] + 14, &end, 10);
             if (!pid || *end || !plat_wait_process(pid)) return 1;
@@ -260,6 +264,13 @@ int main(int argc, char **argv) {
     { void fnprof_init(void); fnprof_init(); }
     crash_handler_install();
     ui_init();
+    bool prewarm_flag = g_precompile != 0;
+    if (g_config.precompile) g_precompile = 1;  // ([Performance] Precompile: the same as --prewarm)
+    if (g_precompile) {
+        g_config.shader_prewarm = 1;  // (the caches are the point: whatever the ini or MHGU_NO_PREWARM says)
+        LOG("[precompile] %s: translating the game's shaders into cache/, then exiting\n",
+            prewarm_flag ? "--prewarm" : "[Performance] Precompile");
+    }
     boot(g_game_dir);
     return ui_run();
 }

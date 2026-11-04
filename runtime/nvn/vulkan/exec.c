@@ -2496,9 +2496,12 @@ typedef struct { uint64_t code[2], cmax[2]; } PrewarmReq;
 static void plist_seen(const uint64_t code[2], const uint64_t cmax[2], const uint64_t chash[2]);  // (pipelines.list)
 static uint64_t pw_t0;
 static _Atomic uint64_t pw_total_new, pw_total_known;
+static _Atomic int pw_finished;  // the start-up batch is done (--prewarm waits for it: ui.c)
+bool vk_prewarm_finished(void) { return atomic_load(&pw_finished) != 0; }
 
 static void prewarm_done(void) {
     if (atomic_fetch_sub(&stat_pw_left, 1) != 1) return;
+    atomic_store(&pw_finished, 1);
     LOG("[shader] prewarm: %llu programs translated, %llu already cached, %llu failed, %.1f s after the first one\n",
         (unsigned long long)atomic_load(&pw_total_new), (unsigned long long)atomic_load(&pw_total_known),
         (unsigned long long)atomic_load(&stat_pw_failed), (plat_now_ns() - pw_t0) / 1e9);
@@ -2565,7 +2568,10 @@ static void prewarm_translate(void *arg) {
 // (game thread) nvnProgramSetShaders
 void backend_program_created(const NvnProgram *np) {
     static int on = -1;
-    if (on < 0) on = g_config.shader_prewarm && !getenv("MHGU_NO_PREWARM") && !sync_shaders();
+    if (on < 0) {
+        extern int g_precompile;
+        on = (g_precompile || (g_config.shader_prewarm && !getenv("MHGU_NO_PREWARM"))) && !sync_shaders();
+    }
     if (!on || !(np->stage_mask & 1) || !(np->stage_mask & 2)) return;
     PrewarmReq *r = malloc(sizeof *r);
     for (int i = 0; i < 2; i++) {

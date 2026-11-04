@@ -74,7 +74,8 @@
 #define ROW_FSR      3
 #define ROW_FSRQ     4
 #define ROW_SHARP    5
-#define GFX_ROWS     6u
+#define ROW_PREWARM  6
+#define GFX_ROWS     7u
 
 // Display submenu rows (its own one-page view).
 #define DISP_ASPECT  0
@@ -93,9 +94,10 @@ static const char *const g_row_texts[GFX_ROWS][5] = {
     {"Off", "FSR 3", "FSR 4", NULL, NULL}, // FSR
     {NULL, NULL, NULL, NULL, NULL},        // FSR Quality: the current label goes into two slots
     {NULL, NULL, NULL, NULL, NULL},        // FSR Sharpness: the current value goes into two slots
+    {"Off", "On", NULL, NULL, NULL},       // Shader Prewarm
 };
 static const char *const g_row_names[GFX_ROWS] = {"Display", "FXAA", "MSAA", "FSR", "FSR Quality",
-                                                  "FSR Sharpness"};
+                                                  "FSR Sharpness", "Shader Prewarm"};
 static const char *const g_disp_names[DISP_ROWS] = {"Aspect Ratio", "Resolution", "Framerate", "VSync"};
 // Aspect ratios and vertical resolutions for the Display submenu. The width is computed from
 // the two: width = round(height * ratio), made even.
@@ -639,7 +641,7 @@ static uint32_t opt_flat(uint32_t w)
 // custom Graphics/Display rows. These are fillers; edit the strings to change the help box text.
 enum {
     CH_MAIN_AUDIO, CH_MAIN_GAMEPLAY, CH_MAIN_CTRL, CH_MAIN_GFX, CH_MAIN_ICONS, CH_MAIN_MP,
-    CH_GFX_DISPLAY, CH_GFX_FXAA, CH_GFX_MSAA, CH_GFX_FSR, CH_GFX_FSRQ, CH_GFX_SHARP,
+    CH_GFX_DISPLAY, CH_GFX_FXAA, CH_GFX_MSAA, CH_GFX_FSR, CH_GFX_FSRQ, CH_GFX_SHARP, CH_GFX_PREWARM,
     CH_DSP_ASPECT, CH_DSP_RES, CH_DSP_FPS, CH_DSP_VSYNC, CH_GAMEPLAY_HDUI, CH_COUNT
 };
 static const char *const g_custom_help[CH_COUNT] = {
@@ -655,6 +657,7 @@ static const char *const g_custom_help[CH_COUNT] = {
     "Custom FSR Description",
     "Custom FSR Quality Description",
     "Custom FSR Sharpness Description",
+    "Translate the game's shaders at start-up so they are ready when first drawn (takes effect at the next start).",
     "Custom Aspect Ratio Description",
     "Custom Resolution Description",
     "Custom Framerate Description",
@@ -698,7 +701,7 @@ static int custom_help_index(uint32_t w)
     }
     if (g_gfx_menu) {
         uint32_t r = LD8(PW_ROW(w));
-        return r < 6u ? CH_GFX_DISPLAY + (int)r : -1;
+        return r < GFX_ROWS ? CH_GFX_DISPLAY + (int)r : -1;
     }
     if (g_sub == SUB_GAMEPLAY) {
         uint32_t f = opt_flat(w);
@@ -1096,6 +1099,7 @@ static void opt_value(Cpu *c)
             case ROW_FSR: c->r[0] = (uint32_t)fsr_sel(); break;
             case ROW_FSRQ: c->r[0] = (uint32_t)g_fsrq_disp; break;
             case ROW_SHARP: c->r[0] = (uint32_t)g_sharp_disp; break;
+            case ROW_PREWARM: c->r[0] = g_config.shader_prewarm ? 1u : 0u; break;
             default: c->r[0] = g_config.fxaa ? 1u : 0u; break;
             }
             return;
@@ -1649,6 +1653,11 @@ void pausepages_input(uint64_t *buttons)
             LOG("[pausepages] FSR Sharpness -> %s\n", sharp_text());
             break;
         }
+        case ROW_PREWARM:
+            g_config.shader_prewarm = !g_config.shader_prewarm;
+            config_save_key("ShaderPrewarm", g_config.shader_prewarm ? "On" : "Off");
+            LOG("[pausepages] Shader Prewarm -> %s (next start)\n", g_config.shader_prewarm ? "On" : "Off");
+            break;
         default:
             g_config.fxaa = !g_config.fxaa;
             config_save_key("FXAA", g_config.fxaa ? "On" : "Off");
