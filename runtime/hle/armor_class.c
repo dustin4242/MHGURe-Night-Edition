@@ -39,24 +39,28 @@ static uint16_t current_weapon_type(void) {
     if (sp < 0x08000000u || sp >= 0xa0000000u) return 0;
     uint32_t weapon = sp + PLAYER_WEAPON;
     if (LD32(weapon) != ITEM_PTR) return 0;
-    uint16_t type = LD16(weapon + 4);
+    // The entry's +4 word packs the equipment type into the low five bits -- bits 5..9 carry a second field (it is 2
+    // for the Petrified Horn, 0 for the Bone Horn, so it is not part of the type).  The game itself does exactly this
+    // mask before it calls f_33c208 (see f_7b973c: `LD16(item+4) & 0x1f`), so the same read is used here; without it
+    // the Petrified Horn reads as 0x53 = 83, falls outside 1..21 and the class lookup never happens.
+    uint16_t type = (uint16_t)(LD16(weapon + 4) & 0x1fu);
     if (type >= 1 && type <= 21) return type;
-    // Outside the weapon categories: normally the sheathed-weapon placeholder (type 83).  weapon_class() keeps the
-    // last known class across these, so this only logs under MHGU_ARMOR_DEBUG to catch any real unrecognised weapon.
+    // Outside the weapon categories: weapon_class() keeps the last known class across these, so this only logs under
+    // MHGU_ARMOR_DEBUG to catch any real unrecognised weapon.
     static int dbg = -1;
     if (dbg < 0) dbg = getenv("MHGU_ARMOR_DEBUG") != NULL;
     if (dbg && LD32(weapon + 4) != g_last_weapon_raw) {
         g_last_weapon_raw = LD32(weapon + 4);
         LOG("[armor] unknown weapon entry: +4=%08x (type=%u id=%u) +8=%08x +c=%08x\n",
-            LD32(weapon + 4), LD16(weapon + 4), LD16(weapon + 6), LD32(weapon + 8), LD32(weapon + 0xc));
+            LD32(weapon + 4), type, LD16(weapon + 6), LD32(weapon + 8), LD32(weapon + 0xc));
     }
     return 0;
 }
 
-// Blademaster/gunner class of the weapon the hunter is using.  +0x94 is the *drawn* item, which reads as a
-// placeholder (type 83) while the weapon is sheathed (e.g. inside the item box), so current_weapon_type() returns 0
-// at those moments.  Remember the class from the last real weapon and keep using it while the drawn entry is a
-// placeholder, so the armour swap is not skipped just because the weapon is temporarily not in hand.
+// Blademaster/gunner class of the weapon the hunter is using.  +0x94 is the entry of the equipped weapon and keeps
+// that weapon even while it is sheathed in the item box (it is not a placeholder), so the class is known from the
+// first lookup.  Only type 0 -- an empty slot or a word whose type bits are clear -- is unknown, and there the last
+// known class is kept, so the armour swap is not skipped by a momentary gap.
 static uint8_t g_weapon_class;  // 0 unknown, 1 blademaster, 2 gunner
 
 static uint8_t weapon_class(void) {

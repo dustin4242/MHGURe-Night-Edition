@@ -5,18 +5,18 @@ regardless of weapon, while the armour's *stats* follow the class (Blademaster /
 the equipped weapon. Appearance (model / name / colour / transmog) stays exactly as the
 player set it.
 
-> **Status, 2026-11-03:** the feature is implemented and class-incompatible pieces stay
-> equipped (per-frame restore), but the caller analysis in section 3 shows that the lookup
-> rewrite currently reaches only the transmog/model resolvers, not the stat calculation, which
-> resolves through `f_33f03c`. Whether the derived defence and skills therefore follow the
-> weapon class is open; `MHGU_ARMOR_DEBUG=1` (section 6) is the test that settles it.
+> **Status, 2026-11-04: working, verified live in both directions.** With a Petrified Hunting
+> Horn equipped, both the Gunner-only *Jaggi Guards* (arms, series 24) and the Blademaster
+> *Jaggi Vambraces* (arms, series 23) can be equipped from the item box, and each one really
+> lands in `sPlayer` (`arms = 0x00180003` / `0x00170003`) with the other four armour pieces
+> untouched. The root cause was **not** the caller gate and **not** a "sheathed placeholder":
+> it was a missing 5-bit mask when reading the weapon category out of the entry's `+4` word —
+> see section 4, **"Root cause and fix"**. The earlier 2026-11-03 census in section 6 that
+> concluded "the alias never fires" was taken before that mask was added.
 >
-> A full live run (boot → save → village → house → item box → *Manage Equipment → Select
-> Equip.*) was performed on 2026-11-03 and is recorded in section 6, **"Live caller census"**.
-> Its result: the alias never fired (`swapped=00000000` on all 13 log lines). Two independent
-> causes were confirmed — the weapon was never drawn, so the class cache stayed 0 (section 4),
-> and every lookup carrying a real armour id came from the out-of-band identity/model path
-> (section 3). The feature is therefore inert in exactly the flow the report describes.
+> Known limit that remains open: the alias rewrites the *equipment-data lookup*, so the equip
+> gate accepts the piece; whether the derived defence/skills of a swapped piece follow the
+> weapon class resolves through `f_33f03c` (sections 3 and 8) and is still unmeasured.
 
 This covers the three files that make the feature work:
 
@@ -169,7 +169,14 @@ The equipment/stat code *does* reach `f_33c208`, but only at **depth 2 through `
 ```
 
 At the inner call `c->r[14]` is inside `f_33f03c`, so `dispatch_function_at` returns `0x33f03c`
-— **outside** the band, so the rewrite never fires. This holds for all 59 in-band functions that
+— **outside** the band.
+
+> **Corrected 2026-11-04:** this static census under-counts. The live census (section 6) shows
+> an in-band, *id-carrying* lookup from `0x2db66c` (`type=3 id=24 in_range=1 swapped=00000017`),
+> which is the equip gate and the reason the feature works. `f_2db66c` evidently also calls the
+> lookup directly (or through a path the extraction attributes elsewhere), so treat the
+> "exactly three in-band sites" figure as a lower bound and re-derive it from the runtime census
+> after any rebuild rather than from `grep` alone. This holds for all 59 in-band functions that
 reach the lookup that way (`0x2db028`, `0x2db66c`, `0x2dbd2c`, `0x2dbe74`, `0x2dbf78`,
 `0x2ddd48`, …), and `f_2db028`'s own body confirms the shape: resolve `entry -> object` through
 `f_33f03c`, then read a per-piece value from `vtable[+0x74]`.
@@ -246,53 +253,74 @@ Equipment **entry** layout (44 bytes / 11 words):
 
 `armor_entry()` additionally requires `type == slot_index + 1` (head=1 … legs=5) and `id != 0`.
 
-### Weapon categories (`type` field, low 16 bits of `+4`)
+### Weapon categories (`type` field — **5 bits**, not 16)
 
-Confirmed by poking values into `+0x94` and reading what `current_weapon_type()` reports:
+The `type` field is only the **low five bits** of the `+4` word; bits 5..9 hold a second field
+(the weapon's level-ish value: `2` for the Petrified Horn, `0` for the Bone Horn, `0` for the
+Arbalest). The game itself masks before it asks for equipment data — `f_7b973c` calls
+`f_33c208(mgr, LD16(item+4) & 0x1f, LD16(item+6))` and `f_7b91e0` tests `LD8(item+4) & 0x1f` —
+so anything reading the category must mask the same way.
 
-| type | Weapon | Class |
-|------|--------|-------|
-| 7  | Great Sword | Blademaster |
-| 11 | bowgun family | **Gunner** |
-| 19 | Hunting Horn | Blademaster |
-| 83 | sheathed/none placeholder (`id=1`) | not a weapon |
+| `+4` word | weapon | type (`& 0x1f`) | field 2 (`>>5 & 0x1f`) | Class |
+|-----------|--------|-----------------|------------------------|-------|
+| `0x001a0007` | Bone Cleaver | 7 | 0 | Blademaster |
+| `0x000f000b` | Arbalest (LBG) | 11 | 0 | **Gunner** |
+| `0x00010053` | Petrified Hunting Horn | **19** | 2 | Blademaster |
+| `0x00140013` | Bone Horn | 19 | 0 | Blademaster |
 
 `is_gunner_type()` treats **11, 12, 13, 17** as gunner (light/heavy bowgun, bow); everything
-else in `1..21` is blademaster.
+else in `1..21` is blademaster. Note `0x00010053` read *unmasked* is `0x53` = 83 — which is
+exactly the value that used to be mistaken for a "sheathed placeholder".
 
-### Gotcha: `+0x94` is the *drawn* item, not the *equipped* weapon
+### Root cause and fix (2026-11-04)
 
-While the weapon is **sheathed** (e.g. inside the item box), the `+0x94` entry reads the
-placeholder `+4 = 0x00010053` (`type=83, id=1`). This is what the very first bug report hit:
-the user had a level-3 **Petrified Hunting Horn** (category 19 = blademaster, upgrades keep
-the category and only raise the id), but while browsing the box the drawn entry was the
-placeholder, so `current_weapon_type()` returned 0 and the whole swap was skipped — the
-Gunner-only Jaggi Guards kept their own class/defence and couldn't be equipped.
+`current_weapon_type()` used to do
 
-### The fix — cached weapon class (`weapon_class()`)
+```c
+uint16_t type = LD16(weapon + 4);          // wrong: 0x0053 = 83 for the Petrified Horn
+if (type >= 1 && type <= 21) return type;
+```
+
+so for the report's Petrified Hunting Horn (`+4 = 0x00010053`) it returned **83**, the `1..21`
+guard rejected it, `weapon_class()` left `g_weapon_class == 0`, `equip_data()` therefore never
+aliased, and the Gunner-only Jaggi Guards were resolved as their real Gunner row and refused by
+the equip gate. There was never a "placeholder" state: `+0x94` always holds the *equipped*
+weapon entry, it just needed masking. The fix is one line:
+
+```c
+uint16_t type = (uint16_t)(LD16(weapon + 4) & 0x1fu);   // mask first, then range-check
+```
+
+with the range check `if (type >= 1 && type <= 21)` unchanged. Nothing else changed: the entry
+is never written, the save is untouched, and the swap stays unconditional (no ini key).
+
+Evidence from the live run with the Petrified Horn equipped (log line from the in-band equip
+gate, caller `0x2db66c`):
+
+```
+[armor] weapon type=19 class=blademaster
+[armor] lookup caller=002db66c type=3 id=24 in_range=1 swapped=00000017
+```
+
+Before the mask the same caller logged `swapped=00000000` — i.e. series 24 (Gunner Guards) was
+handed to the gate as itself and rejected.
+
+### The class cache (`weapon_class()`) — kept, but no longer load-bearing
 
 ```c
 static uint8_t g_weapon_class;      // 0 unknown, 1 blademaster, 2 gunner
 static uint8_t weapon_class(void) {
     uint16_t type = current_weapon_type();
     if (type) g_weapon_class = is_gunner_type(type) ? 2 : 1;
-    return g_weapon_class;          // keeps last known class while drawn entry is a placeholder
+    return g_weapon_class;          // keeps the last known class over a transient type 0
 }
 ```
 
-Once a real weapon has been read (e.g. the Horn drawn in the field), the class is remembered
-and reused during sheathed/placeholder moments, so the armour swap no longer depends on the
-weapon being physically in hand at lookup time. A level-3 weapon is recognized the same as
-its base because only the *id* changes, not the category.
-
-**Live caveat — the cache does not fix the report flow (verified 2026-11-03).** The cache only
-fills if a real weapon entry is ever *seen*. A run that boots, loads the save and walks straight
-into the item box never reads a weapon category at all: the only weapon line in the whole log is
-`[armor] unknown weapon entry: +4=00010053 (type=83 id=1)`, so `weapon_class()` returns 0 for the
-entire session and `equip_data()` skips the alias (`if (want && ...)`). The cache therefore helps
-only after the hunter has drawn the weapon once in the field; it does not by itself make the
-"load save → village → item box" flow work. The real source of truth is the *equipped* weapon
-record, not the drawn-item slot (see section 8).
+With the mask in place a real category is read on the very first lookup (including the
+"load save → village → item box" flow), so the cache is only a guard against a momentary
+`type == 0` (empty slot / entry not yet populated) inverting the decision mid-frame. A
+level-3 weapon is recognized the same as its base because the upgrade only raises the *id*,
+not the category.
 
 ---
 
@@ -310,7 +338,7 @@ changes. `armor_class_frame()` puts those pieces back so appearance + transmog a
 - `clear_auto_tm()` zeroes a transmog field (`+8`) if it equals the counterpart id, so the
   alias in `equip_data` doesn't double-apply the swap to the appearance.
 
-Class is taken from `weapon_class()` (cached), so maintenance is stable while sheathed.
+Class comes from `weapon_class()`, which is stable even if a lookup lands while the weapon entry momentarily reads `type == 0`.
 
 ---
 
@@ -375,6 +403,42 @@ What the run establishes:
   set (head 23, chest 3, arms 23, waist 3, legs 3) with a level-3 *Petrified Horn*. Demonstrating
   the alias live needs either purchased armour or guest-memory pokes.
 
+> **Superseded (2026-11-04).** The census above was taken *before* the `& 0x1f` mask
+> (section 4) existed, so its "the alias never fired" conclusion describes the bug, not the
+> design. The root cause was the unmasked category (`0x0053` = 83, rejected by the `1..21`
+> guard) which left the class cache at 0 — not the caller layout.
+
+### Live verification, both classes (2026-11-04)
+
+Same route as above, hidden run with `MHGU_ARMOR_DEBUG=1`, driven entirely over the control
+pipe (`MHGU_CONTROL`), weapon = **Petrified Hunting Horn** (equipped, `+4 = 0x00010053`), box
+built by the clean save backup so both arms pieces exist: series 23 *Jaggi Vambraces* and
+series 24 *Jaggi Guards*.
+
+| Step | Observed |
+|------|----------|
+| hover the Guards (3/24) | detail panel shows it, no class warning; log `lookup caller=002db66c type=3 id=24 in_range=1 swapped=00000017` |
+| `A` → `A` (*Change equipment?* → Yes) | committed: `memsave 0x199b21a8` → `00180003` (type 3, id 24) |
+| other armour after that equip | head `00170001`, chest `00030002`, waist `00030004`, legs `00030005` — nothing dropped |
+| hover the Vambraces (3/23), `A` → `A` | committed: `00180003` → `00170003` (type 3, id 23) |
+| weapon word after both | `00010053` — still the Petrified Horn |
+
+So each class now equips over the other with the horn in hand, and re-equipping the natural
+class (3/23) is not disturbed by the alias (`cls == want` → no rewrite, `swapped=00000000`).
+
+UI notes for anyone reproducing this with the control pipe:
+
+- The confirm box renders Ⓐ/Ⓑ glyphs for **Yes/No** and the accepted input is **`A` = Yes**;
+  pressing `B` cancels. (An earlier note in this project claiming `Y`/`X` was wrong — the
+  glyph is a circle around a letter, which reads like `Y`/`X` at screenshot scale.)
+- D-pad **right = +1 column, left = −1 column** on the equipment grid, with wrap at the row
+  end; the equipment page is `1 / 10`, eight columns visible. Presses queued while the panel
+  is animating are dropped, so leave ~15–30 frames between them and verify each step by
+  reading the hovered item's name in the bottom-right label / detail panel.
+- Reading the equipped state: the packed word lives at **`entry + 4`** (not `+0`), and the
+  entries sit at `0x199b2150/0x199b217c/0x199b21a8/0x199b21d4/0x199b2200` (head → legs) for
+  the observed player base. `memsave 199b2140 d0` covers all five.
+
 
 ---
 
@@ -386,39 +450,40 @@ The runtime control pipe (`MHGU_CONTROL=ctl.txt`) supports:
 - `find <hexbytes>` — scan committed guest memory for a byte pattern
 
 Poking weapon words into `sPlayer+0x94+4` (`0x199b2128` at the observed base) confirmed the
-weapon-category table above and the sheathed placeholder behaviour.
+weapon-category table above (`0x1a0007`=GS, `0x0f000b`=LBG, `0x010053`=Horn, `0x140013`=Horn)
+and that the entry keeps the equipped weapon while it is sheathed — the "83" seen for the Horn
+is just the unmasked `0x53`, see section 4.
 
 ---
 
 ## 8. Open questions / cautions
 
-- **Scope of the alias (open)**: the gate fires only inside `f_2db0b0` / `f_2db160` /
-  `f_2db210`, i.e. the transmog/model resolvers, and never for the stat-recalculation path,
-  which resolves through `f_33f03c` (see section 3). Whether the hunter's derived defence and
-  skills therefore keep the piece's own class values is the one thing this note cannot settle
-  statically — `MHGU_ARMOR_DEBUG=1` plus a status-screen A/B answers it in one session. If the
-  stat path must be aliased, hook `f_33f03c`; do not widen the caller range, because every
-  identity/name/model lookup goes through it too.
-- **Equip restriction path**: with the alias reaching only the model/transmog path, the "can I
-  equip this?" side is most plausibly carried by the per-frame restore (`armor_class_frame`,
-  which re-writes stripped pieces) plus the cached weapon class, not by the lookup rewrite. If a
-  piece ever fails to equip while its class *is* cached correctly, log with `MHGU_ARMOR_DEBUG=1`
-  and check which callers appear — the census will show whether the restriction path is aliased
-  at all.
-- **The class cache needs a real equipped-weapon source (open, confirmed live)**: because
-  `weapon_class()` only learns from the *drawn* entry, a session that never draws the weapon
-  runs with class 0 and the alias is dead (§4, §6). The equipped weapon record must exist
-  somewhere other than `+0x94`; `f_3449b4` walks a list as `object + index*0x2c + 0x20`
-  (`LD16 & 0x1f` = category) and reads `LD8(object + 0x4d4)`, which is the obvious place to
-  look for it. Until that is found, the feature is a no-op for the reported flow.
-- **Series-id namespace (open, unverified)**: the equipment ids are *per slot* — the hunter's
-  head and arms entries both read `id=23` — while `armor_pairs.h` is indexed by the **global**
-  record number of `armorSeriesData.asd`. Whether the game's per-type tables use the same
-  numbering as the `.asd` record index was not established. If they do not, `armor_series_class[id]`
-  and `pair[id]` read the wrong record and the swap would exchange a piece for an unrelated
-  one. The check once armour exists: equip a known class-split piece, watch for
-  `swapped=0000xxxx`, and confirm the substituted id is that piece's counterpart (§2) and not
-  another slot's record.
+- **Scope of the alias (partly open)**: the gate demonstrably covers the equip decision
+  (`0x2db66c`, section 6) and the transmog/model resolvers (`f_2db0b0` / `f_2db160` /
+  `f_2db210`, section 3). The stat-recalculation path resolves through `f_33f03c`, which is out
+  of band, so whether a swapped piece's derived defence and skills follow the weapon class is
+  still unmeasured — one status-screen A/B with `MHGU_ARMOR_DEBUG=1` settles it. If it has to
+  be aliased, hook `f_33f03c`; do not widen the caller range, because every identity/name/model
+  lookup goes through it too.
+- **Equip restriction path (settled)**: the "can I equip this?" decision *is* carried by the
+  lookup rewrite. With the category masked correctly, the in-band caller `0x2db66c` asks for
+  `type=3 id=24` and receives series 23 (`swapped=00000017`), and the real equip then commits
+  (section 6, "Live verification"). `armor_class_frame`'s restore is a safety net only — in the
+  verified runs it never had to fire.
+- **`+0x94` is the equipped weapon record (settled)**: the earlier belief that a session never
+  drawing the weapon leaves the class at 0 was an artifact of the missing mask — the entry
+  holds `0x00010053` (the Petrified Horn itself) whether the weapon is drawn or sheathed, so
+  the category is known on the first lookup. No second source is needed; the cache in §4 is
+  belt-and-braces for a transient `type == 0`.
+- **Still unmeasured**: whether defence/skill values of a swapped piece follow the weapon class
+  (previous bullet). Everything else in this note is confirmed live.
+- **Series-id namespace (settled for arms)**: the equipment ids are *per slot* (head, chest,
+  arms all use their own numbering) while `armor_pairs.h` is indexed by the **global** record
+  number of `armorSeriesData.asd`. The arms case proves they coincide: id 23 resolves to the
+  Blademaster *Jaggi Vambraces* and id 24 to the Gunner *Jaggi Guards* — the same two records
+  that `armor_pairs.h` pairs (`pair[23]=24`, `pair[24]=23`), both defence 6 — and the live swap
+  `24 -> 23` made the gate accept the real Guards. Other slots were not exercised; if a future
+  piece swaps to an unrelated series, re-check this before touching the pair table.
 - **Caller-range fragility**: the `0x2d0000..0x2e3000` range is tied to the current build's
   `main_012` layout. A rebuilt/updated `mhgugame.so` could move these addresses; the alias
   would silently stop applying. The `[armor] lookup ... in_range=1` lines are the regression
@@ -442,7 +507,7 @@ game calls f_33c208(mgr, type 1..5, id)   |   equip_data hook
    caller in 0x2d0000..0x2e3000?  yes ----+--> want = weapon_class()  (cached weapon class)
                                             if cls[id] && cls[id]!=want: r2 = pair[id]
                                           no  --> leave real row (identity/name/model)
-   (only f_2db0b0 / f_2db160 / f_2db210 match; the 0x2d stat code reaches the lookup through
-    f_33f03c and therefore keeps the real row -- see section 3)
+   (the equip gate 0x2db66c and the model resolvers f_2db0b0/f_2db160/f_2db210 match; the
+    stat code reaches the lookup through f_33f03c and therefore keeps the real row -- §3, §6)
 armor_class_frame()  -> re-equip stripped pieces, fix arms box-link, clear auto-transmog
 ```

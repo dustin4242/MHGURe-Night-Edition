@@ -25,6 +25,7 @@ __pycache__/
 *.rar
 *.zip
 *.7z
+/.idea
 /run2/
 /run3/
 /third_party/ffmpeg/

@@ -1,0 +1,451 @@
+
+[1;36m== 0. checks[0m
+game files: mhgu    jobs: -j12
+
+[1;36m== 3. recompile the game code (make gen)[0m
+cd tools && ../tools/venv/bin/python gen.py sdk ../mhgu/exefs/sdk 0x02400000 ../generated/sdk --hle ../runtime/hle/hle_symbols.txt
+<frozen site>:101: RuntimeWarning: Unexpected value in sys.prefix, expected /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/venv, got /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/../tools/venv
+<frozen site>:101: RuntimeWarning: Unexpected value in sys.exec_prefix, expected /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/venv, got /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/../tools/venv
+sdk: round 1: 28030 functions (+6621)
+sdk: round 2: 28086 functions (+56)
+sdk: round 3: 28089 functions (+3)
+sdk: 21409 boundaries, 28089 functions, 1057106 instructions, 4 rounds, {'unsupported': 43, 'br_dispatch': 7164, 'jumptables': 458, 'computed_goto': 3}, 6s
+  unsupported      21  neon shift
+  unsupported       7  neon 3same
+  unsupported       5  neon 2misc
+  unsupported       4  flag-setting write to pc
+  unsupported       2  uncond
+  unsupported       2  coproc 2
+  unsupported       2  coproc 1
+sdk: progress 245/28089 files 1
+sdk: progress 443/28089 files 2
+sdk: progress 885/28089 files 3
+sdk: progress 1454/28089 files 4
+sdk: progress 1893/28089 files 5
+sdk: progress 1893/28089 files 6
+sdk: progress 1894/28089 files 7
+sdk: progress 2182/28089 files 8
+sdk: progress 2971/28089 files 9
+sdk: progress 3624/28089 files 10
+sdk: progress 4457/28089 files 11
+sdk: progress 5012/28089 files 12
+sdk: progress 5012/28089 files 13
+sdk: progress 5019/28089 files 14
+sdk: progress 5019/28089 files 15
+sdk: progress 5133/28089 files 16
+sdk: progress 5232/28089 files 17
+sdk: progress 5232/28089 files 18
+sdk: progress 5872/28089 files 19
+sdk: progress 6318/28089 files 20
+sdk: progress 6845/28089 files 21
+sdk: progress 7585/28089 files 22
+sdk: progress 8480/28089 files 23
+sdk: progress 9359/28089 files 24
+sdk: progress 10080/28089 files 25
+sdk: progress 10742/28089 files 26
+sdk: progress 10808/28089 files 27
+sdk: progress 10808/28089 files 28
+sdk: progress 11544/28089 files 29
+sdk: progress 11630/28089 files 30
+sdk: progress 11630/28089 files 31
+sdk: progress 11834/28089 files 32
+sdk: progress 11838/28089 files 33
+sdk: progress 11838/28089 files 34
+sdk: progress 11975/28089 files 35
+sdk: progress 11975/28089 files 36
+sdk: progress 12282/28089 files 37
+sdk: progress 13052/28089 files 38
+sdk: progress 13529/28089 files 39
+sdk: progress 14098/28089 files 40
+sdk: progress 14593/28089 files 41
+sdk: progress 14676/28089 files 42
+sdk: progress 14676/28089 files 43
+sdk: progress 14724/28089 files 44
+sdk: progress 14724/28089 files 45
+sdk: progress 15610/28089 files 46
+sdk: progress 16308/28089 files 47
+sdk: progress 17073/28089 files 48
+sdk: progress 17525/28089 files 49
+sdk: progress 17826/28089 files 50
+sdk: progress 17826/28089 files 51
+sdk: progress 18019/28089 files 52
+sdk: progress 18628/28089 files 53
+sdk: progress 19083/28089 files 54
+sdk: progress 19381/28089 files 55
+sdk: progress 19862/28089 files 56
+sdk: progress 20128/28089 files 57
+sdk: progress 20128/28089 files 58
+sdk: progress 20129/28089 files 59
+sdk: progress 20139/28089 files 60
+sdk: progress 20139/28089 files 61
+sdk: progress 20149/28089 files 62
+sdk: progress 20149/28089 files 63
+sdk: progress 20157/28089 files 64
+sdk: progress 20157/28089 files 65
+sdk: progress 20823/28089 files 66
+sdk: progress 21240/28089 files 67
+sdk: progress 21322/28089 files 68
+sdk: progress 21322/28089 files 69
+sdk: progress 22822/28089 files 70
+sdk: progress 24322/28089 files 71
+sdk: progress 25822/28089 files 72
+sdk: progress 27322/28089 files 73
+sdk: progress 28089/28089 files 74
+sdk: wrote 74 chunks, 9s total
+cd tools && ../tools/venv/bin/python gen.py main ../mhgu/exefs/main 0x00200000 ../generated/main
+<frozen site>:101: RuntimeWarning: Unexpected value in sys.prefix, expected /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/venv, got /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/../tools/venv
+<frozen site>:101: RuntimeWarning: Unexpected value in sys.exec_prefix, expected /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/venv, got /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/../tools/venv
+main: round 1: 72497 functions (+6237)
+main: round 2: 72685 functions (+188)
+main: round 3: 72693 functions (+8)
+main: round 4: 72695 functions (+2)
+main: 66260 boundaries, 72695 functions, 4920851 instructions, 5 rounds, {'br_dispatch': 11379, 'jumptables': 6344, 'unsupported': 4}, 29s
+  unsupported       4  flag-setting write to pc
+main: progress 1108/72695 files 1
+main: progress 1527/72695 files 2
+main: progress 1946/72695 files 3
+main: progress 2744/72695 files 4
+main: progress 3412/72695 files 5
+main: progress 3581/72695 files 6
+main: progress 3581/72695 files 7
+main: progress 3779/72695 files 8
+main: progress 4102/72695 files 9
+main: progress 4640/72695 files 10
+main: progress 4689/72695 files 11
+main: progress 4689/72695 files 12
+main: progress 5301/72695 files 13
+main: progress 5981/72695 files 14
+main: progress 5981/72695 files 15
+main: progress 6080/72695 files 16
+main: progress 6080/72695 files 17
+main: progress 6673/72695 files 18
+main: progress 7557/72695 files 19
+main: progress 8025/72695 files 20
+main: progress 8428/72695 files 21
+main: progress 8503/72695 files 22
+main: progress 8503/72695 files 23
+main: progress 8708/72695 files 24
+main: progress 9228/72695 files 25
+main: progress 9810/72695 files 26
+main: progress 10507/72695 files 27
+main: progress 10511/72695 files 28
+main: progress 10511/72695 files 29
+main: progress 10528/72695 files 30
+main: progress 10528/72695 files 31
+main: progress 10696/72695 files 32
+main: progress 10696/72695 files 33
+main: progress 11189/72695 files 34
+main: progress 11818/72695 files 35
+main: progress 12213/72695 files 36
+main: progress 12213/72695 files 37
+main: progress 12688/72695 files 38
+main: progress 13178/72695 files 39
+main: progress 14011/72695 files 40
+main: progress 14524/72695 files 41
+main: progress 14886/72695 files 42
+main: progress 15346/72695 files 43
+main: progress 15546/72695 files 44
+main: progress 15583/72695 files 45
+main: progress 15583/72695 files 46
+main: progress 15881/72695 files 47
+main: progress 16089/72695 files 48
+main: progress 16089/72695 files 49
+main: progress 16352/72695 files 50
+main: progress 16352/72695 files 51
+main: progress 16370/72695 files 52
+main: progress 16370/72695 files 53
+main: progress 16371/72695 files 54
+main: progress 16372/72695 files 55
+main: progress 16395/72695 files 56
+main: progress 16395/72695 files 57
+main: progress 16456/72695 files 58
+main: progress 16456/72695 files 59
+main: progress 16469/72695 files 60
+main: progress 16469/72695 files 61
+main: progress 16499/72695 files 62
+main: progress 16499/72695 files 63
+main: progress 16579/72695 files 64
+main: progress 16579/72695 files 65
+main: progress 16732/72695 files 66
+main: progress 16732/72695 files 67
+main: progress 17104/72695 files 68
+main: progress 17434/72695 files 69
+main: progress 17692/72695 files 70
+main: progress 17692/72695 files 71
+main: progress 17770/72695 files 72
+main: progress 17770/72695 files 73
+main: progress 17991/72695 files 74
+main: progress 17991/72695 files 75
+main: progress 18040/72695 files 76
+main: progress 18040/72695 files 77
+main: progress 18534/72695 files 78
+main: progress 19022/72695 files 79
+main: progress 19399/72695 files 80
+main: progress 19799/72695 files 81
+main: progress 20229/72695 files 82
+main: progress 20713/72695 files 83
+main: progress 21703/72695 files 84
+main: progress 21703/72695 files 85
+main: progress 22429/72695 files 86
+main: progress 23098/72695 files 87
+main: progress 23243/72695 files 88
+main: progress 23243/72695 files 89
+main: progress 23560/72695 files 90
+main: progress 24059/72695 files 91
+main: progress 24348/72695 files 92
+main: progress 24348/72695 files 93
+main: progress 24917/72695 files 94
+main: progress 25552/72695 files 95
+main: progress 26124/72695 files 96
+main: progress 26645/72695 files 97
+main: progress 27298/72695 files 98
+main: progress 27330/72695 files 99
+main: progress 27330/72695 files 100
+main: progress 27805/72695 files 101
+main: progress 28475/72695 files 102
+main: progress 28857/72695 files 103
+main: progress 29438/72695 files 104
+main: progress 30009/72695 files 105
+main: progress 30740/72695 files 106
+main: progress 31525/72695 files 107
+main: progress 32011/72695 files 108
+main: progress 32174/72695 files 109
+main: progress 32174/72695 files 110
+main: progress 32189/72695 files 111
+main: progress 32189/72695 files 112
+main: progress 32407/72695 files 113
+main: progress 32657/72695 files 114
+main: progress 32657/72695 files 115
+main: progress 33076/72695 files 116
+main: progress 33376/72695 files 117
+main: progress 33535/72695 files 118
+main: progress 33727/72695 files 119
+main: progress 33870/72695 files 120
+main: progress 34065/72695 files 121
+main: progress 34205/72695 files 122
+main: progress 34357/72695 files 123
+main: progress 34530/72695 files 124
+main: progress 34727/72695 files 125
+main: progress 34727/72695 files 126
+main: progress 35173/72695 files 127
+main: progress 35368/72695 files 128
+main: progress 35368/72695 files 129
+main: progress 35457/72695 files 130
+main: progress 35590/72695 files 131
+main: progress 36079/72695 files 132
+main: progress 36332/72695 files 133
+main: progress 36332/72695 files 134
+main: progress 36349/72695 files 135
+main: progress 36349/72695 files 136
+main: progress 36492/72695 files 137
+main: progress 36492/72695 files 138
+main: progress 36861/72695 files 139
+main: progress 37159/72695 files 140
+main: progress 37159/72695 files 141
+main: progress 37733/72695 files 142
+main: progress 37733/72695 files 143
+main: progress 37993/72695 files 144
+main: progress 38201/72695 files 145
+main: progress 38312/72695 files 146
+main: progress 38312/72695 files 147
+main: progress 38338/72695 files 148
+main: progress 38338/72695 files 149
+main: progress 38455/72695 files 150
+main: progress 38464/72695 files 151
+main: progress 38464/72695 files 152
+main: progress 38479/72695 files 153
+main: progress 38479/72695 files 154
+main: progress 38517/72695 files 155
+main: progress 38517/72695 files 156
+main: progress 38615/72695 files 157
+main: progress 38615/72695 files 158
+main: progress 38704/72695 files 159
+main: progress 38704/72695 files 160
+main: progress 38759/72695 files 161
+main: progress 38759/72695 files 162
+main: progress 39159/72695 files 163
+main: progress 39390/72695 files 164
+main: progress 39543/72695 files 165
+main: progress 39694/72695 files 166
+main: progress 39694/72695 files 167
+main: progress 39913/72695 files 168
+main: progress 40035/72695 files 169
+main: progress 40035/72695 files 170
+main: progress 40049/72695 files 171
+main: progress 40049/72695 files 172
+main: progress 40219/72695 files 173
+main: progress 40219/72695 files 174
+main: progress 40249/72695 files 175
+main: progress 40249/72695 files 176
+main: progress 40409/72695 files 177
+main: progress 40409/72695 files 178
+main: progress 40742/72695 files 179
+main: progress 40776/72695 files 180
+main: progress 40776/72695 files 181
+main: progress 41163/72695 files 182
+main: progress 41375/72695 files 183
+main: progress 41375/72695 files 184
+main: progress 41376/72695 files 185
+main: progress 41606/72695 files 186
+main: progress 41965/72695 files 187
+main: progress 42408/72695 files 188
+main: progress 42741/72695 files 189
+main: progress 42874/72695 files 190
+main: progress 43111/72695 files 191
+main: progress 43112/72695 files 192
+main: progress 43154/72695 files 193
+main: progress 43154/72695 files 194
+main: progress 43195/72695 files 195
+main: progress 43195/72695 files 196
+main: progress 43317/72695 files 197
+main: progress 43336/72695 files 198
+main: progress 43336/72695 files 199
+main: progress 43338/72695 files 200
+main: progress 43338/72695 files 201
+main: progress 43340/72695 files 202
+main: progress 43340/72695 files 203
+main: progress 43527/72695 files 204
+main: progress 43842/72695 files 205
+main: progress 44232/72695 files 206
+main: progress 44708/72695 files 207
+main: progress 45154/72695 files 208
+main: progress 45644/72695 files 209
+main: progress 45969/72695 files 210
+main: progress 46406/72695 files 211
+main: progress 46418/72695 files 212
+main: progress 46418/72695 files 213
+main: progress 46750/72695 files 214
+main: progress 46750/72695 files 215
+main: progress 46751/72695 files 216
+main: progress 46753/72695 files 217
+main: progress 46753/72695 files 218
+main: progress 46971/72695 files 219
+main: progress 47176/72695 files 220
+main: progress 47537/72695 files 221
+main: progress 48010/72695 files 222
+main: progress 48396/72695 files 223
+main: progress 48539/72695 files 224
+main: progress 48811/72695 files 225
+main: progress 48811/72695 files 226
+main: progress 49193/72695 files 227
+main: progress 49693/72695 files 228
+main: progress 49694/72695 files 229
+main: progress 49903/72695 files 230
+main: progress 49903/72695 files 231
+main: progress 50179/72695 files 232
+main: progress 50306/72695 files 233
+main: progress 50810/72695 files 234
+main: progress 51250/72695 files 235
+main: progress 51417/72695 files 236
+main: progress 51648/72695 files 237
+main: progress 51849/72695 files 238
+main: progress 52103/72695 files 239
+main: progress 52412/72695 files 240
+main: progress 52685/72695 files 241
+main: progress 52948/72695 files 242
+main: progress 53228/72695 files 243
+main: progress 53526/72695 files 244
+main: progress 53766/72695 files 245
+main: progress 54021/72695 files 246
+main: progress 54233/72695 files 247
+main: progress 54502/72695 files 248
+main: progress 54750/72695 files 249
+main: progress 54910/72695 files 250
+main: progress 54910/72695 files 251
+main: progress 55139/72695 files 252
+main: progress 55375/72695 files 253
+main: progress 55623/72695 files 254
+main: progress 55835/72695 files 255
+main: progress 56082/72695 files 256
+main: progress 56375/72695 files 257
+main: progress 56561/72695 files 258
+main: progress 56819/72695 files 259
+main: progress 57047/72695 files 260
+main: progress 57253/72695 files 261
+main: progress 57487/72695 files 262
+main: progress 57680/72695 files 263
+main: progress 57928/72695 files 264
+main: progress 58160/72695 files 265
+main: progress 58367/72695 files 266
+main: progress 58624/72695 files 267
+main: progress 58877/72695 files 268
+main: progress 59159/72695 files 269
+main: progress 59412/72695 files 270
+main: progress 59695/72695 files 271
+main: progress 59695/72695 files 272
+main: progress 60088/72695 files 273
+main: progress 60488/72695 files 274
+main: progress 60850/72695 files 275
+main: progress 61165/72695 files 276
+main: progress 61404/72695 files 277
+main: progress 61625/72695 files 278
+main: progress 61923/72695 files 279
+main: progress 62219/72695 files 280
+main: progress 62502/72695 files 281
+main: progress 62811/72695 files 282
+main: progress 63068/72695 files 283
+main: progress 63261/72695 files 284
+main: progress 63547/72695 files 285
+main: progress 64014/72695 files 286
+main: progress 64351/72695 files 287
+main: progress 64351/72695 files 288
+main: progress 64601/72695 files 289
+main: progress 64906/72695 files 290
+main: progress 65331/72695 files 291
+main: progress 65763/72695 files 292
+main: progress 66225/72695 files 293
+main: progress 66666/72695 files 294
+main: progress 66941/72695 files 295
+main: progress 67543/72695 files 296
+main: progress 67858/72695 files 297
+main: progress 68210/72695 files 298
+main: progress 69045/72695 files 299
+main: progress 69621/72695 files 300
+main: progress 70021/72695 files 301
+main: progress 70541/72695 files 302
+main: progress 71353/72695 files 303
+main: progress 71572/72695 files 304
+main: progress 71572/72695 files 305
+main: progress 71996/72695 files 306
+main: progress 72695/72695 files 307
+main: wrote 307 chunks, 32s total
+
+[1;36m== 4. build everything (make -j12)[0m
+clang++ -o build/mhgurecomp obj/rt/cheats.o obj/rt/config.o obj/rt/dispatch.o obj/rt/forge.o obj/rt/forge_imgui.o obj/rt/gamelib.o obj/rt/host_input.o obj/rt/interp.o obj/rt/ipc.o obj/rt/kernel.o obj/rt/loader.o obj/rt/main.o obj/rt/mods.o obj/rt/neon.o obj/rt/romfs.o obj/rt/simd_int.o obj/rt/textinput.o obj/rt/ui.o obj/rt/ui_hd.o obj/rt/ui_icons.o obj/rt/hle/armor_class.o obj/rt/hle/camera_jitter.o obj/rt/hle/emjump.o obj/rt/hle/emtrace.o obj/rt/hle/evskip.o obj/rt/hle/hpscale.o obj/rt/hle/input.o obj/rt/hle/libc.o obj/rt/hle/movelog.o obj/rt/hle/movie.o obj/rt/hle/ngc.o obj/rt/hle/nvn_boot.o obj/rt/hle/offline.o obj/rt/hle/pausepages.o obj/rt/hle/quickhunt.o obj/rt/hle/swkbd.o obj/rt/hle/vi.o obj/rt/hle/villagehub.o obj/rt/services/am.o obj/rt/services/audio.o obj/rt/services/bonus.o obj/rt/services/fs.o obj/rt/services/misc.o obj/rt/services/time.o obj/rt/net/emsync.o obj/rt/net/ldn.o obj/rt/net/vsock.o obj/rt/nvn/objects.o obj/rt/nvn/cmdbuf.o obj/rt/nvn/nvn_args.o obj/rt/nvn/tegra.o obj/rt/nvn/formats.o obj/rt/nvn/backend_null.o obj/rt/nvn/astc.o obj/rt/nvn/maxwell/translate.o obj/rt/nvn/vulkan/device.o obj/rt/nvn/vulkan/exec.o obj/rt/nvn/vulkan/fsr4.o obj/rt/nvn/vulkan/fsr.o obj/rt/nvn/vulkan/shaders.o obj/rt/nvn/vulkan/textures.o obj/rt/platform/linux.o obj/rt/nvn/vulkan/vma.o obj/fsr/src/ffx_vk_portable.c.o obj/fsr/src/ffx_vk_fsr3_portable.cpp.o obj/fsr/src/ffx_fsr3_shaderblobs.cpp.o obj/fsr/src/ffx_fsr3_glsl.c.o obj/fsr/upstream/ffx-1.1.4/sdk/src/shared/ffx_assert.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/shared/ffx_message.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/shared/ffx_object_management.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/shared/ffx_breadcrumbs_list.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/backends/vk/ffx_vk.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/backends/shared/ffx_shader_blobs.cpp.o obj/rt/overlay.o obj/imgui/cimgui.o obj/imgui/imgui/imgui.o obj/imgui/imgui/imgui_draw.o obj/imgui/imgui/imgui_tables.o obj/imgui/imgui/imgui_widgets.o obj/imgui/imgui/imgui_demo.o obj/imgui/imgui/backends/imgui_impl_vulkan.o obj/ffmpeg-9.0.2/lib/libavformat.a obj/ffmpeg-9.0.2/lib/libavcodec.a obj/ffmpeg-9.0.2/lib/libavutil.a -fuse-ld=lld -rdynamic -lSDL3  -lvulkan -lshaderc_shared -lpthread -ldl -lm -Wl,--wrap=sqrtf -Wl,--wrap=acosf -Wl,--wrap=atan2f -Wl,--wrap=sinh -Wl,--wrap=cosh
+clang++: error: no such file or directory: 'obj/ffmpeg-9.0.2/lib/libavcodec.a'
+clang++: error: no such file or directory: 'obj/ffmpeg-9.0.2/lib/libavutil.a'
+make: *** [Makefile:186: build/mhgurecomp] Error 1
+
+[1;36m== 4b. retry with FFMPEG=system (system libav* instead of the bundled build)[0m
+clang -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Ithird_party/vk_mem_alloc -Ithird_party/cimgui  -Ithird_party/fsr-vulkan/include -Ithird_party/ffx-api -c runtime/hle/movie.c -o obj/rt/hle/movie.o
+clang++ -o build/mhgurecomp obj/rt/cheats.o obj/rt/config.o obj/rt/dispatch.o obj/rt/forge.o obj/rt/forge_imgui.o obj/rt/gamelib.o obj/rt/host_input.o obj/rt/interp.o obj/rt/ipc.o obj/rt/kernel.o obj/rt/loader.o obj/rt/main.o obj/rt/mods.o obj/rt/neon.o obj/rt/romfs.o obj/rt/simd_int.o obj/rt/textinput.o obj/rt/ui.o obj/rt/ui_hd.o obj/rt/ui_icons.o obj/rt/hle/armor_class.o obj/rt/hle/camera_jitter.o obj/rt/hle/emjump.o obj/rt/hle/emtrace.o obj/rt/hle/evskip.o obj/rt/hle/hpscale.o obj/rt/hle/input.o obj/rt/hle/libc.o obj/rt/hle/movelog.o obj/rt/hle/movie.o obj/rt/hle/ngc.o obj/rt/hle/nvn_boot.o obj/rt/hle/offline.o obj/rt/hle/pausepages.o obj/rt/hle/quickhunt.o obj/rt/hle/swkbd.o obj/rt/hle/vi.o obj/rt/hle/villagehub.o obj/rt/services/am.o obj/rt/services/audio.o obj/rt/services/bonus.o obj/rt/services/fs.o obj/rt/services/misc.o obj/rt/services/time.o obj/rt/net/emsync.o obj/rt/net/ldn.o obj/rt/net/vsock.o obj/rt/nvn/objects.o obj/rt/nvn/cmdbuf.o obj/rt/nvn/nvn_args.o obj/rt/nvn/tegra.o obj/rt/nvn/formats.o obj/rt/nvn/backend_null.o obj/rt/nvn/astc.o obj/rt/nvn/maxwell/translate.o obj/rt/nvn/vulkan/device.o obj/rt/nvn/vulkan/exec.o obj/rt/nvn/vulkan/fsr4.o obj/rt/nvn/vulkan/fsr.o obj/rt/nvn/vulkan/shaders.o obj/rt/nvn/vulkan/textures.o obj/rt/platform/linux.o obj/rt/nvn/vulkan/vma.o obj/fsr/src/ffx_vk_portable.c.o obj/fsr/src/ffx_vk_fsr3_portable.cpp.o obj/fsr/src/ffx_fsr3_shaderblobs.cpp.o obj/fsr/src/ffx_fsr3_glsl.c.o obj/fsr/upstream/ffx-1.1.4/sdk/src/shared/ffx_assert.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/shared/ffx_message.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/shared/ffx_object_management.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/shared/ffx_breadcrumbs_list.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/components/fsr3upscaler/ffx_fsr3upscaler.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/backends/vk/ffx_vk.cpp.o obj/fsr/upstream/ffx-1.1.4/sdk/src/backends/shared/ffx_shader_blobs.cpp.o obj/rt/overlay.o obj/imgui/cimgui.o obj/imgui/imgui/imgui.o obj/imgui/imgui/imgui_draw.o obj/imgui/imgui/imgui_tables.o obj/imgui/imgui/imgui_widgets.o obj/imgui/imgui/imgui_demo.o obj/imgui/imgui/backends/imgui_impl_vulkan.o -fuse-ld=lld -rdynamic -lSDL3 -lavformat -lavcodec -lavutil -lvulkan -lshaderc_shared -lpthread -ldl -lm -Wl,--wrap=sqrtf -Wl,--wrap=acosf -Wl,--wrap=atan2f -Wl,--wrap=sinh -Wl,--wrap=cosh
+
+[1;36m== 5. differential test of the recompiler (make test-lift)[0m
+cd tools && ../tools/venv/bin/python test_lift.py ../mhgu/exefs/main 0x00200000 --tests 6000
+<frozen site>:101: RuntimeWarning: Unexpected value in sys.prefix, expected /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/venv, got /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/../tools/venv
+<frozen site>:101: RuntimeWarning: Unexpected value in sys.exec_prefix, expected /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/venv, got /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/../tools/venv
+6000 instructions, 4 vectors each
+6000 instructions, 21742 vectors: 0 failing instructions, 7 NaN-payload differences
+cd tools && ../tools/venv/bin/python test_lift.py ../mhgu/exefs/sdk 0x02400000 --tests 6000
+<frozen site>:101: RuntimeWarning: Unexpected value in sys.prefix, expected /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/venv, got /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/../tools/venv
+<frozen site>:101: RuntimeWarning: Unexpected value in sys.exec_prefix, expected /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/venv, got /mnt/Encrypt/projects/MHGURe-Night-Edition/tools/../tools/venv
+6000 instructions, 4 vectors each
+6000 instructions, 22193 vectors: 0 failing instructions, 0 NaN-payload differences
+
+[1;36m== 6. build outputs[0m
+  ok    build/mhgurecomp
+  ok    build/mhgugame.so
+  ok    build/data/exefs/main
+  ok    build/data/romfs
+  ok    build/licenses/THIRD_PARTY_NOTICES.txt
+  ok    build/licenses/LICENSE.txt
+
+[1;36m== 7. smoke test: run build/mhgurecomp for 30s (a game window opens)[0m
+  ok    game booted and survived the full 30s timeout (exit 124)
+  ok    log.txt reached 'main thread: prio', no FATAL
+
+[1;36m== done[0m
+Everything built and tested. To play:
+  cd build && ./mhgurecomp            # settings, caches, mods, log beside it
+  MHGU_HOME=~/mygame ./mhgurecomp     # ...or keep those in another folder
+Saves: $XDG_DATA_HOME/MHGURecomp/save (~/.local/share/MHGURecomp/save).
