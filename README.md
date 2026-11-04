@@ -5,6 +5,20 @@ A fork of MHGURecomp by morerokk. Mainly to put in features I would specifically
 **No game files are included.** You need your own copy of the game, dumped from your own Switch. This project does
 not explain how to dump it and does not provide game files, keys or links to them.
 
+## Features added on top of MHGURecomp
+
+This section is specific to this fork. Everything else in here is MHGURecomp's behaviour.
+
+### Armor for either weapon class
+
+The game usually splits armor into Blademaster and Gunner sets and only lets you equip the half that matches the weapon, the Item Box shows the other half as unusable. This fork removes that restriction. With a Blademaster weapon equipped you can equip and wear Gunner armor, and with a Gunner weapon, Blademaster armor, from the Item Box's *Select Equip.* screens.
+
+![The Gunner-only Jaggi Guards selectable from the Item Box's armor list while the Blademaster Petrified Hunting Horn is equipped](docs/images/armor-from-either-class.png)
+
+*The Jaggi Guards are equipped with the Blademaster Petrified Hunting Horn equipped as well. In the original game the piece cannot be equipped in this state since it is Gunner-only.*
+
+Read [armor-class.md](docs/research/armor-class.md) if you want to dig in deeper on how this works exactly, but warning: all the markdowns I have in there are written by my local deepseek so it may need an overhaul to actually be readable.
+
 ## Requirements
 
 - OS: Windows 10/11 64-bit, or Linux
