@@ -9,6 +9,7 @@
 
 #include "vk.h"
 #include "../astc.h"
+#include "../../simd_kernels.h"
 #include "../../ui_icons.h"
 #include "../../ui_hd.h"
 
@@ -412,9 +413,7 @@ int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now
     if (n >= 4096) for (uint64_t p = lo / PT_PAGE; p < hi / PT_PAGE; p++) pt_gen[p] = g;
     else for (int k = 0; k < n; k++) pt_gen[(pages[k] - host0) / PT_PAGE] = g;
     *now = g;
-    for (uint64_t p = lo / PT_PAGE; p < hi / PT_PAGE; p++)
-        if (pt_gen[p] > since) return 1;
-    return 0;
+    return sk_any_gt_u32(pt_gen + lo / PT_PAGE, (size_t)((hi - lo) / PT_PAGE), since);
 }
 
 // ================================================================== uploads (change detected)
@@ -538,10 +537,8 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             } else {
                 tegra_deswizzle(src, lin, l.wb, l.hb, l.d, fi->bpb, l.block_height_log2, l.block_depth_log2);
             }
-            if (expand) {  // RGB8 -> RGBA8
-                uint8_t *o = s.ptr;
-                uint64_t n = (uint64_t)l.wb * l.hb * l.d;
-                for (uint64_t i = 0; i < n; i++) { o[i * 4] = lin[i * 3]; o[i * 4 + 1] = lin[i * 3 + 1]; o[i * 4 + 2] = lin[i * 3 + 2]; o[i * 4 + 3] = 255; }
+            if (expand) {  // RGB8 -> RGBA8 (runtime/simd_kernels.c: AVX2 when the CPU has it)
+                sk_rgb24_rgba32(lin, s.ptr, (size_t)((uint64_t)l.wb * l.hb * l.d));
                 free(lin);
             }
             uint32_t w = l.w, hh = l.h, d = l.d;

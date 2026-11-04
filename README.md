@@ -1,4 +1,4 @@
-# MHGU Recomp
+# MHGURe Night Edition
 
 A fork of MHGURecomp by morerokk. Mainly to put in features I would specifically want in mhgu over what others may prefer.
 
@@ -21,10 +21,23 @@ I added this because it's a feature that was implemented in modern Monster Hunte
 
 Read [armor-class.md](docs/research/armor-class.md) if you want to dig in deeper on how this works exactly, but warning: all the markdowns I have in there are written by my local deepseek so it may need an overhaul to actually be readable.
 
+### Runs without AVX2
+
+The game used to need AVX2, which meant an Intel 4th gen (2013) or newer. Now any x86-64 CPU from 2009 on runs it.
+If your CPU does have AVX2, the port uses it by itself.
+
+`log.txt` says which one it picked:
+
+```
+[cpu] sse4.2 yes, avx2 no: baseline kernels
+```
+
+Setting `MHGU_NO_AVX2=1` before starting forces the old-CPU path, if you want to check it on a newer machine.
+
 ## Requirements
 
 - OS: Windows 10/11 64-bit, or Linux
-- CPU: Any CPU from 2014 or newer (needs AVX2 support)
+- CPU: Any x86-64 CPU from 2009 or newer. AVX2 makes it a little faster, but is not needed (see above)
 - GPU: Any GPU from 2016 or newer (needs Vulkan 1.2 support), and at least 1GB of VRAM
 - The game files for Monster Hunter Generations Ultimate, version 1.4.0. You can extract these from your Switch or Ryujinx with patches pre-applied.
     - (Title ID `0100770008DD8000`, the `main` executable's build ID starts with `FB08F1D20FD1204F`)
@@ -259,7 +272,9 @@ Useful targets and options:
 - `make test-lift`: checks the recompiler against the Unicorn CPU emulator on thousands of the game's instructions.
 - `make clean`: removes the compiled files (`obj\` and the program files in `build\`). It keeps `build\data`.
 - `make data`: links the game files into `build\data` and, when `addons\pp4\` exists, merges its texture packs.
-- `GENARCH=-march=x86-64-v2`: compiles the game code without AVX2, for older CPUs. Untested.
+- `make test-simd`: checks that the AVX2 code does exactly what the plain code does. No game files needed.
+- `GENARCH=-march=x86-64`: builds the game code for CPUs older than 2009. The default covers 2009 and newer, and
+  changing it rebuilds the game code by itself.
 - `FFMPEG=system`: links the system's FFmpeg libraries instead of building them (see below).
 
 ### FFmpeg

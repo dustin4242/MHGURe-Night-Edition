@@ -8,6 +8,7 @@
 #include "gamelib.h"
 #include "hle.h"
 #include "hle/armor_class.h"
+#include "host_cpu.h"
 #include "kernel.h"
 #include "mods.h"
 
@@ -39,6 +40,10 @@ static void boot(const char *root) {
     char exefs[1024], npdm_path[1024];
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
     snprintf(npdm_path, sizeof npdm_path, "%s/main.npdm", exefs);
+
+    host_cpu_init();  // (AVX2 kernels when the CPU and its OS have them: runtime/host_cpu.c)
+    LOG("[cpu] sse4.2 %s, avx2 %s: %s kernels\n", host_cpu_sse42() ? "yes" : "no", host_cpu_avx2() ? "yes" : "no",
+        host_cpu_isa());
 
     char why[512];
     if (!gamelib_load(why, sizeof why)) FATAL("%s\n", why);

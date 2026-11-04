@@ -18,7 +18,9 @@ B        ?= build
 O        ?= obj
 CC       := clang
 CXX      := clang++
-GENARCH  ?= -march=x86-64-v3  # AVX2 + FMA (Haswell or newer)
+GENARCH  ?= -march=x86-64-v2  # SSE4.2, no AVX: one binary for every x86-64 CPU from 2009 on. AVX2 is picked at
+#                               runtime instead (runtime/host_cpu.c, runtime/avx2_kernels.c, docs/AVX2-FALLBACK.md);
+#                               -march=x86-64 goes one step older still (2003, SSE2 only).
 GENFLAGS := -O1 -fno-strict-aliasing -ffp-contract=off -fno-math-errno -Wno-return-type -Wno-unused-label \
             -Wno-parentheses-equality -Wno-unused-value -fvisibility=hidden -Iruntime $(GENARCH)
 
@@ -126,6 +128,9 @@ FSR4_DRIVER_PATCH ?= 0
 FSR4_STAMP := $(O)/fsr4_patch_$(FSR4_DRIVER_PATCH).stamp
 $(FSR4_STAMP):
 	@mkdir -p $(O) && rm -f $(O)/fsr4_patch_*.stamp && touch $@
+# runtime/avx2_kernels.c is the port's only AVX2 code: compiled for AVX2, and entered only through the pointers
+# host_cpu_init() sets once it has seen AVX2 and an OS that saves the YMM state (runtime/simd_kernels.c).
+$(O)/rt/avx2_kernels.o: RTFLAGS += -mavx2
 $(O)/rt/nvn/vulkan/fsr4.o: $(FSR4_STAMP)
 $(O)/rt/nvn/vulkan/fsr4.o: RTFLAGS += -DFSR4_DRIVER_PATCH=$(FSR4_DRIVER_PATCH)
 # NULL_GPU=1: no renderer (runtime/nvn/backend_null.c: the game runs, nothing is drawn)
@@ -139,7 +144,15 @@ endif
 
 all: $(EXE) $(if $(GEN_SRC),$(GAMELIB)) $(if $(filter windows,$(PLATFORM)),bundle) data licenses
 
-$(O)/gen/%.o: $(GEN)/%.c runtime/cpu.h runtime/vfp.h runtime/neon_rt.h
+# The game code is compiled with $(GENFLAGS), which includes the ISA ($(GENARCH)), and make does not rebuild objects
+# for a changed flag. Its value is kept in a stamp that every game-code object depends on, so changing it makes the
+# whole tree stale and rebuilds it (a leftover object for another ISA would fault on a CPU without it, and the
+# library id would no longer match the runtime's). The stamp is only rewritten when the value changes, so an ordinary
+# make leaves the objects alone.
+$(O)/gen.arch: FORCE
+	@mkdir -p $(O); [ "$$(cat $@ 2>/dev/null)" = '$(GENFLAGS)' ] || echo '$(GENFLAGS)' > $@
+
+$(O)/gen/%.o: $(GEN)/%.c runtime/cpu.h runtime/vfp.h runtime/neon_rt.h $(O)/gen.arch
 	@mkdir -p $(dir $@)
 	@$(CC) $(GENFLAGS) -c $< -o $@
 
@@ -326,9 +339,20 @@ test-lift:
 	cd tools && ../$(PY) test_lift.py ../$(GAME)/exefs/main 0x00200000 --tests 6000
 	cd tools && ../$(PY) test_lift.py ../$(GAME)/exefs/sdk 0x02400000 --tests 6000
 
+# the AVX2 kernels against the baseline ones they replace (no game files needed)
+test-simd: $(O)/test_simd
+	$(O)/test_simd
+
+$(O)/test_simd: tools/test_simd.c runtime/simd_kernels.c runtime/avx2_kernels.c runtime/host_cpu.c
+	@mkdir -p $(O)
+	$(CC) -O2 -g -Wall $(OSFLAGS) -Iruntime -c runtime/simd_kernels.c -o $(O)/test_simd_base.o
+	$(CC) -O2 -g -Wall $(OSFLAGS) -Iruntime -mavx2 -c runtime/avx2_kernels.c -o $(O)/test_simd_avx2.o
+	$(CC) -O2 -g -Wall $(OSFLAGS) -Iruntime tools/test_simd.c runtime/host_cpu.c $(O)/test_simd_base.o \
+	    $(O)/test_simd_avx2.o -o $@
+
 runtime-objs: $(RT_OBJ)
 
 clean:  # (keeps $(B)/data, and the settings, caches and saves wherever the game ran)
 	rm -rf $(O) $(B)/*.dll $(B)/*.so $(EXE) $(B)/vkprobe.exe
 
-.PHONY: all gen test-lift runtime-objs clean bundle data licenses FORCE
+.PHONY: all gen test-lift test-simd runtime-objs clean bundle data licenses FORCE
