@@ -146,7 +146,10 @@ static bool armor_entry(uint32_t sp, int i, uint32_t *entry) {
     uint32_t e = sp + PLAYER_ARMOR + (uint32_t)i * 0x2cu;
     if (LD32(e) != ITEM_PTR) return false;
     uint32_t w = LD32(e + 4);
-    uint16_t type = (uint16_t)w, id = (uint16_t)(w >> 16);
+    // The +4 word is type in bits 0..4 and the upgrade level in bits 5..9, exactly as a weapon's is (a level-2 Jaggi
+    // Helm stores 0x00170021: id 23, type 33 = 1 | 1 << 5). The game masks before it reads the type; compare the
+    // masked value, or every upgraded piece looks like an unknown slot and is never snapshotted or put back.
+    uint16_t type = (uint16_t)(w & 0x1fu), id = (uint16_t)(w >> 16);
     if (type != (uint16_t)(i + 1) || id == 0) return false;
     *entry = e;
     return true;
@@ -154,7 +157,7 @@ static bool armor_entry(uint32_t sp, int i, uint32_t *entry) {
 
 static void clear_auto_tm(uint32_t e, bool gunner) {
     uint32_t w = LD32(e + 4);
-    uint16_t type = (uint16_t)w, id = (uint16_t)(w >> 16);
+    uint16_t type = (uint16_t)(w & 0x1fu), id = (uint16_t)(w >> 16);  // (bits 5..9: the piece's level)
     if (type < 1 || type > 5 || id >= ARMOR_SERIES_COUNT) return;
     uint8_t cls = armor_series_class[id], want = gunner ? 2 : 1;
     if (!cls || cls == want) return;
@@ -178,21 +181,35 @@ void armor_class_frame(void) {
         LOG("[armor] weapon type=%u class=%s\n", weapon, is_gunner_type(weapon) ? "gunner" : "blademaster");
     }
 
+    // The game strips class-incompatible armour when the weapon's class *changes*; that is the only moment the
+    // saved pieces are put back.  Restoring while a slot is merely empty for another reason (an armour upgrade
+    // rebuilds the entry, unequipping a piece clears it) would hand the game a stale entry -- a helmet whose save
+    // record was updated came back at its old level that way.
+    static uint64_t restore_until;
+    static uint8_t class_before;
+    uint64_t now = plat_now_ns();
+    if (dbg && cls != class_before) LOG("[armor] class %u -> %u\n", class_before, cls);
+    if (cls && class_before && cls != class_before)  // (1 <-> 2: the weapon changed class; the game strips)
+        restore_until = now + 1000000000ull;         // (the strip and the re-equip happen within a few frames)
+    if (cls) class_before = cls;
+    bool stripping = now < restore_until;
+
     for (int i = 0; i < 5; i++) {
         uint32_t e;
         if (armor_entry(sp, i, &e)) {
             if (cls) clear_auto_tm(e, gunner);
-            if (!g_saved[i].valid || LD32(e + 4) != g_saved[i].w[1]) {
-                for (int k = 0; k < 11; k++) g_saved[i].w[k] = LD32(e + 4u * (uint32_t)k);
-                g_saved[i].valid = true;
-            }
-            g_saved[i].w[2] = LD32(e + 8);
+            for (int k = 0; k < 11; k++) g_saved[i].w[k] = LD32(e + 4u * (uint32_t)k);
+            g_saved[i].valid = true;
         } else if (g_saved[i].valid) {
+            if (dbg) LOG("[armor] slot %d empty: stripping=%d\n", i, (int)stripping);
+            if (stripping) {
+            if (dbg) LOG("[armor] restore slot %d: entry=%08x (class change)\n", i, g_saved[i].w[1]);
             e = sp + PLAYER_ARMOR + (uint32_t)i * 0x2cu;
             for (int k = 0; k < 11; k++) ST32(e + 4u * (uint32_t)k, g_saved[i].w[k]);
             if (cls) clear_auto_tm(e, gunner);
             g_saved[i].w[2] = LD32(e + 8);
             if (i == 2) arms_restored = true;
+            }
         }
     }
 

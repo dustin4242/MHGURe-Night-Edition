@@ -247,11 +247,18 @@ Equipment **entry** layout (44 bytes / 11 words):
 | Offset | Content |
 |--------|---------|
 | `+0x00` | `ITEM_PTR` (validity marker) |
-| `+0x04` | `type` in low 16 bits, `id` in high 16 bits |
+| `+0x04` | bits 0..4 `type`, bits 5..9 **upgrade level** (0 = Lv 1), bits 16..31 `id` — mask the type with `0x1f` |
 | `+0x08` | transmog id (u16) |
 | rest | box / equipped state |
 
-`armor_entry()` additionally requires `type == slot_index + 1` (head=1 … legs=5) and `id != 0`.
+`armor_entry()` additionally requires `(type & 0x1f) == slot_index + 1` (head=1 … legs=5) and `id != 0`.
+
+> **The level lives in bits 5..9 of `+0x04`** and is easy to lose: a level-2 Jaggi Helm stores
+> `0x00170021` — id 23, and `type` 33 = `1 | 1 << 5`. Masking with `0x1f` is what makes an upgraded
+> piece a valid slot; without it `armor_entry()` rejects the piece, the snapshot never captures it, and
+> the restore puts back whatever older set was captured instead (the reported "my Lv 2 helm shows
+> Lv 1, and the whole set went back to Leather" bug, 2026-11-04), while a stripped upgraded piece is
+> never put back at all (the "vambraces show None" bug).
 
 ### Weapon categories (`type` field — **5 bits**, not 16)
 
@@ -331,10 +338,19 @@ changes. `armor_class_frame()` puts those pieces back so appearance + transmog a
 
 - For each of the 5 armour slots:
   - If an entry is present: clear any auto-transmog that points at the counterpart, and
-    snapshot the whole 44-byte entry into `g_saved[i]` (re-snapshot when the id changes).
-  - If the entry vanished but `g_saved[i]` is valid: write the saved 44 bytes back (restores
-    the piece the game removed). Restoring the arms slot also restores `sp+0x88` (the box-slot
-    link) so the box "E" marker stays correct.
+    snapshot the whole 44-byte entry into `g_saved[i]` (every frame, with the time it was taken).
+  - If the entry vanished but `g_saved[i]` is valid, a class change was observed within the last
+    second **and** the snapshot is younger than half a second: write the saved 44 bytes back
+    (restores the piece the game removed). Restoring the arms slot also restores `sp+0x88` (the
+    box-slot link) so the box "E" marker stays correct.
+
+  The class-change and freshness conditions matter: the entry is also cleared for reasons that
+  have nothing to do with the weapon class — an armour upgrade at the smithy rebuilds it, and
+  taking a piece off clears it. Restoring there handed the game a stale 44-byte entry, whose
+  box-record pointer (`+0x28`) still pointed at the pre-upgrade record: an upgraded helmet showed
+  its old level (Lv 1) in the item box and the pause menu. Restoring only immediately after a
+  class change (and only pieces that were worn just before it) keeps the feature's own case and
+  leaves every other case to the game.
 - `clear_auto_tm()` zeroes a transmog field (`+8`) if it equals the counterpart id, so the
   alias in `equip_data` doesn't double-apply the swap to the appearance.
 
