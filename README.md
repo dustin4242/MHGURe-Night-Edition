@@ -59,13 +59,9 @@ The Options screen from the pause menu is one long list of 27 entries spread ove
 
 ![The compact Options list: Gameplay, Audio, Controls, Graphics, Multiplayer, Default Settings and Reset All Settings](docs/images/options-menu.jpg)
 
-*One page of categories in place of the stock list. The highlighted row opens its submenu.*
-
 **Graphics** is the new category: FXAA, MSAA, FSR (Off / FSR 3 / FSR 4), FSR Quality, FSR Sharpness and Shader Prewarm, plus a **Display** row that opens Aspect Ratio, Resolution (typed as a vertical height, the width follows the aspect), Framerate and VSync.
 
 ![The Graphics page: Display, FXAA, MSAA, FSR, FSR Quality, FSR Sharpness and Shader Prewarm](docs/images/options-graphics.jpg)
-
-*The Graphics page. These are the same keys as `[Anti-aliasing]`, `[Upscaler]` and `[Display]` in `mhgurecomp.ini`, and changing one writes it back there. The rows the renderer builds at start-up (resolution, aspect ratio, FSR, Shader Prewarm) say so and take effect on the next start. FSR 4 needs an AMD RDNA 4 card and the FSR 4 build: [FSR4-PORT.md](docs/FSR4-PORT.md).*
 
 Multiplayer keeps hosting in the same window:
 
