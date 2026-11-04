@@ -53,6 +53,28 @@ I added this because it's a feature that was implemented in modern Monster Hunte
 
 Read [armor-class.md](docs/research/armor-class.md) if you want to dig in deeper on how this works exactly, but warning: all the markdowns I have in there are written by my local deepseek so it may need an overhaul to actually be readable.
 
+### Options menu
+
+The Options screen from the pause menu is one long list of 27 entries spread over several pages. This fork compacts it into a single page of categories, the way the newer Monster Hunter titles lay their settings out: **Gameplay**, **Audio**, **Controls**, **Graphics**, **Multiplayer**, then **Default Settings** and **Reset All Settings**. Each category opens its own submenu, the help box under the list describes whatever is highlighted, and every stock row still edits the same setting as before, only the way to reach it changed.
+
+![The compact Options list: Gameplay, Audio, Controls, Graphics, Multiplayer, Default Settings and Reset All Settings](docs/images/options-menu.jpg)
+
+*One page of categories in place of the stock list. The highlighted row opens its submenu.*
+
+**Graphics** is the new category: FXAA, MSAA, FSR (Off / FSR 3 / FSR 4), FSR Quality, FSR Sharpness and Shader Prewarm, plus a **Display** row that opens Aspect Ratio, Resolution (typed as a vertical height, the width follows the aspect), Framerate and VSync.
+
+![The Graphics page: Display, FXAA, MSAA, FSR, FSR Quality, FSR Sharpness and Shader Prewarm](docs/images/options-graphics.jpg)
+
+*The Graphics page. These are the same keys as `[Anti-aliasing]`, `[Upscaler]` and `[Display]` in `mhgurecomp.ini`, and changing one writes it back there. The rows the renderer builds at start-up (resolution, aspect ratio, FSR, Shader Prewarm) say so and take effect on the next start. FSR 4 needs an AMD RDNA 4 card and the FSR 4 build: [FSR4-PORT.md](docs/FSR4-PORT.md).*
+
+Gameplay also gains the HD UI and controller **Icons** rows when the Pixel Pack 4 textures are installed, and Controls gathers all 19 controller entries on one submenu. Multiplayer keeps hosting in the same window:
+
+![The Multiplayer page: Hosting, IP, Connect and Status](docs/images/options-multiplayer.jpg)
+
+*Type an address on the IP row, then Connect; that address is used for this session's Local Wireless scan and is not written to the ini.*
+
+A few of the fork's own rows still show placeholder help text in the box under the list, like "Custom Graphics Description"; the stock rows show the game's own descriptions. Everything else about the menu is the original game's.
+
 ### Runs without AVX2
 
 The game used to need AVX2, which meant an Intel 4th gen (2013) or newer. Now any x86-64 CPU from 2009 on runs it.
