@@ -205,7 +205,10 @@ $(FSR4_STAMP):
 	@mkdir -p $(O) && rm -f $(O)/fsr4_patch_*.stamp && touch $@
 # runtime/avx2_kernels.c is the port's only AVX2 code: compiled for AVX2, and entered only through the pointers
 # host_cpu_init() sets once it has seen AVX2 and an OS that saves the YMM state (runtime/simd_kernels.c).
+# (only when the target is x86-64: an Android arm64 build has no -mavx2, and the file then holds only its fallbacks)
+ifneq (,$(filter x86_64%,$(shell $(CC) -dumpmachine 2>/dev/null)))
 $(O)/rt/avx2_kernels.o: RTFLAGS += -mavx2
+endif
 $(O)/rt/nvn/vulkan/fsr4.o: $(FSR4_STAMP)
 $(O)/rt/nvn/vulkan/fsr4.o: RTFLAGS += -DFSR4_DRIVER_PATCH=$(FSR4_DRIVER_PATCH)
 # NULL_GPU=1: no renderer (runtime/nvn/backend_null.c: the game runs, nothing is drawn)

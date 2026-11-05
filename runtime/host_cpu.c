@@ -9,6 +9,10 @@
 
 #include "simd_kernels.h"
 
+// The AVX2 kernels (runtime/avx2_kernels.c) are x86-64 code: on any other target (an Android arm64 build) none of
+// this file's detection applies and the baseline kernels are used.
+#if defined(__x86_64__) || defined(_M_X64)
+
 #if defined(_WIN32)
 #include <intrin.h>
 static void cpuid(uint32_t leaf, uint32_t sub, uint32_t out[4]) {
@@ -60,3 +64,12 @@ void host_cpu_init(void) {
 bool host_cpu_avx2(void) { return g_avx2; }
 bool host_cpu_sse42(void) { return g_sse42; }
 const char *host_cpu_isa(void) { return g_avx2 ? "avx2" : "baseline"; }
+
+#else  // not x86-64: no AVX2 kernels in the build
+
+void host_cpu_init(void) { simd_kernels_init(false); }
+bool host_cpu_avx2(void) { return false; }
+bool host_cpu_sse42(void) { return false; }
+const char *host_cpu_isa(void) { return "baseline"; }
+
+#endif

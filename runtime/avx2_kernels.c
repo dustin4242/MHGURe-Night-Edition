@@ -1,10 +1,14 @@
 // The AVX2 versions of the loops in runtime/simd_kernels.h. This is the only file the build compiles with -mavx2
 // (Makefile), and every function in it is reached through a pointer that host_cpu_init() sets only when the CPU has
 // AVX2 and the OS saves the YMM state -- so on any other machine not one byte of this file is entered.
-#include <immintrin.h>
 #include <stdint.h>
 
 #include "simd_kernels.h"
+
+// x86-64 only: on other targets the Makefile leaves out -mavx2, and this file only provides the symbols (nothing
+// selects them there: host_cpu_init never turns the AVX2 kernels on).
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
 
 // 8 pixels per iteration: two 128-bit lanes, each unpacking 4 RGB triples into 4 RGBA texels with one pshufb, then
 // the alpha bytes are ORed in (the shuffle leaves them 0). The 24-byte input stride means the loads are unaligned;
@@ -42,3 +46,10 @@ int sk_any_gt_u32_avx2(const uint32_t *v, size_t n, uint32_t x) {
         if (v[i] > x) return 1;
     return 0;
 }
+
+#else  // not x86-64: the baseline versions, so the symbols exist for the kernel table
+
+void sk_rgb24_rgba32_avx2(const uint8_t *src, uint8_t *dst, size_t pixels) { sk_rgb24_rgba32_base(src, dst, pixels); }
+int sk_any_gt_u32_avx2(const uint32_t *v, size_t n, uint32_t x) { return sk_any_gt_u32_base(v, n, x); }
+
+#endif
