@@ -7,7 +7,7 @@
 /build_windows/
 /obj_windows/
 /build_dep/
-/addons/pp4/
+/addons/*
 /run/
 /game/
 /save/
