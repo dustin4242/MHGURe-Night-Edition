@@ -73,7 +73,7 @@ I still need to write custom descriptions for a lot of these menu items, but tha
 
 ### Armor Fusion from every forge
 
-In the original game, transmog is **Armor Fusion** at the Soaratorium Lab, and it only opens up late in the game. This fork adds an **Armor Fusion** row to every smithy's menu from the start. Fuse Armor and Undo Armor Fusion use the game's own screens, LR/HR/G tier rules and zenny fees, and every appearance piece you own can be chosen without the Lab research requirement. The Lab's own Armor Fusion entry keeps its normal unlock.
+In the original game, transmog is **Armor Fusion** at the Soaratorium Lab, and it is only available at the end of the game. I added it to every smithy's menu from the start with LR/HR/G tier rules and zenny fees. This work was done by a PR on the main recomp.
 
 ![The Bherna smithy menu with the extra Armor Fusion row](docs/images/smithy-armor-fusion.jpg)
 
