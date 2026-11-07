@@ -309,13 +309,14 @@ Keyboard and mouse support is also implemented, and currently surprisingly viabl
 
 You can change them in `mhgurecomp.ini` under `[Keybinds]`. You can bind up to 2 keys at a time for a single action.
 
-Escape, Insert, F7 to F12 and the keys the Forge overlay uses cannot be bound, as they are reserved by the recomp.
+Escape, Insert, F1, F2, F7 to F12 and the keys the Forge overlay uses cannot be bound, as they are reserved by the recomp.
 
 Sometimes the game might ask for keyboard input, such as naming your hunter or renaming item sets. Use the keyboard to enter text, `ENTER` to confirm, or `ESC` to cancel. You can use the `/` key to free-chat in multiplayer lobbies.
 
 Other useful keybinds:
 
 - Alt+Enter or F11: switches between windowed and full screen
+- F2: logs the player's position and facing to `log.txt` (for reverse engineering)
 - F7: Cycle MSAA
 - F12: screenshot
 

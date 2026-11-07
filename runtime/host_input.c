@@ -283,6 +283,13 @@ static void control_poll(void) {
                 movelog_snap(atoi(arg));
                 continue;
             }
+            if (!strcmp(cmd, "tp")) {  // tp <x> <y> <z> [yaw]: teleport the player (hle/playerpos.c)
+                float x, y, z, yaw = -1;
+                int n = sscanf(line, "%*s %f %f %f %f", &x, &y, &z, &yaw);
+                if (n < 3) { LOG("[control] tp: x y z [yaw]\n"); continue; }
+                playerpos_teleport(x, y, z, n >= 4 ? yaw : -1);
+                continue;
+            }
             if (!strcmp(cmd, "poke")) {  // poke <guest hex address> <hex word>: write guest memory (reverse engineering)
                 uint32_t a = (uint32_t)strtoul(arg, NULL, 16) & ~3u, v = (uint32_t)strtoul(arg2, NULL, 16);
                 LOG("[poke] %08x: %08x -> %08x\n", a, LD32(a), v);
@@ -570,6 +577,8 @@ void host_input_event(const SDL_Event *e) {
             } else if (e->key.scancode == SDL_SCANCODE_ESCAPE) {
                 if (mouse_grab) LOG("[input] mouse released\n");
                 mouse_grab = false;
+            } else if (e->key.scancode == SDL_SCANCODE_F2) {
+                playerpos_log();  // (debug) the player's position and facing (runtime/hle/playerpos.c)
             } else if (e->key.scancode == SDL_SCANCODE_F12 && !(e->key.mod & SDL_KMOD_SHIFT))
                 snprintf(g_shot_request, sizeof g_shot_request, "shots/shot_%llu_%d.png", (unsigned long long)t, nshot++);
             else if (e->key.scancode == SDL_SCANCODE_F11) {

@@ -131,6 +131,8 @@ void host_input_event(const union SDL_Event *e);
 void host_input_update(void);            // recompute the controller state the game reads (each loop pass)
 bool host_input_press(const char *button, unsigned frames);  // scripted press from the next frame (UI thread)
 void quickhunt_poll(void);               // (debug) MHGU_QUICKHUNT's presses (runtime/hle/quickhunt.c; UI thread)
+void playerpos_log(void);                // (debug) F2: logs the player's position and facing (runtime/hle/playerpos.c; UI thread)
+void playerpos_teleport(float x, float y, float z, float yaw);  // (debug) control file "tp": the player there (yaw < 0 keeps it)
 
 // ---- helpers
 void guest_call(Cpu *c, uint32_t addr);   // call a guest function (saves / restores lr)

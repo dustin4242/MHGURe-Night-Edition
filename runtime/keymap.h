@@ -6,6 +6,7 @@
 static inline const char *key_reserved(int scancode) {
     static const struct { int scancode; const char *use; } keys[] = {
         {SDL_SCANCODE_ESCAPE, "Release mouse"}, {SDL_SCANCODE_F1, "Settings"}, {SDL_SCANCODE_INSERT, "Forge menu"},
+        {SDL_SCANCODE_F2, "Log position"},
         {SDL_SCANCODE_F7, "Debug"}, {SDL_SCANCODE_F8, "Debug"}, {SDL_SCANCODE_F9, "Debug"}, {SDL_SCANCODE_F10, "Debug"},
         {SDL_SCANCODE_F11, "Full screen"}, {SDL_SCANCODE_F12, "Screenshot"},
     };

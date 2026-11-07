@@ -1364,7 +1364,8 @@ controller, frames = presented frames; e.g. `300:A:10`), `MHGU_NAME` (answers ev
 `MHGU_CONTROL=ctl.txt` (drive a running game: append lines `A`, `DOWN 8`, `STICK_UP 60`, `shot name` -> shots/name.png;
 `X 6 25` = X for 6 frames from 25 frames on, lines written together form a timed sequence; `fntrace lo hi n`;
 `fnnew lo hi [learn ms]` = log only the first call of each function in [lo, hi) not seen while learning, to find what an
-event runs; `peek` / `poke` / `memsave` / `find` for guest memory), `MHGU_QUICKHUNT=<quest number>` (from start-up
+event runs; `peek` / `poke` / `memsave` / `find` for guest memory; `tp <x> <y> <z> [yaw]` teleports the player, F2 logs where the
+player is), `MHGU_QUICKHUNT=<quest number>` (from start-up
 straight into that quest: A through the menus to the save's town, then the quest is ordered and departed on;
 runtime/hle/quickhunt.c has how the game departs; `MHGU_QUICKHUNT=town` stops in the town), `vpad` (control file:
 attach an SDL virtual controller; `vpad <n> <button> <0|1>` presses its button), `MHGU_LOG_MOVES=1` (the player's actions and command table
