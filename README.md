@@ -81,6 +81,20 @@ In the original game, transmog is **Armor Fusion** at the Soaratorium Lab, and i
 
 It is on by default. `[Armor Fusion] Enabled = Off` in `config.ini`, or `MHGU_ARMOR_FUSION=0` in the environment, turns it off at the next start. See [early-armor-fusion.md](docs/features/early-armor-fusion.md) for how the recipes, tiers and fees work.
 
+### Built-in Forge plugins
+
+Three Forge plugins are built in: unpack their folders in `addons\` before `make`, and the build copies each `.nro` into `data\romfs\nativeNX\plugins\`. The port loads them at start-up like a mod, so you don't need to put anything in `mods\`.
+
+- `addons\worldsharpness\` - World Sharpness Gauge r68
+- `addons\keyquest\` - Key Quest Markers r20
+- `addons\autodelivery\` - Gathering Quest Item Auto Delivery 1.0.0
+
+They are third-party mods, not part of the repository or of release archives, so download and unpack them yourself. `PLUGIN_ADDONS=` (empty) leaves them out of the build. `log.txt` shows them loading:
+
+```
+[forge] plugin world_sharpness_gauge.nro (data/romfs/nativeNX/plugins/world_sharpness_gauge.nro)
+```
+
 ### Runs without AVX2
 
 The game used to need AVX2, which meant an Intel 4th gen (2013) or newer. Now any x86-64 CPU from 2009 on runs it.

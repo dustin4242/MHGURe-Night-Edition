@@ -453,7 +453,19 @@ PP4_STAMP := $(B)/data/.pp4
 PP4_DEPS  := $(PP4_STAMP)
 endif
 
-data: $(B)/data/.complete $(PP4_DEPS)
+# Forge plugins in addons/: when one of the mod folders is present, its .nro is copied into the build's
+# data/romfs/nativeNX/plugins/ so the port loads it like a mod's (runtime/forge.c scans the game's RomFS for
+# plugins first). The mods stay out of git and out of release archives: unpack the mod folder in addons/
+# before building. Set PLUGIN_ADDONS= (empty) to leave them out; delete $(B)/data/.plugins to copy again.
+PLUGIN_ADDONS ?= worldsharpness keyquest autodelivery
+PLUGIN_NROS := $(sort $(foreach m,$(PLUGIN_ADDONS),\
+    $(wildcard addons/$(m)/romfs/nativeNX/plugins/*.nro) $(wildcard addons/$(m)/*/romfs/nativeNX/plugins/*.nro)))
+ifneq ($(strip $(PLUGIN_NROS)),)
+PLUGIN_STAMP := $(B)/data/.plugins
+PLUGIN_DEPS  := $(PLUGIN_STAMP)
+endif
+
+data: $(B)/data/.complete $(PP4_DEPS) $(PLUGIN_DEPS)
 ifneq ($(wildcard $(PP4_DIR)),)
 $(PP4_STAMP): $(PP4_DIR) Makefile tools/pp4_icons.py tools/pp4_ui.py | $(B)/data/.complete
 	@if [ -d "$(B)/data/romfs" ]; then \
@@ -493,6 +505,18 @@ $(PP4_STAMP): $(PP4_DIR) Makefile tools/pp4_icons.py tools/pp4_ui.py | $(B)/data
 	    touch $@; \
 	else echo "data: no game romfs yet, pp4 packs not merged"; fi
 endif
+ifneq ($(strip $(PLUGIN_NROS)),)
+$(PLUGIN_STAMP): $(PLUGIN_NROS) Makefile $(B)/data/.complete
+	@if [ -d "$(B)/data/romfs" ]; then \
+	    mkdir -p "$(B)/data/romfs/nativeNX/plugins"; \
+	    for f in $(PLUGIN_NROS); do \
+	        echo "data: forge plugin $$(basename "$$f")"; \
+	        cp -f "$$f" "$(B)/data/romfs/nativeNX/plugins/" || exit 1; \
+	    done; \
+	    touch $@; \
+	else echo "data: no game romfs yet, forge plugins not copied"; fi
+endif
+
 $(B)/data/.complete:
 	@if [ ! -f "$(GAME)/exefs/main" ] || [ ! -d "$(GAME)/romfs" ]; then \
 	    echo "data: no game files in $(GAME) (make GAME=<folder with exefs/ and romfs/>): $(B)/data left empty"; \
