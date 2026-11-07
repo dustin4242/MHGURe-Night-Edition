@@ -54,6 +54,7 @@ typedef struct {
     int sync_small_monsters;  // multiplayer: small monsters synced like large ones (runtime/net/emsync.c)
     int bonus_content;        // free downloads copied from a donor save into saves without any (runtime/services/bonus.c)
     int village_in_hub;       // L / R at the Hub's / Pub's quest counter switch to Village quests (runtime/hle/villagehub.c)
+    int armor_fusion;         // [Armor Fusion] Enabled: the smithy's Armor Fusion row, all appearances (hle/armorfusion.c)
     int share_urgent;         // an unlocked Urgent quest someone else posted counts when cleared (runtime/hle/urgentcredit.c)
     HpScale hp;               // large monster HP in Hub-type quests (runtime/hle/hpscale.c)
     float mouse_sensitivity;  // mouse look: times the hunt camera's angle per count (runtime/hle/mousecam.c), and

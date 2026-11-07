@@ -9,6 +9,7 @@
 
 #include "config.h"
 #include "camera_jitter.h"
+#include "armor_fusion.h"
 #include "gamelib.h"
 #include "hle.h"
 #include "hle/armor_class.h"
@@ -63,6 +64,12 @@ __attribute__((constructor(101))) static void reserve_guest_space(void) {
     exit(1);
 }
 
+// [Armor Fusion] Enabled; MHGU_ARMOR_FUSION=0 turns it off without the ini (the hooks are installed at start-up).
+static bool armor_fusion_enabled(void) {
+    const char *env = getenv("MHGU_ARMOR_FUSION");
+    return env && *env ? atoi(env) != 0 : g_config.armor_fusion != 0;
+}
+
 static void boot(const char *root) {
     char exefs[1024], npdm_path[1024];
     snprintf(exefs, sizeof exefs, "%s/exefs", root);
@@ -78,6 +85,11 @@ static void boot(const char *root) {
     kernel_init();
     dispatch_init();
     mods_patch_code();  // (the mods' patches of the game's code: runtime/mods.c)
+    // (Armor Fusion at every forge: runtime/hle/armorfusion.c)
+    if (armor_fusion_enabled()) {
+        if (fusion_catalog_load()) armorfusion_init();
+        else LOG("[armor-fusion] no armor-fusion.afus beside the executable: off\n");
+    } else LOG("[armor-fusion] off ([Armor Fusion] Enabled / MHGU_ARMOR_FUSION)\n");
     forge_init();  // (Forge plugins in the mods: runtime/forge.c)
     hpscale_init();  // (large monster HP by the number of hunters: runtime/hle/hpscale.c)
     armor_class_init();  // (armour stats follow the equipped weapon's class: runtime/hle/armor_class.c)

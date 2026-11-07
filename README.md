@@ -71,6 +71,16 @@ Multiplayer keeps hosting in the same window:
 
 I still need to write custom descriptions for a lot of these menu items, but that will take some time so for now I'm going to continue working on other features first.
 
+### Armor Fusion from every forge
+
+In the original game, transmog is **Armor Fusion** at the Soaratorium Lab, and it only opens up late in the game. This fork adds an **Armor Fusion** row to every smithy's menu from the start. Fuse Armor and Undo Armor Fusion use the game's own screens, LR/HR/G tier rules and zenny fees, and every appearance piece you own can be chosen without the Lab research requirement. The Lab's own Armor Fusion entry keeps its normal unlock.
+
+![The Bherna smithy menu with the extra Armor Fusion row](docs/images/smithy-armor-fusion.jpg)
+
+![Choose a Base Armor from the native fusion screen](docs/images/armor-fusion-ui.jpg)
+
+It is on by default. `[Armor Fusion] Enabled = Off` in `config.ini`, or `MHGU_ARMOR_FUSION=0` in the environment, turns it off at the next start. See [early-armor-fusion.md](docs/features/early-armor-fusion.md) for how the recipes, tiers and fees work.
+
 ### Runs without AVX2
 
 The game used to need AVX2, which meant an Intel 4th gen (2013) or newer. Now any x86-64 CPU from 2009 on runs it.
@@ -106,6 +116,7 @@ Both switch live while you play. Without the pack neither row shows up and the g
 | **Multiplayer** | Online play through the "Local Wireless" feature. Comes preloaded with an online server, but you can also host your own or directly connect to friends by forwarding port 39500. |
 | **Multiplayer options** | Small monsters are synced between players, monster HP optionally scaled by player count, Village quests playable in Multiplayer Hubs, Urgent Quest credit for everyone |
 | **Quality of life** | Fast-forward unskippable cutscenes with A, the game's own Options menu for the fork's settings, Discord Rich Presence |
+| **Armor Fusion** | [Available from every forge](docs/features/early-armor-fusion.md), with matching LR/HR/G tiers and material-point costs |
 | **Mods and cheats** | Drop-in `mods` folder with load order and conflict checks. Natively supports Forge plugins ([Mods](#mods)), and Ryujinx / Atmosphère cheat files ([Cheats](#cheats)) |
 
 ## Requirements

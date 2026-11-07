@@ -536,3 +536,16 @@ ifeq ($(PLATFORM),android)
 include android/apk.mk
 endif
 
+# Derive fusion recipes from the builder's own game dump (runtime/armor_fusion.c reads the result).
+.PHONY: fusion-catalog test-armor-fusion
+fusion-catalog: $(B)/armor-fusion.afus
+$(B)/armor-fusion.afus: tools/fusion_materials.py $(wildcard $(GAME)/romfs/nativeNX/table/armorCreateA0*.acrd) $(wildcard $(GAME)/romfs/nativeNX/table/armorProcessA00.apd) $(wildcard $(GAME)/romfs/nativeNX/table/armorSeriesData.asd) $(wildcard $(GAME)/romfs/nativeNX/table/itemData.itm) $(wildcard $(GAME)/romfs/nativeNX/table/itemCategoryTypeData.ict)
+	@mkdir -p $(B) $(O)
+	$(PY) tools/fusion_materials.py $(GAME)/romfs/nativeNX/table --output $(O)/fusion-audit.json --binary $(B)/armor-fusion.afus
+$(EXE): | fusion-catalog
+
+test-armor-fusion:
+	@mkdir -p $(O)/fusion-test
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iruntime tests/test_armor_fusion.c runtime/armor_fusion.c runtime/hle/armorfusion.c -o $(O)/fusion-test/armor-fusion
+	cd $(O)/fusion-test && ./armor-fusion
+	$(PY) -m unittest discover -s tools -p 'test_fusion*.py' -v
