@@ -3239,6 +3239,13 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
 
                 if (is_3d_overlay && g_hudtrace_active)
                     LOG("[hud] z %.1f pos %.1f,%.1f m %.2f %.2f %.2f %.2f: 3D overlay, not moved\n", pos_z, pos_x, pos_y, m[0], m[1], m[4], m[5]);
+                // Front-end backdrop (layer 250 at the canvas centre, a unit quad): the game lays its scene out in a 16:9
+                // band, so on a narrower picture scale it about the centre until that band fills the frame (its sides crop).
+                if (ui_frontend_pass && g_render_aspect < 16.0f / 9.0f && fabsf(pos_z - 250.0f) < 0.5f &&
+                    fabsf(pos_x - 640.0f) < 1.0f && fabsf(pos_y - 360.0f) < 1.0f && fabsf(m[0]) < 2.0f && fabsf(m[5]) < 2.0f) {
+                    m[0] *= (16.0f / 9.0f) / g_render_aspect;
+                    m[5] *= (16.0f / 9.0f) / g_render_aspect;
+                }
                 if (!is_3d_overlay) {
                     enum { ANCHOR_LEFT, ANCHOR_RIGHT, ANCHOR_CENTER } anchor = ANCHOR_CENTER;
                     // vertically one anchor per layer (or per part of one), so a window drawn in pieces stays together
