@@ -85,7 +85,7 @@ It is on by default. `[Armor Fusion] Enabled = Off` in `config.ini`, or `MHGU_AR
 
 ### Weapon Fusion
 
-Weapons fuse in the same menu: pick the base weapon and the weapon whose look you want. There is no rank restriction, so a low rank weapon can wear a G rank weapon's look (Not sure why you'd do that) as long as both are the same weapon type (Great Sword with Great Sword). The materials are taken from the appearance weapon's crafting recipe. See [weapon-fusion.md](docs/features/weapon-fusion.md) for how that is derived and how the menu was fitted to weapons. The visual weapon is not used up, and Undo Equipment Fusion takes the look back off.
+Weapons fuse in the same menu: pick the base weapon and the weapon whose look you want. There is no rank restriction, so a low rank weapon can wear a G rank weapon's look (Not sure why you'd do that) as long as both are the same weapon type (Great Sword with Great Sword). The materials are taken from the appearance weapon's crafting recipe. See [weapon-fusion.md](docs/features/weapon-fusion.md) for how that is derived and how the menu was fitted to weapons. The visual weapon is not used up, and Undo Equipment Fusion takes the look back off. This entire addition is based off of the mod https://gamebanana.com/mods/726009 so make sure to try out that mod in your own packs.
 
 ![Fuse Equipment, or Undo Equipment Fusion, in the smithy](docs/images/weapon-fusion-ui.jpg)
 
