@@ -83,6 +83,25 @@ Armor pieces keep their rank rules: both pieces must share LR/LR, HR/HR or G/G. 
 
 It is on by default. `[Armor Fusion] Enabled = Off` in `config.ini`, or `MHGU_ARMOR_FUSION=0` in the environment, turns it off at the next start. See [early-armor-fusion.md](docs/features/early-armor-fusion.md) for the armor rules and [weapon-fusion.md](docs/features/weapon-fusion.md) for weapons.
 
+### Weapon Fusion
+
+Weapons fuse in the same menu: pick the base weapon and the weapon whose look you want. There is no rank restriction, so a low rank weapon can wear a G rank weapon's look (Not sure why you'd do that) as long as both are the same weapon type (Great Sword with Great Sword). The materials are taken from the appearance weapon's crafting recipe. See [weapon-fusion.md](docs/features/weapon-fusion.md) for how that is derived and how the menu was fitted to weapons. The visual weapon is not used up, and Undo Equipment Fusion takes the look back off.
+
+![Fuse Equipment, or Undo Equipment Fusion, in the smithy](docs/images/weapon-fusion-ui.jpg)
+
+![The fusion box previewing both weapons' stats](docs/images/weapon-fusion-box.jpg)
+
+### Pixel Pack 4 build-in support
+
+Pixel Pack 4 is a community HD texture pack for the game. You don't install it as a mod here: put the contents of the unpacked manual install pack in `addons\pp4\` in the repository before building, and `make` merges its textures into `data\romfs`. The game then loads them the same way it loads its own files, so nothing extra ends up in your game folder.
+
+With the pack built in, Options -> Gameplay has two extra rows:
+
+- `Icons`: the button prompts, Switch / Xbox / Playstation.
+- `HD UI`: the HD menus and HUD, on or off.
+
+Both switch live while you play. Without the pack neither row shows up and the game looks exactly as it did before. The build section below covers the pack's options and how to merge again after changing it.
+
 ### Built-in Forge plugins
 
 Three Forge plugins are built in: unpack their folders in `addons\` before `make`, and the build copies each `.nro` into `data\romfs\nativeNX\plugins\`. The port loads them at start-up like a mod, so you don't need to put anything in `mods\`.
@@ -109,31 +128,6 @@ If your CPU does have AVX2, the port uses it by itself.
 ```
 
 Setting `MHGU_NO_AVX2=1` before starting forces the old-CPU path, if you want to check it on a newer machine.
-
-### Pixel Pack 4 support
-
-Pixel Pack 4 is a community HD texture pack for the game. You don't install it as a mod here: put the contents of the unpacked manual install pack in `addons\pp4\` in the repository before building, and `make` merges its textures into `data\romfs`. The game then loads them the same way it loads its own files, so nothing extra ends up in your game folder.
-
-With the pack built in, Options -> Gameplay has two extra rows:
-
-- `Icons`: the button prompts, Switch / Xbox / Playstation.
-- `HD UI`: the HD menus and HUD, on or off.
-
-Both switch live while you play. Without the pack neither row shows up and the game looks exactly as it did before. The build section below covers the pack's options and how to merge again after changing it.
-
-## What it adds over the Switch version
-
-| Area | What you get |
-| --- | --- |
-| **Graphics** | Resolution, render resolution (supersampling), MSAA, FXAA, FSR 3.1 upscaling, VSync, longer draw distance |
-| **Screens** | Any widescreen aspect ratio (16:10, 16:9 or anything wider), with HUD adjustment options for ultrawide |
-| **Frame rate** | Framerates anywhere between 30-240 fps, with fixes for bugs that GU normally has on emulators at high frame rates |
-| **Controls** | Almost any controller is supported (SDL), as well as keyboard+mouse |
-| **Multiplayer** | Online play through the "Local Wireless" feature. Comes preloaded with an online server, but you can also host your own or directly connect to friends by forwarding port 39500. |
-| **Multiplayer options** | Small monsters are synced between players, monster HP optionally scaled by player count, Village quests playable in Multiplayer Hubs, Urgent Quest credit for everyone |
-| **Quality of life** | Fast-forward unskippable cutscenes with A, the game's own Options menu for the fork's settings, Discord Rich Presence |
-| **Equipment Fusion** | [Available from every forge](docs/features/early-armor-fusion.md): armor with matching LR/HR/G tiers, and [weapons](docs/features/weapon-fusion.md) with any-rank appearances and material-point costs |
-| **Mods and cheats** | Drop-in `mods` folder with load order and conflict checks. Natively supports Forge plugins ([Mods](#mods)), and Ryujinx / Atmosphère cheat files ([Cheats](#cheats)) |
 
 ## Requirements
 
