@@ -465,7 +465,23 @@ PLUGIN_STAMP := $(B)/data/.plugins
 PLUGIN_DEPS  := $(PLUGIN_STAMP)
 endif
 
-data: $(B)/data/.complete $(PP4_DEPS) $(PLUGIN_DEPS)
+# Weapon Fusion's menu text: the native fusion screen's labels come from the game's own Wycademy Lab message
+# tables ("Fuse Armor", "Undo Armor Fusion", ...). tools/fusion_text.py rewords them for equipment ("Fuse
+# Equipment", "Undo Equipment Fusion") in the build's data/romfs, from the player's own dump - no other mod's
+# romfs needed. The GMD's text pool is rewritten (its size is the only header field that changes) and the archive
+# is repacked into a new file, so the build's hard links to the dump are never written through.
+FUSION_TEXT_STAMP := $(B)/data/.fusion-text
+FUSION_TEXT_DEPS  := $(FUSION_TEXT_STAMP)
+
+data: $(B)/data/.complete $(PP4_DEPS) $(PLUGIN_DEPS) $(FUSION_TEXT_DEPS)
+$(FUSION_TEXT_STAMP): Makefile tools/fusion_text.py | $(B)/data/.complete
+	@if [ -d "$(GAME)/romfs/nativeNX" ]; then \
+	    echo "data: fusion text from $(GAME)/romfs"; \
+	    $(PY) tools/fusion_text.py "$(GAME)/romfs" "$(B)/data/romfs" || exit 1; \
+	    touch $@; \
+	else \
+	    echo "data: no game romfs in $(GAME): the fusion text stays stock"; \
+	fi
 ifneq ($(wildcard $(PP4_DIR)),)
 $(PP4_STAMP): $(PP4_DIR) Makefile tools/pp4_icons.py tools/pp4_ui.py | $(B)/data/.complete
 	@if [ -d "$(B)/data/romfs" ]; then \
@@ -562,14 +578,17 @@ endif
 
 # Derive fusion recipes from the builder's own game dump (runtime/armor_fusion.c reads the result).
 .PHONY: fusion-catalog test-armor-fusion
-fusion-catalog: $(B)/armor-fusion.afus
+fusion-catalog: $(B)/armor-fusion.afus $(B)/weapon-fusion.wfus
 $(B)/armor-fusion.afus: tools/fusion_materials.py $(wildcard $(GAME)/romfs/nativeNX/table/armorCreateA0*.acrd) $(wildcard $(GAME)/romfs/nativeNX/table/armorProcessA00.apd) $(wildcard $(GAME)/romfs/nativeNX/table/armorSeriesData.asd) $(wildcard $(GAME)/romfs/nativeNX/table/itemData.itm) $(wildcard $(GAME)/romfs/nativeNX/table/itemCategoryTypeData.ict)
 	@mkdir -p $(B) $(O)
 	$(PY) tools/fusion_materials.py $(GAME)/romfs/nativeNX/table --output $(O)/fusion-audit.json --binary $(B)/armor-fusion.afus
+$(B)/weapon-fusion.wfus: tools/weapon_fusion_materials.py $(wildcard $(GAME)/romfs/nativeNX/table/weaponCreateW*.wcd) $(wildcard $(GAME)/romfs/nativeNX/table/itemData.itm) $(wildcard $(GAME)/romfs/nativeNX/table/itemCategoryTypeData.ict)
+	@mkdir -p $(B) $(O)
+	$(PY) tools/weapon_fusion_materials.py $(GAME)/romfs/nativeNX/table --output $(O)/weapon-fusion-audit.json --binary $(B)/weapon-fusion.wfus
 $(EXE): | fusion-catalog
 
 test-armor-fusion:
 	@mkdir -p $(O)/fusion-test
-	$(CC) -std=c11 -Wall -Wextra -Werror -Iruntime tests/test_armor_fusion.c runtime/armor_fusion.c runtime/hle/armorfusion.c -o $(O)/fusion-test/armor-fusion
+	$(CC) -std=c11 -Wall -Wextra -Werror -Iruntime tests/test_armor_fusion.c runtime/armor_fusion.c runtime/weapon_fusion.c runtime/hle/armorfusion.c -o $(O)/fusion-test/armor-fusion
 	cd $(O)/fusion-test && ./armor-fusion
 	$(PY) -m unittest discover -s tools -p 'test_fusion*.py' -v

@@ -106,24 +106,31 @@ bool fusion_catalog_load(void) {
 
 static int valid_rank(enum FusionRank rank) { return rank >= FUSION_LR && rank <= FUSION_G; }
 
-bool fusion_plan(const FusionPiece *base, const FusionPiece *appearance,
+static bool plan(const FusionPiece *base, const FusionPiece *appearance,
     uint32_t native_pair_result, const FusionRecipe *recipe,
     const FusionSelection *selection, size_t count,
-    FusionOwned owned, void *context, FusionPlan *out) {
+    FusionOwned owned, void *context, FusionPlan *out, bool weapon) {
     if (!out) return false;
     memset(out, 0, sizeof *out);
     if (!base || !appearance || !base->armor_id || !appearance->armor_id ||
-        base->slot < 1 || base->slot > 5 || base->slot != appearance->slot ||
+        base->slot < (weapon ? 6u : 1u) || base->slot > (weapon ? 21u : 5u) ||
+        base->slot != appearance->slot ||
         base->box_index == appearance->box_index || base->armor_id == appearance->armor_id)
         return false;
-    if (!valid_rank(base->rank) || !valid_rank(appearance->rank)) return false;
-    if (base->rank != appearance->rank) return false;
-    // The native validator returns 1 for a compatible pair. Its other bits
-    // include equipment/decorations restrictions and must not be discarded.
-    if (native_pair_result != 1) return false;
+    if (weapon) {
+        // Native bits other than "this is a weapon" mean a refused pair
+        // (different type, same id, same box, decorations or already fused).
+        if ((native_pair_result & ~0x2u) != 1) return false;
+    } else {
+        if (!valid_rank(base->rank) || !valid_rank(appearance->rank)) return false;
+        if (base->rank != appearance->rank) return false;
+        // The native validator returns 1 for a compatible pair. Its other bits
+        // include equipment/decorations restrictions and must not be discarded.
+        if (native_pair_result != 1) return false;
+    }
     if (!recipe || recipe->armor_id != appearance->armor_id ||
         !recipe->category_id || !recipe->materials || !recipe->count ||
-        recipe->rank != appearance->rank) return false;
+        (!weapon && recipe->rank != appearance->rank)) return false;
     for (size_t i = 0; i < recipe->count; ++i) {
         if (!recipe->materials[i].item_id || !recipe->materials[i].points)
             return false;
@@ -150,4 +157,18 @@ bool fusion_plan(const FusionPiece *base, const FusionPiece *appearance,
     if (plan.points < FUSION_POINTS) return false;
     *out = plan;
     return true;
+}
+
+bool fusion_plan(const FusionPiece *base, const FusionPiece *appearance,
+    uint32_t native_pair_result, const FusionRecipe *recipe,
+    const FusionSelection *selection, size_t count,
+    FusionOwned owned, void *context, FusionPlan *out) {
+    return plan(base, appearance, native_pair_result, recipe, selection, count, owned, context, out, false);
+}
+
+bool weapon_fusion_plan(const FusionPiece *base, const FusionPiece *appearance,
+    uint32_t native_pair_result, const FusionRecipe *recipe,
+    const FusionSelection *selection, size_t count,
+    FusionOwned owned, void *context, FusionPlan *out) {
+    return plan(base, appearance, native_pair_result, recipe, selection, count, owned, context, out, true);
 }

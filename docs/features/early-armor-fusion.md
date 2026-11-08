@@ -1,11 +1,14 @@
 # Early Armor Fusion
 
-Every hunter forge gains an **Armor Fusion** action from the start. It opens
+Every hunter forge gains an **Equipment Fusion** action from the start. It opens
 the game's native fusion/separation screens and material-point picker, including
 the game's own armor and item names, icons, quantities and the zenny
 confirmation. The added row's label and its material question are English for
 now; everything around them is the game's own localized UI.
 Palico fusion and other Lab features retain their existing progression rules.
+
+The same menu also fuses [weapons](weapon-fusion.md): they skip the rank rules
+and use the appearance weapon's monster for their materials.
 
 Ported from [MHGURecomp PR #260](https://github.com/morerokk/MHGURecomp/pull/260)
 by Rikiar73574 (closed unmerged upstream), with the ini switch, Android
@@ -64,10 +67,10 @@ coverage, not proof that the native validator accepts every pair.
   The guest-call helper in `runtime/rt.h` preserves registers.
 
 `tools/fusion_materials.py` derives the catalog from the builder's own dump.
-Only `armor-fusion.afus` is needed beside the executable; Android assets include
-it (`android/apk.mk`, unpacked by `runtime/platform/android.c`). Extracted
-tables, generated catalogs and saves stay outside git. No separate names file
-is needed.
+Only `armor-fusion.afus` (and, for weapons, `weapon-fusion.wfus`) is needed
+beside the executable; Android assets include both (`android/apk.mk`, unpacked
+by `runtime/platform/android.c`). Extracted tables, generated catalogs and
+saves stay outside git. No separate names file is needed.
 
 AFUS v2 records are little endian, sorted by armor ID/level and category/item:
 
@@ -97,8 +100,9 @@ tests do not replace in-game transactions.
 
 Checked in this fork (MHGU 1.4.0, Linux, complete save): Bherna's smithy
 (Manvil) shows the five-row menu `Forge Weapons | Forge Armor | Upgrade
-Equipment | Decorations | Armor Fusion`; the row opens `Fuse Armor | Undo Armor
-Fusion`, and Fuse Armor opens the native `Choose a Base Armor` equipment box.
+Equipment | Decorations | Equipment Fusion`; the row opens `Fuse Equipment |
+Undo Equipment Fusion`, and Fuse Equipment opens the native `Choose a Base
+Armor` equipment box (the title is the game's own; the boxes take weapons too).
 The shipped catalog covers 1,282 appearance-capable armor series.
 
 The upstream change reports more than was re-run here: six paid

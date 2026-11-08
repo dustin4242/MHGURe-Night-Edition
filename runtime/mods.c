@@ -143,6 +143,30 @@ static int retarget(uint32_t a, uint32_t *w) {
 // The patches of main's and sdk's code: the bytes go into memory now (jumps and offsets into a subsdk retargeted),
 // and every function they touch runs in the interpreter from now on (dispatch_interpret, as a cheat's changes do),
 // which reads them there.
+// A patch of main's code that this fork ships itself (the same effect as a mod's exefs patch): the words replace
+// the game's at off (the module offset, i.e. the exefs offset minus its 0x100 header), and the functions they touch
+// run in the interpreter (see mods_patch_code). Call before mods_patch_code.
+void mods_builtin_code_patch(uint32_t off, const uint32_t *words, int n, const char *what) {
+    if (!n) return;
+    if (npending == pending_cap) {
+        pending_cap = pending_cap ? 2 * pending_cap : 256;
+        pending = realloc(pending, pending_cap * sizeof *pending);
+    }
+    Pending *p = &pending[npending++];
+    p->m = &g_modules[0];
+    p->off = off;
+    p->len = (uint32_t)n * 4;
+    p->bytes = malloc(p->len);
+    p->mod = what;
+    p->file = "built-in";
+    for (int i = 0; i < n; i++) {
+        p->bytes[i * 4 + 0] = (uint8_t)words[i];
+        p->bytes[i * 4 + 1] = (uint8_t)(words[i] >> 8);
+        p->bytes[i * 4 + 2] = (uint8_t)(words[i] >> 16);
+        p->bytes[i * 4 + 3] = (uint8_t)(words[i] >> 24);
+    }
+}
+
 void mods_patch_code(void) {
     int words = 0, fns = 0, moved = 0, failed = 0;
     for (int i = 0; i < npending; i++) {

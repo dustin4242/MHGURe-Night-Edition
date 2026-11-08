@@ -3,10 +3,12 @@
 // intercepts confirmation BEFORE the native zenny charge and substitutes the
 // selected materials at the native token deduction call site.
 #include "../armor_fusion.h"
+#include "../weapon_fusion.h"
 #include <stdio.h>
 #include "../hle.h"
 #include <stdlib.h>
 #include <string.h>
+#include "../mods.h"
 
 #define FN_UPDATE       0x860314u
 #define FN_CLOSE        0x86549cu
@@ -50,6 +52,11 @@ static uint32_t coordinate_visibility, common_picker_ui, common_picker_visibilit
 static FusionPlan approved_plan;
 static uint32_t fusion_label;
 static uint32_t fusion_question;
+// The code-patch queue (mods.h): the host settings test links this file without runtime/mods.c.
+__attribute__((weak)) void mods_builtin_code_patch(uint32_t off, const uint32_t *words, int n, const char *what) {
+    (void)off; (void)words; (void)n; (void)what;
+}
+
 static uint32_t smith_context;
 static FusionPiece opened_base, opened_appearance;
 static bool trace;
@@ -277,6 +284,7 @@ static int materials_poll(Cpu *c) {
     }
     if (pressed & CONFIRM_BUTTON) {
         unsigned idx = current();
+        if (trace) LOG("[armor-fusion] picker A: idx %u count %u added %u\n", idx, LD32(smith + 0x88), LD32(smith + 0x8c));
         if (idx >= LD32(smith + 0x88) || LD32(smith + 0x8c) >= FUSION_POINTS) return 0;
         uint32_t row = smith + 0x2ad4 + idx * 4;
         uint16_t id = LD16(row), owned = LD16(row + 2);
@@ -291,10 +299,13 @@ static int materials_poll(Cpu *c) {
                 if (previous >= 10) return 0;
                 if (max > 10 - previous) max = 10 - previous;
             }
+        if (trace) LOG("[armor-fusion] picker A: item %u owned %u points %u max %u\n", id, owned, points, max);
         if (!max) return 0;
         ST32(smith + 0x320c, 0); ST32(smith + 0x3200, 0); ST16(smith + 0x3202, 1);
         ST16(smith + 0x3204, max); ST32(smith + 0x3208, points);
         visible(c, 0xf, false); visible(c, 0x11, true);
+        mark(c);
+        if (trace) LOG("[armor-fusion] quantity mode: children mask %x\n", visible_mask(smith));
         quantity = true; released = false; return 0;
     }
     // Native list paging uses L/R while its grid uses directional navigation.
@@ -351,6 +362,14 @@ static FusionPiece decode_piece(uint32_t record, uint32_t box_index) {
         .level = ((flags >> 5) & 31) + 1 };
 }
 
+static bool is_weapon(const FusionPiece *piece) { return piece->slot >= 6 && piece->slot <= 21; }
+
+// Armour keeps its catalog (and tier equality); weapons use their own catalog
+// and are rank-agnostic.
+static bool recipe_for(FusionPiece *base, FusionPiece *appearance, FusionRecipe *recipe, bool weapon) {
+    return weapon ? weapon_fusion_recipe(base, appearance, recipe) : fusion_recipe(base, appearance, recipe);
+}
+
 static bool pieces(Cpu *c, uint32_t ui, FusionPiece *base, FusionPiece *appearance,
                    uint32_t *base_record, uint32_t *appearance_record) {
     uint32_t box = LD32(G_EQUIP_BOX);
@@ -362,7 +381,9 @@ static bool pieces(Cpu *c, uint32_t ui, FusionPiece *base, FusionPiece *appearan
     if (!*base_record || !*appearance_record) return false;
     *base = decode_piece(*base_record, base_index);
     *appearance = decode_piece(*appearance_record, appearance_index);
-    return base->slot >= 1 && base->slot <= 5 && appearance->slot >= 1 && appearance->slot <= 5;
+    bool armor = base->slot >= 1 && base->slot <= 5 && appearance->slot >= 1 && appearance->slot <= 5;
+    bool weapon = is_weapon(base) && is_weapon(appearance);
+    return armor || weapon;
 }
 
 static uint32_t inventory(void *context, uint16_t id) {
@@ -385,7 +406,9 @@ static bool snapshot(Cpu *c, uint32_t ui, FusionPiece *base, FusionPiece *appear
     uint32_t b, a;
     memset(base, 0, sizeof *base); memset(appearance, 0, sizeof *appearance);
     memset(recipe, 0, sizeof *recipe); *fee = 0;
-    if (!pieces(c, ui, base, appearance, &b, &a) || !fusion_recipe(base, appearance, recipe)) return false;
+    if (!pieces(c, ui, base, appearance, &b, &a)) return false;
+    bool weapon = is_weapon(base);
+    if (!recipe_for(base, appearance, recipe, weapon)) return false;
     uint32_t sp = c->r[13];
     c->r[13] -= 16;
     ST32(c->r[13], c->r[13] + 8);
@@ -394,6 +417,7 @@ static bool snapshot(Cpu *c, uint32_t ui, FusionPiece *base, FusionPiece *appear
     *fee = LD32(c->r[13] + 4);
     c->r[13] = sp;
     *native = native_pair(c, ui, base, appearance, b, a);
+    if (weapon) return (*native & ~0x2u) == 1;  // only the native "weapon" bit is expected
     return base->rank != FUSION_RANK_UNKNOWN && base->rank == appearance->rank && *native == 1;
 }
 
@@ -410,6 +434,21 @@ static void validity(Cpu *c) {
         // hunter piece. Empty/type/sex/already-fused/decorations bits remain.
         if (piece.slot >= 1 && piece.slot <= 5 && fusion_classify(&piece) &&
             piece.rank >= FUSION_LR && piece.rank <= FUSION_G) c->r[0] &= ~0x18u;
+        // A weapon is valid for fusion once the catalog knows its material.
+        // Bit 0x10 is the armour-only progression gate; bit 0x2 stays (the UI
+        // needs it to know the piece is a weapon) and 0x80 marks an appearance
+        // that is already fused.
+        else if (is_weapon(&piece) && weapon_fusion_classify(&piece)) {
+            if (trace) {
+                static unsigned logged;
+                if (logged < 24) { ++logged;
+                    LOG("[armor-fusion] weapon validity type %u id %u mask %x -> %x\n",
+                        piece.slot, piece.armor_id, c->r[0], c->r[0] & ~0x10u); }
+            }
+            // The native list stores 1 only for a selectable piece (mask == 1). Keep the native "already fused"
+            // bit (0x80) so a fused weapon is refused like a fused armor piece and stays listed for separation.
+            c->r[0] = (c->r[0] & 0x80u) | 1u;
+        }
     }
 }
 
@@ -419,7 +458,9 @@ static void pair(Cpu *c) {
     if (!scope() || !b || !a) return;
     FusionPiece base = decode_piece(b, 0), appearance = decode_piece(a, 0);
     FusionRecipe recipe;
-    if (!fusion_recipe(&base, &appearance, &recipe) || base.rank == FUSION_RANK_UNKNOWN ||
+    if (is_weapon(&base)) {
+        if (!weapon_fusion_recipe(&base, &appearance, &recipe)) c->r[0] |= 0x400;
+    } else if (!fusion_recipe(&base, &appearance, &recipe) || base.rank == FUSION_RANK_UNKNOWN ||
         base.rank != appearance.rank) c->r[0] |= 0x400;
 }
 
@@ -515,13 +556,16 @@ static void confirmation(Cpu *c) {
             appearance.level != opened_appearance.level ||
             fee != opened_zenny ||
             !guest_call4(c, FN_ZENNY_CHECK, LD32(G_PLAYER_DATA), fee, 0, 0) ||
-            !fusion_plan(&base, &appearance, native, &recipe, selected, selected_count,
-                inventory, c, &approved_plan)) { c->r[0] = 2; return; }
+            !(is_weapon(&base) ? weapon_fusion_plan(&base, &appearance, native, &recipe, selected,
+                    selected_count, inventory, c, &approved_plan)
+                : fusion_plan(&base, &appearance, native, &recipe, selected, selected_count,
+                    inventory, c, &approved_plan))) { c->r[0] = 2; return; }
         phase = APPROVED;
         ST8(context_ui + 0x62, 0);
         ST32(context_ui + 0x48, fee);
-        if (trace) LOG("[armor-fusion] approved base %u/%u Lv%u appearance %u/%u Lv%u: %u points, %zu materials, %uz\n",
-            base.slot, base.armor_id, base.level, appearance.slot, appearance.armor_id, appearance.level,
+        if (trace) LOG("[armor-fusion] approved %s base %u/%u Lv%u appearance %u/%u Lv%u: %u points, %zu materials, %uz\n",
+            is_weapon(&base) ? "weapon" : "armor", base.slot, base.armor_id, base.level,
+            appearance.slot, appearance.armor_id, appearance.level,
             approved_plan.points, approved_plan.count, fee);
         c->r[0] = 1;
         return;
@@ -533,7 +577,8 @@ static void confirmation(Cpu *c) {
     if (snapshot(c, context_ui, &base, &appearance, &recipe, &fee, &native)) {
         opened_base = base; opened_appearance = appearance; opened_zenny = fee;
         snprintf(G2H(fusion_question), 96,
-            "Fuse these pieces of armor for %uz?\r\nUse the selected monster materials.", fee);
+            "Fuse these pieces of %s for %uz?\r\nUse the selected monster materials.",
+            is_weapon(&base) ? "weapons" : "armor", fee);
         picker_visibility(c, true);
         phase = materials_open(c, parent_ui, recipe.category_id) ? MATERIALS : IDLE;
         if (phase == MATERIALS) {
@@ -542,8 +587,9 @@ static void confirmation(Cpu *c) {
             // point UI has finished switching the parent's native widgets.
             apply_mask(c, active_ui, coordinate_visibility & COORDINATE_KEEP, FN_SHOW_CHILD);
         } else picker_visibility(c, false);
-        if (trace) LOG("[armor-fusion] native material chooser %s for armor %u Lv%u category %u\n",
-            phase == MATERIALS ? "opened" : "rejected", appearance.armor_id, appearance.level, recipe.category_id);
+        if (trace) LOG("[armor-fusion] native material chooser %s for %s %u Lv%u category %u\n",
+            phase == MATERIALS ? "opened" : "rejected", is_weapon(&base) ? "weapon" : "armor",
+            appearance.armor_id, appearance.level, recipe.category_id);
         if (phase != MATERIALS) c->r[0] = 2;
     } else c->r[0] = 2;
 }
@@ -568,6 +614,19 @@ static void update(Cpu *c) {
     if (trace && ui == active_ui && (trace_ui != ui || trace_state != LD32(ui + 4) || trace_mode != LD32(ui + 0x44))) {
         trace_ui = ui; trace_state = LD32(ui + 4); trace_mode = LD32(ui + 0x44);
         LOG("[armor-fusion] native UI %x state %x mode %u\n", ui, trace_state, trace_mode);
+    }
+    if (trace && ui == active_ui && LD32(ui + 4) == 2) {
+        static uint32_t last_b, last_a;
+        uint32_t b = LD32(ui + 0x84), a = LD32(ui + 0x88);
+        if (b != last_b || a != last_a) {
+            last_b = b; last_a = a;
+            uint32_t box = LD32(G_EQUIP_BOX);
+            uint32_t rb = box ? guest_call4(c, FN_BOX_RECORD, box, 0, b, 0) : 0;
+            uint32_t ra = box ? guest_call4(c, FN_BOX_RECORD, box, 0, a, 0) : 0;
+            LOG("[armor-fusion] box selection base %u%s%u%s appearance %u%s%u%s\n",
+                b, rb ? " type " : "", rb ? LD16(rb + 4) & 31u : 0u, rb ? "" : "(none)",
+                a, ra ? " type " : "", ra ? LD16(ra + 4) & 31u : 0u, ra ? "" : "(none)");
+        }
     }
     if (ui == active_ui && LD8(ui + 4) == 1) {
         // The first two native options are hunter fusion and separation.
@@ -715,6 +774,19 @@ static void smith_close(Cpu *c) { abort_child(c); fnhook_call_original(c, FN_SMI
 static void smith_dtor(Cpu *c) { abort_child(c); fnhook_call_original(c, FN_SMITH_DTOR); }
 static void smith_delete(Cpu *c) { abort_child(c); fnhook_call_original(c, FN_SMITH_DELETE); }
 
+// The fusion box's preview (the stats panel and the hunter model on the left) only knows armour: the native
+// equipment iteration visits types 1..5 and its "is this a fusable piece" check refuses weapons, so a highlighted
+// weapon shows "(None)". These are the Weapon Transmog mod's two fixes, as three words: widen the iteration to
+// types 1..21 and force that check. They are code patches of main (the functions run interpreted), applied before
+// the game starts when the fusion feature is on.
+void armor_fusion_preview_patches(void) {
+    static const uint32_t words[] = {0xE3A01015u};  // 0x863a80: mov r1,#5  -> mov r1,#0x15 (types 1..21)
+    mods_builtin_code_patch(0x863a80u - 0x200000u, words, 1, "armor-fusion");
+    static const uint32_t valid[] = {0xE3A00001u, 0xE3A00001u};  // 0x8646f0, 0x864710: bl f_2daeb8 -> mov r0,#1
+    mods_builtin_code_patch(0x8646f0u - 0x200000u, valid, 1, "armor-fusion");
+    mods_builtin_code_patch(0x864710u - 0x200000u, valid + 1, 1, "armor-fusion");
+}
+
 void armorfusion_init(void) {
     trace = getenv("MHGU_FUSION_TRACE") != NULL;
     const struct { uint32_t addr, word; } anchors[] = {
@@ -736,7 +808,9 @@ void armorfusion_init(void) {
         }
     }
     fusion_label = hle_alloc(32);
-    memcpy(G2H(fusion_label), "Armor Fusion", sizeof "Armor Fusion");
+    memcpy(G2H(fusion_label), "Equipment Fusion", sizeof "Equipment Fusion");
+    if (weapon_catalog_load()) LOG("[weapon-fusion] weapons are available in the fusion menu\n");
+    else LOG("[weapon-fusion] no weapon-fusion.wfus beside the executable: weapons off\n");
     fusion_question = hle_alloc(96);
     memcpy(G2H(fusion_question), "Choose monster materials to fuse these armor pieces?",
         sizeof "Choose monster materials to fuse these armor pieces?");

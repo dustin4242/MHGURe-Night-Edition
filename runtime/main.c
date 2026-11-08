@@ -84,6 +84,7 @@ static void boot(const char *root) {
     loader_load(exefs);
     kernel_init();
     dispatch_init();
+    if (armor_fusion_enabled()) armor_fusion_preview_patches();  // (a weapon's stats/model in the fusion box)
     mods_patch_code();  // (the mods' patches of the game's code: runtime/mods.c)
     // (Armor Fusion at every forge: runtime/hle/armorfusion.c)
     if (armor_fusion_enabled()) {
@@ -93,6 +94,7 @@ static void boot(const char *root) {
     forge_init();  // (Forge plugins in the mods: runtime/forge.c)
     hpscale_init();  // (large monster HP by the number of hunters: runtime/hle/hpscale.c)
     armor_class_init();  // (armour stats follow the equipped weapon's class: runtime/hle/armor_class.c)
+    weaponfusion_init();  // (a fused weapon's appearance id draws its model: runtime/hle/weaponfusion.c)
     villagehub_init();  // (Village quests at the Hub / Pub counter: runtime/hle/villagehub.c)
     urgentcredit_init();  // (Urgent quests count for all who clear them: runtime/hle/urgentcredit.c)
     mashrate_init();  // (mashing out of a stun at high frame rates: runtime/hle/mashrate.c)

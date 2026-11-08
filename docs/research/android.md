@@ -20,6 +20,10 @@ Needs the Android SDK (default /c/Android/Sdk, or ANDROID_HOME) with `ndk`, `cma
 `platforms/android-35`, and for testing `platform-tools`, `emulator` and an x86_64 system image; a JDK 17+ (default
 /c/Android/jdk-21, or JAVA_HOME). No Gradle: android/apk.mk packages the APK with the SDK's own tools.
 
+`./build_android.sh` wraps these (it finds the SDK, NDK, cmake, JDK and a platform itself); the build needs the game
+dump for the armor fusion catalog, `--game DIR` (default `./mhgu`), which it passes to make as `GAME=`. The raw make
+commands take the same setting (`GAME=../mhgu/game` is the Makefile's default):
+
     make PLATFORM=android ABI=x86_64 -j16        # the emulator's ABI: build-android/lib/x86_64, the APK
     make PLATFORM=android ABI=arm64-v8a -j16     # phones; the APK then holds both ABIs
     make PLATFORM=android ABI=x86_64 install     # adb install -r build-android/mhgurecomp.apk

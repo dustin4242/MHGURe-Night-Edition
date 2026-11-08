@@ -290,6 +290,24 @@ static void control_poll(void) {
                 playerpos_teleport(x, y, z, n >= 4 ? yaw : -1);
                 continue;
             }
+            if (!strcmp(cmd, "peek")) {  // peek <guest hex address> [words]: log guest memory (reverse engineering)
+                uint32_t a = (uint32_t)strtoul(arg, NULL, 16) & ~3u;
+                int n = arg[0] ? (arg2[0] ? atoi(arg2) : 1) : 0;
+                if (n < 1) n = 1;
+                if (n > 64) n = 64;
+                for (int i = 0; i < n; i++) LOG("[peek] %08x: %08x\n", a + 4u * i, LD32(a + 4u * i));
+                continue;
+            }
+            if (!strcmp(cmd, "setapp")) {  // setapp <weapon id hex>: the equipped weapon's appearance id (reverse engineering)
+                uint32_t sp = LD32(0x1a85b58);
+                if (sp < 0x08000000u || sp >= 0xa0000000u) { LOG("[setapp] no player\n"); continue; }
+                uint32_t e = sp + 0x94;
+                uint16_t old = LD16(e + 8);
+                ST16(e + 8, (uint16_t)strtoul(arg, NULL, 16));
+                LOG("[setapp] weapon entry %08x: type %u id %u, appearance %04x -> %04x\n", e, LD16(e + 4) & 31u,
+                    LD16(e + 6), old, LD16(e + 8));
+                continue;
+            }
             if (!strcmp(cmd, "poke")) {  // poke <guest hex address> <hex word>: write guest memory (reverse engineering)
                 uint32_t a = (uint32_t)strtoul(arg, NULL, 16) & ~3u, v = (uint32_t)strtoul(arg2, NULL, 16);
                 LOG("[poke] %08x: %08x -> %08x\n", a, LD32(a), v);
@@ -856,4 +874,6 @@ void host_input_update(void) {
         b &= ~(B(BTN_PLUS) | B(BTN_B));
     }
     input_set(b, clamp_axis(lx), clamp_axis(ly), clamp_axis(rx), clamp_axis(ry));
-}
+}
+//   peek <hex address> [words]  log guest memory (reverse engineering)
+//   setapp <weapon id hex>      the equipped weapon entry's appearance id (reverse engineering)

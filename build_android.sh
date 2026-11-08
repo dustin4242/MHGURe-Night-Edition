@@ -8,6 +8,7 @@
 #   ./build_android.sh --install                # build, then adb install -r onto the running device
 #   ./build_android.sh --dist 0.13.0            # release: dist/Android-MHGURecomp.<version>.apk (arm64-v8a only)
 #   ./build_android.sh --clean                  # drop the ABIs' objects and libraries, then build
+#   ./build_android.sh --game /path/to/mhgu     # the dump with exefs/ and romfs/ (default: ./mhgu)
 #   JOBS=8 ./build_android.sh                   # -j (default: nproc)
 #
 # Needs: the Android SDK (ANDROID_HOME or ANDROID_SDK_ROOT; else ~/Android/Sdk, /opt/android-sdk,
@@ -32,6 +33,7 @@ ABIS=()
 INSTALL=0
 DIST=""
 CLEAN=0
+GAME="${GAME:-mhgu}"
 JOBS="${JOBS:-$(nproc)}"
 
 while [ $# -gt 0 ]; do
@@ -40,6 +42,7 @@ while [ $# -gt 0 ]; do
         --install) INSTALL=1; shift ;;
         --dist)  [ $# -ge 2 ] || die "--dist needs the version (e.g. 0.13.0)"; DIST="$2"; shift 2 ;;
         --clean) CLEAN=1; shift ;;
+        --game)  [ $# -ge 2 ] || die "--game needs the dump folder (exefs/ and romfs/ inside)"; GAME="$2"; shift 2 ;;
         --jobs|-j) [ $# -ge 2 ] || die "--jobs needs a number"; JOBS="$2"; shift 2 ;;
         -h|--help) usage 0 ;;
         *) die "unknown option '$1' (see --help)" ;;
@@ -50,6 +53,11 @@ for abi in "${ABIS[@]}"; do
     case "$abi" in arm64-v8a|x86_64) ;; *) die "unknown ABI '$abi': arm64-v8a (phones), x86_64 (emulator)" ;; esac
 done
 [ -n "$DIST" ] && [ ${#ABIS[@]} -gt 1 ] && warn "--dist builds the release from arm64-v8a only; the other ABIs are not packaged"
+
+# The build derives the armor fusion catalog from the dump (runtime/armor_fusion.c), so it needs one.
+GAME="${GAME%/}"
+[ -f "$GAME/exefs/main" ] || die "no $GAME/exefs/main: pass --game <folder with exefs/ and romfs/> (default: ./mhgu)"
+[ -d "$GAME/romfs/nativeNX/table" ] || die "no $GAME/romfs/nativeNX/table: pass --game <folder with exefs/ and romfs/>"
 
 # ------------------------------------------------------------------ the SDK
 find_sdk() {
@@ -108,9 +116,9 @@ export ANDROID_SDK_ROOT="$SDK"
 export JAVA_HOME="$JDK"
 
 log "SDK $SDK"
-printf '   NDK         %s\n   cmake       %s\n   build-tools %s\n   platform    android-%s\n   JDK         %s (%s)\n   ABIs        %s\n   jobs        %s\n' \
+printf '   NDK         %s\n   cmake       %s\n   build-tools %s\n   platform    android-%s\n   JDK         %s (%s)\n   ABIs        %s\n   game        %s\n   jobs        %s\n' \
     "$(basename "$NDK_DIR")" "$(basename "$CMAKE_DIR")" "$(basename "$BUILD_TOOLS")" "$PLATFORM_API" \
-    "$JDK" "$("$JDK/bin/java" -version 2>&1 | head -1)" "${ABIS[*]}" "$JOBS"
+    "$JDK" "$("$JDK/bin/java" -version 2>&1 | head -1)" "${ABIS[*]}" "$GAME" "$JOBS"
 
 # ------------------------------------------------------------------ install(1) workaround
 # Some filesystems (ntfs-3g / fuseblk, e.g. a repo on an NTFS drive) let chmod(1) through but make coreutils'
@@ -172,7 +180,7 @@ fi
 START=$SECONDS
 for abi in "${ABIS[@]}"; do
     log "building $abi"
-    make PLATFORM=android ABI="$abi" ANDROID_JAR="$ANDROID_JAR" -j"$JOBS"
+    make PLATFORM=android ABI="$abi" ANDROID_JAR="$ANDROID_JAR" GAME="$GAME" -j"$JOBS"
 done
 
 APK=build-android/mhgurecomp.apk
@@ -190,5 +198,5 @@ if [ "$INSTALL" = 1 ]; then
 fi
 if [ -n "$DIST" ]; then
     log "release $DIST (arm64-v8a, release key)"
-    make PLATFORM=android ABI=arm64-v8a ANDROID_JAR="$ANDROID_JAR" -j"$JOBS" dist VERSION="$DIST"
+    make PLATFORM=android ABI=arm64-v8a ANDROID_JAR="$ANDROID_JAR" GAME="$GAME" -j"$JOBS" dist VERSION="$DIST"
 fi

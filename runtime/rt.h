@@ -133,6 +133,7 @@ bool host_input_press(const char *button, unsigned frames);  // scripted press f
 void quickhunt_poll(void);               // (debug) MHGU_QUICKHUNT's presses (runtime/hle/quickhunt.c; UI thread)
 void playerpos_log(void);                // (debug) F2: logs the player's position and facing (runtime/hle/playerpos.c; UI thread)
 void playerpos_teleport(float x, float y, float z, float yaw);  // (debug) control file "tp": the player there (yaw < 0 keeps it)
+void weaponfusion_init(void);            // a weapon entry's appearance id draws that weapon's model (hle/weaponfusion.c)
 
 // ---- helpers
 void guest_call(Cpu *c, uint32_t addr);   // call a guest function (saves / restores lr)

@@ -51,4 +51,5 @@ bool fusion_catalog_load(void);
 bool fusion_classify(FusionPiece *piece);
 bool fusion_recipe(FusionPiece *base, FusionPiece *appearance, FusionRecipe *recipe);
 void armorfusion_init(void);
+void armor_fusion_preview_patches(void);  // before mods_patch_code: the fusion box's weapon preview (see armorfusion.c)
 #endif
