@@ -839,6 +839,7 @@ static bool ui_relax_scissor;  // the draw being set up moved a HUD piece out fr
 static int ui_scissor_v = -1;  // 16:10: the draw being set up is a HUD piece anchored so (0 top, 1 centre, 2 bottom),
                                // and its scissor moves with it
 static bool ui_menu_pass;  // this pass drew a layer 97 menu before (the windows of layer 100 then sit beside Top-anchored ones)
+static uint64_t ui_menu_frame = UINT64_MAX;  // the frame that drew a layer 97 menu last (the window of layer 100 may be drawn before it)
 // The HUD quads this pass drew last (16:9 canvas place, vertical anchor 0 top / 1 centre / 2 bottom, horizontal 0 left /
 // 1 right / 2 centre): a model preview follows the window drawn over it (ui_preview_map)
 #define UI_RECENT 256
@@ -941,6 +942,9 @@ static void ui_group_end(void) {
         return;
     }
     int v = n < 2 ? -1 : ui_group_vanchor();
+    // A window with as much room above it as below (the "Save your game progress?" dialog, the travel map, the Hire
+    // window) is a centred dialog: on a narrower picture it stays centred instead of taking its layer's top anchor.
+    if (g_render_aspect < 16.0f / 9.0f && n >= 2 && fabsf(ui_group.ymin + ui_group.ymax - 720.0f) < 24.0f) v = 1;
     ui_group_remember(v >= 0 ? v : ui_group.p[0].vanchor);
     ui_group.n = 0;
     if (v < 0) return;
@@ -959,9 +963,15 @@ static void ui_group_add(float *m, float pos_z, float pos_x, float pos_y, int va
     // pieces line up with the rest of it on one side: its other corner, its bottom edge). Wider than 16:9 by place alone:
     // the pieces' own anchors are the ones that split a window there.
     const float margin = 24.0f;
-    bool apart = (g_render_aspect > 16.0f / 9.0f || !(ui_group.anchors & (1u << vanchor))) &&
+    // (Narrower than 16:9 only: wider pictures keep the grouping they had.) Far beyond the group both sideways and
+    // vertically: another window's (the travel menu's prompts under its Hire window, which shares their Bottom
+    // anchor), however the anchors agree.
+    bool far = g_render_aspect < 16.0f / 9.0f &&
+               (pos_x < ui_group.xmin - 100.0f || pos_x > ui_group.xmax + 100.0f) &&
+               (pos_y < ui_group.ymin - 100.0f || pos_y > ui_group.ymax + 100.0f);
+    bool apart = far || ((g_render_aspect > 16.0f / 9.0f || !(ui_group.anchors & (1u << vanchor))) &&
                  (pos_x < ui_group.xmin - margin || pos_x > ui_group.xmax + margin) &&
-                 (pos_y < ui_group.ymin - margin || pos_y > ui_group.ymax + margin);
+                 (pos_y < ui_group.ymin - margin || pos_y > ui_group.ymax + margin));
     if (ui_group.n && (fabsf(pos_z - ui_group.z) > 0.5f || pos_y < ui_group.ymin - 400.0f || pos_y > ui_group.ymax + 400.0f ||
                        apart || ui_group.n == UI_GROUP_MAX))
         ui_group_end();
@@ -1632,7 +1642,7 @@ static void begin_pass(void) {
     ui_stamp_pass = false;
     ui_results_pass = false;
     ui_meownster_pass = false;
-    ui_menu_pass = false;
+    ui_menu_pass = g_render_aspect < 16.0f / 9.0f && ui_menu_frame != UINT64_MAX && g_present_count <= ui_menu_frame + 1;
     ui_nrecent = 0;
     pass_msaa = false;
     // (MSAA: a colour target 3D models were drawn into lately (ms_expand), while they are; once they are not, it is like
@@ -3270,7 +3280,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         }
                         // The Quest Complete banner's lower border slides in from y 739: it belongs to the bottom edge.
                         vanchor = pos_y > 650.0f ? V_BOTTOM : V_TOP;
-                        if (fabsf(pos_z - 97.0f) < 0.5f) ui_menu_pass = true;
+                        if (fabsf(pos_z - 97.0f) < 0.5f) ui_menu_pass = true, ui_menu_frame = g_present_count;
                         // The Quest Complete stamp is one picture, after its borders (x 640, by the top and bottom edges; the
                         // lower one slides in from y 739). Right / Left by place split it on a wide picture, its tilted
                         // "QUEST" (x -17) left of the rest.
@@ -3286,7 +3296,10 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         // The left windows (Request Log info panel, quest card: x < 630, y < 560) are drawn here too, beside the Top-anchored menus
                         // of layer 97: one anchor for the whole window, or it splits. Without a menu in the pass (the results screen, whose
                         // labels on the left and numbers on the right are one table) they stay Bottom like the rest of the layer.
-                        vanchor = ((pos_x > 1000.0f && pos_y < 360.0f) || pos_y < 10.0f || (ui_menu_pass && pos_x < 630.0f && pos_y < 560.0f)) ? V_TOP : V_BOTTOM;
+                        // The smithy's parchment (the model preview panel, x 313, y 46: it is drawn before its menus, so
+                        // ui_menu_pass is not set yet) belongs to the top too, on a narrower picture.
+                        vanchor = ((pos_x > 1000.0f && pos_y < 360.0f) || (pos_y < 100.0f && g_render_aspect < 16.0f / 9.0f) ||
+                                   (ui_menu_pass && pos_x < 630.0f && pos_y < 560.0f)) ? V_TOP : V_BOTTOM;
                     } else if (fabsf(pos_z - 103.0f) < 0.5f) {
                         // 103.0: In-hunt Status HUD & Item Selector
                         // Status HUD (Clock, HP bar, Stamina, gauges, palico status: y < 500) -> Left anchor
@@ -3313,6 +3326,15 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                         // 99.0: the results screen's rule between its rows (y 266) is drawn here, beside rows of layer 100 that sit
                         // Bottom: no center band, or the line cuts through the numbers.
                         if (fabsf(pos_z - 99.0f) < 0.5f && vanchor == V_CENTER) vanchor = V_BOTTOM;
+                    }
+                    // Front-end screens (Main Menu, Character Select): their layout is 16:9 and the game draws the
+                    // backdrop letterboxed on a narrower picture (720 high against the 4:3 frame). The whole HUD takes
+                    // that letterbox transform (scale about y 360: y * 0.75 + 90) instead of the per-layer anchors, so
+                    // the banner stays at the top left and the list / save slots stay where 16:9 has them, on the
+                    // backdrop rather than in its bars.
+                    if (ui_frontend_pass && g_render_aspect < 16.0f / 9.0f) {
+                        anchor = ANCHOR_CENTER;
+                        vanchor = V_CENTER;
                     }
 
                     // Quest results screen: its header and page counter at the top, the Time Left bar at the bottom (layer
