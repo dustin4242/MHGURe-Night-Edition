@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/images/logo.svg" alt="GU Recomp" width="440"></p>
+<p align="center"><img src="docs/images/armor-from-either-class.png" alt="GU Night Edition" width="440"></p>
 
 <p align="center">
   <a href="https://github.com/morerokk/MHGURecomp/releases/latest"><img src="https://img.shields.io/github/v/release/morerokk/MHGURecomp?style=flat-square&label=release&labelColor=1d1e22&color=c58a2e" alt="Latest release"></a>
