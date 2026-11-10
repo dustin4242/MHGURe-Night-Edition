@@ -6,13 +6,13 @@
 // stock entry, and the per-frame update moves the pager to that entry while an editor is open,
 // so the engine still edits the right setting.
 //
-// Audio holds Music Volume and SFX Volume. Gameplay holds HUD, Map, Melody Effect Display and
-// Lens Flares, plus the live controller-glyph Icons row. Controls
+// Audio holds Music Volume and SFX Volume. Gameplay holds the live FOV row, HUD, Map, Melody Effect
+// Display and Lens Flares, plus the live controller-glyph Icons row. Controls
 // holds the 19 control-related entries in their stock order (3 pages). Graphics is the custom
-// six-row menu: Display (Aspect Ratio / Resolution / Framerate / VSync), FXAA, MSAA, FSR, FSR
-// Quality and FSR Sharpness. The count virtual (+0x60) reports 6 for the main list, 2 for Audio,
-// 5 for Gameplay (4 without the pp4 Icons row), 19 for Controls, 6 for Graphics, 3 for
-// Multiplayer and 4 for Display; the menu rows are drawn from the HUD slot (item 2) with their own labels.
+// eight-row menu: Display (Aspect Ratio / Resolution / Framerate / VSync), Render Res, FXAA, MSAA,
+// FSR, FSR Quality, FSR Sharpness and Shader Prewarm. The count virtual (+0x60) reports 7 for the main
+// list, 2 for Audio, 7 for Gameplay (6 without the pp4 Icons row), 19 for Controls, 8 for Graphics, 3
+// for Multiplayer and 4 for Display; the menu rows are drawn from the HUD slot (item 2) with their own labels.
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -55,8 +55,8 @@
 #define MP_ITEM      4u               // the Multiplayer row in the compact list
 #define CTRL_ROWS    19u              // control-related stock entries, in the Controls submenu
 #define AUDIO_ROWS   2u               // Music Volume, SFX Volume
-#define GAMEPLAY_ROWS 4u              // HUD, Map, Melody Effect Display, Lens Flares
-#define GAMEPLAY_ICONS_ROW 4u         // the custom Icons row inside Gameplay
+#define GAMEPLAY_FOV_ROW 0u           // the custom FOV row at the top of Gameplay
+#define GAMEPLAY_ROWS 5u              // FOV, HUD, Map, Melody Effect Display, Lens Flares
 
 // Multiplayer submenu rows
 #define MP_HOST    0
@@ -69,13 +69,14 @@
 
 // Graphics menu rows (page 0).
 #define ROW_DISPLAY  0
-#define ROW_FXAA     1
-#define ROW_MSAA     2
-#define ROW_FSR      3
-#define ROW_FSRQ     4
-#define ROW_SHARP    5
-#define ROW_PREWARM  6
-#define GFX_ROWS     7u
+#define ROW_RENRES   1                // the 3D render resolution's scale
+#define ROW_FXAA     2
+#define ROW_MSAA     3
+#define ROW_FSR      4
+#define ROW_FSRQ     5
+#define ROW_SHARP    6
+#define ROW_PREWARM  7
+#define GFX_ROWS     8u
 
 // Display submenu rows (its own one-page view).
 #define DISP_ASPECT  0
@@ -89,6 +90,7 @@
 // current row's texts just before that row is built — each row has its own list.
 static const char *const g_row_texts[GFX_ROWS][5] = {
     {NULL, NULL, NULL, NULL, NULL},        // Display: opens the nested menu, no value
+    {NULL, NULL, NULL, NULL, NULL},        // Render Res: the current percentage goes into two slots
     {"Off", "On", NULL, NULL, NULL},       // FXAA
     {"Off", "2x", "4x", "8x", NULL},       // MSAA
     {"Off", "FSR 3", "FSR 4", NULL, NULL}, // FSR
@@ -96,8 +98,8 @@ static const char *const g_row_texts[GFX_ROWS][5] = {
     {NULL, NULL, NULL, NULL, NULL},        // FSR Sharpness: the current value goes into two slots
     {"Off", "On", NULL, NULL, NULL},       // Shader Prewarm
 };
-static const char *const g_row_names[GFX_ROWS] = {"Display", "FXAA", "MSAA", "FSR", "FSR Quality",
-                                                  "FSR Sharpness", "Shader Prewarm"};
+static const char *const g_row_names[GFX_ROWS] = {"Display", "Render Res", "FXAA", "MSAA", "FSR",
+                                                  "FSR Quality", "FSR Sharpness", "Shader Prewarm"};
 static const char *const g_disp_names[DISP_ROWS] = {"Aspect Ratio", "Resolution", "Framerate", "VSync"};
 // Aspect ratios and vertical resolutions for the Display submenu. The width is computed from
 // the two: width = round(height * ratio), made even.
@@ -109,7 +111,7 @@ static const int g_vert_vals[6] = {480, 720, 960, 1080, 1440, 2160};
 // the engine still edits the original entry behind a moved row.
 static const uint8_t g_ctrl_map[CTRL_ROWS] = {4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 20, 21, 22, 23, 24};
 static const uint8_t g_audio_map[AUDIO_ROWS] = {0, 1};
-static const uint8_t g_gameplay_map[GAMEPLAY_ROWS] = {2, 3, 15, 19};
+static const int g_gameplay_map[GAMEPLAY_ROWS] = {-1, 2, 3, 15, 19};  // -1: our FOV row
 static int main_orig(uint32_t f) { return f == 5u ? 25 : f == 6u ? 26 : -1; }
 static uint32_t gameplay_icons_row(void) { return GAMEPLAY_ROWS; }
 static uint32_t gameplay_hdui_row(void) { return GAMEPLAY_ROWS + (icons_available() ? 1u : 0u); }
@@ -168,6 +170,8 @@ static int g_lbl_cur;
 static uint32_t g_tbl;                // borrowed slot (Camera Angle), patched while the menu shows
 static uint32_t g_tbl_w[16];
 static int g_fsrq_disp;               // which of the two value strings the FSR Quality row shows
+static int g_rr_disp;                 // the same, for the Render Res row
+static int g_fov_disp;                // the same, for the Gameplay FOV row
 static int g_fps_disp;                // which of the two value strings the Framerate row shows
 static int g_ar_disp, g_rh_disp;      // the same, for the Display submenu's rows
 static int g_num_edit;                // typing the Resolution height in the row
@@ -181,6 +185,8 @@ static uint32_t g_icons_lbl[2];
 static int g_icons_lbl_cur;
 static uint32_t g_hdui_lbl[2];
 static int g_hdui_lbl_cur;
+static uint32_t g_fov_lbl[2];
+static int g_fov_lbl_cur;
 
 // Multiplayer view: an address typed per session (never written to the INI), one probe and status.
 static int g_mp_menu;
@@ -239,6 +245,56 @@ static void hdui_label_refresh(void)
     put(g_hdui_lbl[g_hdui_lbl_cur], "HD UI");
 }
 
+// The FOV row: 0.5..2.0 in 0.05 steps, its value shown on the right like FSR Sharpness.
+static int fov_index(void)
+{
+    int i = (int)((g_config.fov - 0.5f) * 20.0f + 0.5f);
+    return i < 0 ? 0 : i > 30 ? 30 : i;
+}
+
+static const char *fov_text(void)
+{
+    static char buf[8];
+    snprintf(buf, sizeof buf, "x%.2f", 0.5 + (double)fov_index() * 0.05);
+    return buf;
+}
+
+static void fov_label_refresh(void)
+{
+    if (!g_fov_lbl[0]) return;
+    g_fov_lbl_cur ^= 1;
+    put(g_fov_lbl[g_fov_lbl_cur], "FOV");
+}
+
+static void fill_fov_row(void)
+{
+    ensure_bufs();
+    uint32_t b = g_fov_lbl[g_fov_lbl_cur];
+    memset(G2H(b), 0, 32);
+    put(b, "FOV");
+    if (g_tbl) {
+        // The value is shown on the right like FSR Sharpness: the current text in slots 3/4,
+        // reported alternately so each change swaps the string pointer and redraws.
+        const char *t = fov_text();
+        put(g_tbl + 34u, t);
+        put(g_tbl + 41u, t);
+    }
+}
+
+// The Render Res row: 0.1..2.0 in 0.1 steps (10%..200%).
+static int rr_index(void)
+{
+    int i = (int)(g_config.render_scale * 10.0f + 0.5f);
+    return i < 1 ? 1 : i > 20 ? 20 : i;
+}
+
+static const char *rr_text(void)
+{
+    static char buf[8];
+    snprintf(buf, sizeof buf, "%d%%", rr_index() * 10);
+    return buf;
+}
+
 static void fill_hdui_row(void)
 {
     ensure_bufs();
@@ -291,6 +347,9 @@ static void ensure_bufs(void)
     g_hdui_lbl[0] = hle_alloc(32);
     g_hdui_lbl[1] = hle_alloc(32);
     hdui_label_refresh();
+    g_fov_lbl[0] = hle_alloc(32);
+    g_fov_lbl[1] = hle_alloc(32);
+    fov_label_refresh();
     g_mp_main_lbl = hle_alloc(16);
     put(g_mp_main_lbl, "Multiplayer");
     for (int r = 0; r < (int)MP_ROWS; r++) {
@@ -592,6 +651,15 @@ static void fill_row(int disp_menu, int row)
         if (g_tbl) put(g_tbl + 13u, "");   // the row opens a submenu and shows no value
         return;
     }
+    if (row == ROW_RENRES) {
+        // 10%..200%: the current text goes into slots 0 and 1, reported alternately to redraw.
+        const char *t = rr_text();
+        if (g_tbl) {
+            put(g_tbl + 13u, t);
+            put(g_tbl + 20u, t);
+        }
+        return;
+    }
     if (row == ROW_FSRQ) {
         // The names are longer than the borrowed slot's seven-byte strings, so only the current
         // one is written, into slots 0 and 4 (28 bytes apart, no overlap). Reporting 0 or 4
@@ -641,8 +709,9 @@ static uint32_t opt_flat(uint32_t w)
 // custom Graphics/Display rows. These are fillers; edit the strings to change the help box text.
 enum {
     CH_MAIN_AUDIO, CH_MAIN_GAMEPLAY, CH_MAIN_CTRL, CH_MAIN_GFX, CH_MAIN_ICONS, CH_MAIN_MP,
-    CH_GFX_DISPLAY, CH_GFX_FXAA, CH_GFX_MSAA, CH_GFX_FSR, CH_GFX_FSRQ, CH_GFX_SHARP, CH_GFX_PREWARM,
-    CH_DSP_ASPECT, CH_DSP_RES, CH_DSP_FPS, CH_DSP_VSYNC, CH_GAMEPLAY_HDUI, CH_COUNT
+    CH_GFX_DISPLAY, CH_GFX_RENRES, CH_GFX_FXAA, CH_GFX_MSAA, CH_GFX_FSR, CH_GFX_FSRQ, CH_GFX_SHARP,
+    CH_GFX_PREWARM, CH_DSP_ASPECT, CH_DSP_RES, CH_DSP_FPS, CH_DSP_VSYNC, CH_GAMEPLAY_FOV, CH_GAMEPLAY_HDUI,
+    CH_COUNT
 };
 static const char *const g_custom_help[CH_COUNT] = {
     "Custom Audio Description",
@@ -652,6 +721,7 @@ static const char *const g_custom_help[CH_COUNT] = {
     "Choose the controller button icons.",
     "Shows hosting status; type a host IP or domain and connect.",
     "Custom Display Description",
+    "Scales the 3D picture only; applies at the next start.",
     "Custom FXAA Description",
     "Custom MSAA Description",
     "Custom FSR Description",
@@ -662,6 +732,7 @@ static const char *const g_custom_help[CH_COUNT] = {
     "Custom Resolution Description",
     "Custom Framerate Description",
     "Custom VSync Description",
+    "Camera field of view, 1.0 is the game's.",
     "Switch the HD UI textures on or off.",
 };
 static uint32_t g_custom_guest[CH_COUNT];
@@ -705,6 +776,7 @@ static int custom_help_index(uint32_t w)
     }
     if (g_sub == SUB_GAMEPLAY) {
         uint32_t f = opt_flat(w);
+        if (f == GAMEPLAY_FOV_ROW) return CH_GAMEPLAY_FOV;
         if (icons_available() && f == gameplay_icons_row()) return CH_MAIN_ICONS;
         if (hd_ui_available() && f == gameplay_hdui_row()) return CH_GAMEPLAY_HDUI;
     }
@@ -945,7 +1017,7 @@ static void opt_row(Cpu *c)
     int on = is_opt(c);
     uint32_t item = c->r[3];
     uint32_t abs = on ? row_abs(c->r[0], c->r[2], item) : 0u;
-    int menu_row = -1, sub_row = -1, orig = -1, icons_row = 0, hdui_row = 0;
+    int menu_row = -1, sub_row = -1, orig = -1, icons_row = 0, hdui_row = 0, fov_row = 0;
     if (on) {
         if (g_opt_obj != c->r[0]) {           // the window just opened: its opening press is not input
             g_opt_obj = c->r[0];
@@ -957,7 +1029,11 @@ static void opt_row(Cpu *c)
             icon_label_refresh();
             g_swallow_a = 1;                  // do not let the opening press click the first row
         }
-        if (g_sub == SUB_GAMEPLAY && abs == gameplay_icons_row() && icons_available()) {
+        if (g_sub == SUB_GAMEPLAY && abs == GAMEPLAY_FOV_ROW) {
+            c->r[2] = 0u;                     // borrow the Camera Angle value slot
+            c->r[3] = VALUE_ITEM;
+            fov_row = 1;
+        } else if (g_sub == SUB_GAMEPLAY && abs == gameplay_icons_row() && icons_available()) {
             c->r[2] = 0u;
             c->r[3] = VALUE_ITEM;
             icons_row = 1;
@@ -1015,6 +1091,13 @@ static void opt_row(Cpu *c)
         }
         fill_hdui_row();
         ST32(out, g_hdui_lbl[g_hdui_lbl_cur]);
+    } else if (fov_row) {
+        if (!g_tbl && src >= 0x10000000u && src < 0x1c000000u) {
+            g_tbl = src;
+            for (int i = 0; i < 16; i++) g_tbl_w[i] = LD32(src + (uint32_t)i * 4u);
+        }
+        fill_fov_row();
+        ST32(out, g_fov_lbl[g_fov_lbl_cur]);
     } else if (g_mp_menu) {
         if (sub_row == MP_CONNECT) {
             ensure_bufs();
@@ -1063,6 +1146,10 @@ static void opt_value(Cpu *c)
     if (is_opt(c)) {
         if (is_sub()) {
             uint32_t row = row_abs(c->r[0], c->r[1], c->r[2]);
+            if (g_sub == SUB_GAMEPLAY && row == GAMEPLAY_FOV_ROW) {
+                c->r[0] = 3u + (uint32_t)g_fov_disp;   // slots 3/4 (the value text is written there)
+                return;
+            }
             if (g_sub == SUB_GAMEPLAY && row == gameplay_icons_row() && icons_available()) {
                 c->r[0] = 2u + (uint32_t)g_config.icons;
                 return;
@@ -1095,6 +1182,7 @@ static void opt_value(Cpu *c)
         if (g_gfx_menu) {
             switch (c->r[2]) {                // the row is the item argument
             case ROW_DISPLAY: c->r[0] = 0u; break;
+            case ROW_RENRES: c->r[0] = (uint32_t)g_rr_disp; break;
             case ROW_MSAA: c->r[0] = (uint32_t)msaa_index(g_config.msaa); break;
             case ROW_FSR: c->r[0] = (uint32_t)fsr_sel(); break;
             case ROW_FSRQ: c->r[0] = (uint32_t)g_fsrq_disp; break;
@@ -1466,6 +1554,28 @@ void pausepages_input(uint64_t *buttons)
             leave_stock_menu();
             return;
         }
+        if (g_sub == SUB_GAMEPLAY && g_opt_obj && LD8(PW_ROW(g_opt_obj)) == GAMEPLAY_FOV_ROW) {
+            // The live FOV row: its value is stepped here (0.05 a press, 0.5..2.0) and the borrowed
+            // Camera Angle slot never sees A or left/right, so its stock editor cannot open.
+            int dir = (*buttons & (1ull << BTN_RIGHT)) ? 1 : (*buttons & (1ull << BTN_LEFT)) ? -1 : 0;
+            *buttons &= ~((1ull << BTN_A) | (1ull << BTN_LEFT) | (1ull << BTN_RIGHT));
+            if (g_a_pressed_ns != g_a_last) g_a_last = g_a_pressed_ns;
+            if (g_lr_pressed_ns != g_lr_last) {
+                g_lr_last = g_lr_pressed_ns;
+                int i = fov_index() + dir;
+                i = i < 0 ? 0 : i > 30 ? 30 : i;
+                if (dir && i != fov_index()) {
+                    char buf[8];
+                    g_config.fov = 0.5f + (float)i * 0.05f;
+                    snprintf(buf, sizeof buf, "%.2f", (double)g_config.fov);
+                    config_save_key("FOV", buf);       // the live value (config_store_loaded publishes it)
+                        g_fov_lbl_cur ^= 1;
+                    g_refresh = 1;
+                    LOG("[pausepages] FOV -> x%s\n", buf);
+                }
+            }
+            return;
+        }
         if (g_sub == SUB_GAMEPLAY && g_opt_obj && LD8(PW_ROW(g_opt_obj)) == gameplay_icons_row() && icons_available()) {
             // Never let the borrowed Camera Angle slot see A or left/right while this row is selected:
             // its stock editor would open. Up/down still navigate the list.
@@ -1625,6 +1735,18 @@ void pausepages_input(uint64_t *buttons)
         switch (row) {
         case ROW_DISPLAY:
             return;                            // the nested Display view has its own rows
+        case ROW_RENRES: {
+            int i = rr_index() + (dir > 0 ? 1 : -1);
+            i = i < 1 ? 1 : i > 20 ? 20 : i;
+            if (i == rr_index()) return;
+            char buf[8];
+            g_config.render_scale = (float)i * 0.1f;
+            snprintf(buf, sizeof buf, "%.1f", (double)g_config.render_scale);
+            g_rr_disp ^= 1;
+            config_save_key("RenderScale", buf);
+            LOG("[pausepages] Render Res -> %s (takes effect on the next start)\n", rr_text());
+            break;
+        }
         case ROW_MSAA: {
             int i = (msaa_index(g_config.msaa) + (dir > 0 ? 1 : 3)) & 3;
             g_config.msaa = msaa_value(i);

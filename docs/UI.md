@@ -654,12 +654,12 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   Target Cam Behavior, Terrain-savvy Camera, Control Type, +/L/R/R Stick/L Stick Controls) move
   into a **Controls** submenu, in their stock order, three pages of eight. Music Volume and SFX
   Volume move into **Audio** (two rows); HUD, Map, Melody Effect Display and Lens Flares move
-  into **Gameplay**. The compact one-page main list is `Gameplay`, `Audio`, `Controls`,
-  `Graphics`, `Multiplayer`, `Default Settings`, `Reset All Settings` (7 rows). `Gameplay` has HUD, Map,
-  Melody Effect Display, Lens Flares and, when the pp4 data is built, `Icons` and `HD UI`; the
-  count virtual `f_7e7534` reports 7 for the main list, 2 for Audio, 6 for Gameplay (5 with one
-  of the two pp4 rows, 4 without them), 19 for Controls, 6 for Graphics, 3 for Multiplayer and 4
-  for Display. The four menu rows are
+  into **Gameplay**, below the live `FOV` row. The compact one-page main list is `Gameplay`, `Audio`,
+  `Controls`, `Graphics`, `Multiplayer`, `Default Settings`, `Reset All Settings` (7 rows).
+  `Gameplay` has `FOV`, HUD, Map, Melody Effect Display, Lens Flares and, when the pp4 data is built,
+  `Icons` and `HD UI`; the count virtual `f_7e7534` reports 7 for the main list, 2 for Audio, 7 for
+  Gameplay (6 with one of the two pp4 rows, 5 without them), 19 for Controls, 8 for Graphics, 3 for
+  Multiplayer and 4 for Display. The four menu rows are
   drawn from the HUD slot (item 2) with their own labels and empty values. One shared stock-submenu path (`g_sub`) does
   the pager save/restore, row/value remap and editor remap for Audio, Gameplay and Controls.
   The A press that opens a view is masked until it is released (`g_swallow_a`), so the held
@@ -727,20 +727,29 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   editor (A, left/right, up/down all reach the engine; the update hook does the remap), so the
   normal value ranges, wrap-around and help text work. B cancels an open editor (passed through)
   or returns to the compact list; Plus cancels and closes the pause menu.
-- **Graphics submenu (six rows):** A on that row is intercepted in the input layer (that list
-  index runs "Reset All Settings", so the press is masked) and switches the same window to a
-  six-row view: item count 6, rows/page 6, one page. The rows are `Display`, `FXAA`, `MSAA`,
-  `FSR`, `FSR Quality` and `FSR Sharpness`. The top row has no value and opens the nested
-  four-row **Display** view (see below). All six borrow the "Camera Angle" slot (item 4, five
-  value strings at +13/+20/+27/+34/+41). The window copies a row's value text while it builds
+- **Graphics submenu (eight rows):** A on that row is intercepted in the input layer (that list
+  index runs "Reset All Settings", so the press is masked) and switches the same window to an
+  eight-row view: item count 8, rows/page 8, one page. The rows are `Display`, `Render Res`, `FXAA`,
+  `MSAA`, `FSR`, `FSR Quality`, `FSR Sharpness` and `Shader Prewarm`. The top row has no value and
+  opens the nested four-row **Display** view (see below). The value rows borrow the "Camera Angle"
+  slot (item 4, five value strings at +13/+20/+27/+34/+41). The window copies a row's value text while it builds
   that row, so the five value strings are rewritten with the current row's texts just before the
   row is built: each row has its own list on the same slot (`FXAA Off/On`, `MSAA Off/2x/4x/8x`,
   `FSR Off/FSR 3/FSR 4`, `FSR Quality NativeAA/Quality/Balanced/Perf/UltraPerf`). FSR Quality's
   names are longer than the slot's seven-byte strings and FSR Sharpness has ten steps (0.1..1.0),
   neither of which fit the five strings. Those rows instead write only the *current* text, into
   two strings far enough apart not to overlap, and report 0 or 4 (Quality) / 0 or 1 (Sharpness)
-  alternately, so each change swaps the string pointer and the row redraws. The labels come from
-  alternating host buffers (`hle_alloc`). The borrowed block is saved and restored around the
+  alternately, so each change swaps the string pointer and the row redraws. `Render Res` is the
+  same: its 10%..200% text goes into slots 0/1 and value 0/1 alternately; left/right steps it by
+  10% (`[Display] RenderScale`), and the INI note says the next start applies it (the game's render
+  targets are made at start-up, like Resolution / FSR Quality). The labels come from
+  alternating host buffers (`hle_alloc`). `RenderScale` scales only the 3D picture: `config.c`
+  sets `g_render_size` to the scaled size and, with FSR off, `g_fsr_output` to the unscaled output
+  size; `nvn/vulkan/fsr.c`'s plain-scaling path (`g_scale_on`, the same output-size stand-ins and
+  per-pass viewport scaling FSR uses) then draws the HUD and the present at the output size while
+  the 3D image is blitted into them, so menus, text and the HUD stay sharp at any scale. Below 1.0 that blit uses
+  nearest-neighbour (the low resolution's own pixels, crisp and blocky); above 1.0 it keeps the bilinear average that
+  supersampling needs. The borrowed block is saved and restored around the
   menu. The pager fields are saved and restored too (row +0xd, rows/page +0xe, page +0x10, page
   count +0x12, **total items +0x14**).
 - **Display submenu (nested):** A on the top `Display` row (masked, like the Graphics row) shrinks
@@ -756,7 +765,7 @@ Speed, Scope Controls) logs the same six functions every time — see §4 for th
   derives the aspect from the window), and the row shows the actual height if the INI has one
   outside the six choices. Framerate and VSync use the same two-slot current-text method (eight
   rates and Off/On). The pager of the Graphics view is saved and restored, so B returns to the
-  six-row menu and a second B to the Options list. Changing the resolution rebuilds the window,
+  eight-row menu and a second B to the Options list. Changing the resolution rebuilds the window,
   swapchain and game render targets, so it takes effect on the next start — the log says so;
   Framerate and VSync apply live.
 - **Applying the values:** `fxaa_skipped()` reads `g_config.fxaa` every frame (FXAA applies

@@ -77,7 +77,9 @@ Fixed on the way (2026-10-20):
   ~880 MB/s to ~8 MB/s; mailbox presentation (FIFO with 2 images held the game at ~26 fps).
 - Settings: mhgurecomp.ini in the game folder (runtime/config.c; written with the defaults when missing): Mode = Fullscreen /
   Windowed / Borderless, Resolution = WxH or Desktop (the screen's real pixels: on a scaled Wayland desktop, SDL's desktop
-  size x its pixel density), RenderResolution = Auto or WxH, FPS = 30..240, VSync. Alt+Enter
+  size x its pixel density), RenderResolution = Auto or WxH, RenderScale = 0.1..2.0 (scales only the 3D picture:
+  below 1 renders less and upscales with nearest-neighbour (crisp pixels), above 1 supersamples, while the HUD stays
+  at full resolution on an output-size stand-in; the Options menu's `Render Res` row, applied at start-up), FPS = 30..240, VSync. Alt+Enter
   toggles windowed / full screen. The 3D resolution is the game's own docked render size (main 0xdbcd34 / 0xdbcd38,
   `mov` 1920 / 1080, the constants the 4K-2K mod patches): tools/gen.py PATCHES makes those two instructions read
   g_render_size. Overrides for test runs: MHGU_CONFIG=<file>, MHGU_WINDOW=WxH (windowed), MHGU_RENDER=WxH,

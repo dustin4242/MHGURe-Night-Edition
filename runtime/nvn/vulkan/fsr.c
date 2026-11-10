@@ -54,6 +54,7 @@
 #include "shaders.h"
 
 bool g_fsr_on;
+bool g_scale_on;  // RenderScale's plain-scaling path (no FSR): see vk_fsr_init
 static bool use_fsr4;  // [Upscaler] Upscaler = FSR4 and the driver's FSR 4 started (fsr4.c); false after a failure: FSR 3.1
 
 static uint32_t rw, rh, ow, oh;  // render size, output size
@@ -1495,7 +1496,11 @@ static void scale_to_stand(NvnTexture *h, NvnTexture *hs) {
     vk_full_barrier(cb);
     VkImageBlit r = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int32_t)s->width, (int32_t)s->height, 1}},
                      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {(int32_t)d->width, (int32_t)d->height, 1}}};
-    vkCmdBlitImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &r, VK_FILTER_LINEAR);
+    // [Display] RenderScale below 1: nearest keeps the low resolution's own pixels (crisp, blocky) instead of
+    // bilinear's softness. Above 1 (supersampling) the average is the point, and FSR's fallback frames keep the
+    // smooth scale they always had.
+    VkFilter filter = g_scale_on && d->width > s->width ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    vkCmdBlitImage(cb, s->image, VK_IMAGE_LAYOUT_GENERAL, d->image, VK_IMAGE_LAYOUT_GENERAL, 1, &r, filter);
     vk_full_barrier(cb);
 }
 
@@ -1675,7 +1680,7 @@ static void hud_start(const char *why) {
     bool have_cam = frame_camera(&cam);
     // (a HUD that waited for a menu's 3D models: they are the scene, however few)
     bool scene = depth && (dn >= 16 || (dn && (menu_models_late || menu_cams_late))) && have_cam;
-    frame_fsr = scene && run_fsr(g_h, hs, depth, frame_mask(), &cam);
+    frame_fsr = g_fsr_on && scene && run_fsr(g_h, hs, depth, frame_mask(), &cam);
     if (shot_taken) {  // (quest rewards, see the top)
         if (frame_fsr) screenshot_fill(shot_taken, g_h, hs);
         else LOG("[fsr] frame %llu: the game's screenshot %p taken in a frame without FSR: left as it is\n",
@@ -1871,8 +1876,13 @@ NvnTexture *vk_fsr_present(NvnTexture *t) {
 }
 
 void vk_fsr_init(void) {
-    if (!g_config.fsr || !g_fsr_output[0]) return;
+    if (!g_fsr_output[0]) return;
     rw = g_render_size[0], rh = g_render_size[1], ow = g_fsr_output[0], oh = g_fsr_output[1];
+    if (!g_config.fsr) {  // RenderScale without FSR: the same HUD stand-ins, the 3D copied into them (scale_to_stand)
+        g_scale_on = true;
+        LOG("[scale] RenderScale: the 3D picture %ux%u, the HUD and the present at %ux%u\n", rw, rh, ow, oh);
+        return;
+    }
     logging = getenv("MHGU_FSR_LOG") != NULL;
     if (g_vk.api11) { LOG("[fsr] FSR 3.1 needs Vulkan 1.2: FSR off, the picture is scaled from %ux%u\n", rw, rh); return; }
     FfxVkPortableDeviceCapabilities caps = {.structSize = sizeof caps};

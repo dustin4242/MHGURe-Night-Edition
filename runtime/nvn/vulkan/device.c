@@ -660,7 +660,7 @@ void backend_present(NvnTexture *t) {
     extern void vi_apply_framerate(void);
     vi_apply_framerate();
     vk_lock();
-    if (g_fsr_on) t = vk_fsr_present(t);  // FSR: its output-size picture with the HUD (fsr.c)
+    if (g_fsr_on || g_scale_on) t = vk_fsr_present(t);  // FSR / RenderScale: its output-size picture with the HUD
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
     vk_end_pass();

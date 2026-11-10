@@ -25,7 +25,7 @@
     {SDL_SCANCODE_Q}, {SDL_SCANCODE_E}, {SDL_SCANCODE_TAB}, {SDL_SCANCODE_T}, {SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER}, \
     {SDL_SCANCODE_BACKSPACE}, {SDL_SCANCODE_UP}, {SDL_SCANCODE_DOWN}, {SDL_SCANCODE_LEFT}, {SDL_SCANCODE_RIGHT},          \
     {SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL}, {SDL_SCANCODE_LALT, SDL_SCANCODE_RALT}, {KEY_WHEEL_UP}, {KEY_WHEEL_DOWN}}
-#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, 1920, 1080, 0, 0, 60, 1, 1, 1, FACE_POSITION, 39500, "", 1, 1, 1, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, ICONS_SWITCH, 1, UPDATES_ASK, 1, 0, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 0, 1, BATTERY_OFF, ""
+#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, 1920, 1080, 0, 0, 1.0f, 60, 1, 1, 1, FACE_POSITION, 39500, "", 1, 1, 1, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, ICONS_SWITCH, 1, UPDATES_ASK, 1, 0, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 0, 1, BATTERY_OFF, ""
 Config g_config = {CONFIG_DEFAULT_VALUES};
 Config config_defaults(void) { Config c = {CONFIG_DEFAULT_VALUES}; return c; }
 uint32_t g_render_size[2] = {1920, 1080};
@@ -50,6 +50,14 @@ static const char DEFAULT_INI[] =
     "; Higher = sharper (for supersampling)\n"
     "; Default: Auto\n"
     "RenderResolution = Auto\n"
+    "\n"
+    "; Scale of the 3D render resolution: below 1.0 renders less and upscales\n"
+    "; with nearest-neighbour (crisp, blocky pixels), above 1.0 supersamples.\n"
+    "; Only the 3D picture is scaled: the HUD and the menus stay at full\n"
+    "; resolution. Takes effect at the next start\n"
+    "; Between 0.1 and 2.0\n"
+    "; Default: 1.0\n"
+    "RenderScale = 1.0\n"
     "\n"
     "; Set to 16:9 to preserve the game's native aspect ratio\n"
     "; Default: Auto\n"
@@ -426,6 +434,7 @@ static bool parse_aspect(const char *v, float *out) {
 #define ERR_SIZE "Resolution must be Desktop/Auto or 320x180 to 16384x16384."
 #define ERR_ASPECT "Aspect ratio must be Auto or between 0.5 and 10."
 #define ERR_VIEW "FOV must be 0.5-2.0 and mouse sensitivity 0.1-10."
+#define ERR_RENDER "Render scale must be 0.1-2.0."
 #define ERR_MISC "Invalid frame cap, anti-aliasing, controller, HUD or volume setting."
 #define ERR_TOGGLE "Invalid On/Off value."
 #define ERR_FSR "Invalid FSR quality, sharpness or reactive mask."
@@ -451,6 +460,7 @@ const ConfigSetting g_settings[] = {
      "Windowed|window,Fullscreen|exclusive|exclusivefullscreen,Borderless|borderless*", NULL, true, ERR_SIZE},
     {"Display", "Resolution", SET_SIZE, F(width), F(height), 0, 0, "Desktop|auto", NULL, true, ERR_SIZE},
     {"Display", "RenderResolution", SET_SIZE, F(render_w), F(render_h), 0, 0, "Auto", NULL, true, ERR_SIZE},
+    {"Display", "RenderScale", SET_FLOAT, F(render_scale), 0, 0.1f, 2.0f, NULL, NULL, true, ERR_RENDER},
     {"Display", "AspectRatio", SET_ASPECT, F(aspect_ratio), 0, 0.5f, 10.0f, NULL, NULL, true, ERR_ASPECT},
     {"Display", "FOV", SET_FLOAT, F(fov), 0, 0.5f, 2.0f, NULL, NULL, false, ERR_VIEW},
     {"Display", "UIAnchor", SET_CHOICE, F(ui_anchor), 0, 0, 0, "Center|1|16:9,21:9|2,32:9|3,Edges", anchor_values, true,
@@ -1003,6 +1013,7 @@ void config_load(void) {
     if ((e = getenv("MHGU_LDN_KEY"))) snprintf(g_config.ldn_key, sizeof g_config.ldn_key, "%s", e);
     if ((e = getenv("MHGU_ASPECT"))) parse_aspect(e, &g_config.aspect_ratio);
     if ((e = getenv("MHGU_FOV")) && strtof(e, NULL) >= 0.5f && strtof(e, NULL) <= 2.0f) g_config.fov = strtof(e, NULL);
+    if ((e = getenv("MHGU_RENDER_SCALE")) && strtof(e, NULL) >= 0.1f && strtof(e, NULL) <= 2.0f) g_config.render_scale = strtof(e, NULL);
     if ((e = getenv("MHGU_UI_ANCHOR"))) config_parse(config_setting("UIAnchor"), e, &g_config);
     e = getenv("MHGU_RENDER");
     if (e && parse_size(e, &w, &h)) render_auto = false, g_config.render_w = w, g_config.render_h = h;
@@ -1056,6 +1067,24 @@ void config_load(void) {
         LOG("[config] FSR 3.1 %s (x%.1f): the 3D picture at %dx%d, upscaled to %ux%u, sharpness %.2f, texture LOD bias "
             "%.2f\n", names[g_config.fsr_quality], r, w, h, g_fsr_output[0], g_fsr_output[1], g_config.fsr_sharpness,
             g_fsr_lod_bias);
+    }
+    // [Display] RenderScale: a fraction of the size above (rendered small, upscaled) or a multiple of it
+    // (supersampling). Only the 3D picture is rendered at this size: the HUD is drawn on an output-size stand-in
+    // (nvn/vulkan/fsr.c's plain-scaling path), which needs that output size as g_fsr_output when FSR is off.
+    if (g_config.render_scale >= 0.1f && g_config.render_scale <= 2.0f &&
+        fabsf(g_config.render_scale - 1.0f) > 0.001f) {
+        if (!g_config.fsr) g_fsr_output[0] = (uint32_t)w, g_fsr_output[1] = (uint32_t)h;
+        int sh = (int)((float)h * g_config.render_scale + 0.5f) & ~1;
+        if (sh < 64) sh = 64;  // (the picture keeps its shape: both clamps recompute the other side)
+        int sw = (int)((float)sh * aspect + 0.5f) & ~1;
+        if (sw < 64) sw = 64, sh = (int)((float)sw / aspect + 0.5f) & ~1;
+        LOG("[config] RenderScale %.2f: the 3D picture at %dx%d (instead of %dx%d)\n", g_config.render_scale, sw, sh,
+            w, h);
+        w = sw, h = sh;
+        if (g_config.fsr) {  // the LOD bias follows the render size, unless MHGU_FSR_LODBIAS overrides it
+            const char *lod = getenv("MHGU_FSR_LODBIAS");
+            if (!(lod && *lod)) g_fsr_lod_bias = log2f((float)w / (float)g_fsr_output[0]);
+        }
     }
     g_config.render_w = w, g_config.render_h = h;
     g_render_size[0] = (uint32_t)w;

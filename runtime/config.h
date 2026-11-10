@@ -44,6 +44,7 @@ typedef struct {
     int display_mode;         // DISPLAY_*
     int width, height;        // screen / window size (Fullscreen: the monitor mode)
     int render_w, render_h;   // the game's 3D resolution (16:9)
+    float render_scale;       // [Display] RenderScale: the 3D resolution's scale (1: as above; up to 2: supersampled)
     int fps;                  // frame rate cap: 30..240
     int vsync;                // 1: present without tearing (mailbox / FIFO, at most the refresh rate), 0: immediate
     int msaa;                 // samples of the 3D scene: 1 (off), 2, 4, 8

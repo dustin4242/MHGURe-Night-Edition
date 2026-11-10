@@ -330,8 +330,11 @@ The most used ones are also in `mhgurecomp.ini` before you start: resolution, MS
 
 
 - `[Display]`: `Mode` (Borderless / Fullscreen / Windowed), `Resolution`, `RenderResolution` (the 3D resolution),
+  `RenderScale` (0.1..2.0: scales only the 3D picture, below 1 upscales with nearest-neighbour (crisp pixel look),
+  above 1 supersamples, the HUD and menus stay at full resolution; the Options menu's `Render Res` row, applied at
+  the next start),
   `AspectRatio` (Auto follows the window: 16:10 and anything wider fill it; 3:2/4:3 scale the HUD to fit; narrower than 4:3 gets 4:3 with bars), `FOV`
-  (1.0 = the game's), `UIAnchor` (Center keeps the HUD in the middle 16:9 on an ultrawide screen, Edges spreads it
+  (1.0 = the game's; the Options menu's `FOV` row applies it live), `UIAnchor` (Center keeps the HUD in the middle 16:9 on an ultrawide screen, Edges spreads it
   to the sides)
 - `[Anti-aliasing]`: `MSAA` (Off / 2x / 4x / 8x), `FXAA` (On / Off), `FXAAMode` (Original / 3_11: FXAA 3.11 in
   place of GU's FXAA, sharper textures; default Original)

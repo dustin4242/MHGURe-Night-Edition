@@ -1,5 +1,6 @@
 // FSR 3.1 upscaling of the game's 3D picture ([Upscaler] FSR = On): runtime/nvn/vulkan/fsr.c. The hook points in
-// exec.c and device.c are marked "FSR:"; with FSR off none of them changes anything.
+// exec.c and device.c are marked "FSR:"; with FSR off only [Display] RenderScale != 1 uses them, for the HUD stand-ins
+// (the 3D picture scaled to the output size, the UI drawn at full resolution).
 #pragma once
 #include "shaders.h"
 #include "vk.h"
@@ -17,6 +18,7 @@ typedef struct {
 } FsrDraw;
 
 extern bool g_fsr_on;  // FSR is on and works (set once at start-up: vk_fsr_init)
+extern bool g_scale_on;  // [Display] RenderScale without FSR: the HUD/present on output-size stand-ins, the 3D scaled
 
 void vk_fsr_init(void);                    // device.c, once the device exists
 void vk_fsr_draw(const FsrDraw *d);        // exec.c draw(): may run FSR (the start of the HUD) before this draw

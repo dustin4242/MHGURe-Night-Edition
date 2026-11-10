@@ -1593,7 +1593,7 @@ static void begin_pass(void) {
         pass_color[i] = VK_FORMAT_UNDEFINED;
         if (!t) continue;
         vk_rt_widen(t, vk_wide_rt_on() && !vk_fsr_input(t));  // (the game's own target: FSR 3 / 4 take no RGBA16 UNORM)
-        if (g_fsr_on) {  // FSR: from the start of the HUD on, an output-size stand-in (fsr.c)
+        if (g_fsr_on || g_scale_on) {  // FSR / RenderScale: from the start of the HUD on, an output-size stand-in
             NvnTexture *s = vk_fsr_map(t, false);
             if (s != t) pass_sx = (float)s->width / (float)t->width, pass_sy = (float)s->height / (float)t->height, t = s;
         }
@@ -3092,7 +3092,7 @@ static void resolve_feedback(Prog *pr) {
             bool have = false;
             for (int k = 0; k < nfeedback; k++) have |= feedback_tex[k] == t;
             if (have || nfeedback == 4) continue;
-            TexBackend *src = vk_tex(g_fsr_on ? vk_fsr_map(t, false) : t, true);  // (FSR: an output-size stand-in)
+            TexBackend *src = vk_tex(g_fsr_on || g_scale_on ? vk_fsr_map(t, false) : t, true);  // (FSR / RenderScale)
             Snap *s = NULL;
             for (int k = 0; k < nsnaps; k++) if (snaps[k].key == t) s = &snaps[k];
             if (!s) {
@@ -3440,7 +3440,7 @@ static void texture_info(int stage, ShaderInfo *si, int i, VkDescriptorImageInfo
     if (h && st.tpool && tic < (uint32_t)st.tpool->count) {
         NvnTexEntry *e = &((NvnTexEntry *)st.tpool->entries)[tic];
         if (e->tex) {
-            view = vk_view(g_fsr_on ? vk_fsr_map(e->tex, false) : e->tex, &e->view, e->has_view, false, stx->type);  // (FSR)
+            view = vk_view(g_fsr_on || g_scale_on ? vk_fsr_map(e->tex, false) : e->tex, &e->view, e->has_view, false, stx->type);  // (FSR / RenderScale)
             for (int k = 0; k < nfeedback; k++)
                 if (e->tex == feedback_tex[k] && (stx->type == TEXTYPE_2D || stx->type == TEXTYPE_2D_ARRAY))
                     view = stx->type == TEXTYPE_2D ? feedback_view[k] : vk_dummy_view(TEXTYPE_2D_ARRAY);
@@ -3779,7 +3779,7 @@ static void draw(CmdRec *r, bool indexed) {
     VkPrimitiveTopology topo;
     bool native = topology(mode, &topo);
     if (!native && mode != 6 && mode != 7 && mode != 9) { stat_skipped++; return; }
-    if (g_fsr_on) {  // FSR: the frame's structure; at the start of the HUD FSR runs before this draw (fsr.c)
+    if (g_fsr_on || g_scale_on) {  // FSR / RenderScale: the frame's structure (fsr.c)
         FsrDraw fd = {.color0 = st.rt.ncolor ? st.rt.color[0] : NULL, .depth = st.rt.depth, .count = (uint32_t)r->x[2],
                       .depth_write = st.ds[0] && st.ds[1], .vubuf = &st.ubuf[0][0].addr, .nvubuf = 18,
                       .vp_w = st.viewport[0][2], .vp_h = st.viewport[0][3]};
