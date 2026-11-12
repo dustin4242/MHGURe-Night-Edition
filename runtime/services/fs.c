@@ -28,6 +28,7 @@ static void storage(Service *s, IpcReq *req, IpcResp *resp) {
         if (!b) { resp->result = MAKE_RESULT(2, 6001); break; }
         if (size > b->size) size = b->size;
         romfs_read(BUFP(b), off, size);
+        vk_note_write(b->addr, size);  // (a host read: no store fault marks the pages)
         if (ENV("MHGU_LOG_FILES")) {
             static const char *last;
             const char *path = romfs_file_at(off);
@@ -225,6 +226,7 @@ static void file(Service *s, IpcReq *req, IpcResp *resp) {
             resp->result = errno_result();
         }
         OUT(int64_t, 0) = n < 0 ? 0 : n;
+        if (n > 0) vk_note_write(b->addr, (uint64_t)n);
         if (ENV("MHGU_LOG_FILES"))
             LOG("[fs] read %s +%llx %llx -> guest %08x\n", f->path, (unsigned long long)off, (unsigned long long)size,
                 (uint32_t)b->addr);

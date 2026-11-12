@@ -414,23 +414,50 @@ static bool guest_range_ok(uint64_t addr, uint64_t size) { return addr && addr <
 // upload command buffer, which starts with a full barrier (earlier submissions' reads are done) and completes before
 // its draws. Without tracking for a range (outside the heap): not cached. MHGU_VK_VCACHE=0: off.
 #define VC_TAB 4096
+#ifdef __ANDROID__
+#define VC_BUDGET (192ull << 20)  // (phones: leave the rest of the memory to the game and the driver)
+#else
 #define VC_BUDGET (384ull << 20)
-typedef struct { uint64_t addr, size, used_seq, checked_seq; uint32_t gen; VkBuffer buf; VmaAllocation mem; } VcEnt;
+#endif
+typedef struct { uint64_t addr, size, used_seq, checked_seq; uint32_t gen; VkBuffer buf; VmaAllocation mem; uint8_t prot, dirty; } VcEnt;
 static VcEnt vc_tab[VC_TAB];
 static uint64_t vc_bytes;
 uint64_t stat_vc_hits, stat_vc_refresh;
 
 static void vc_drop(VcEnt *e) {
+    if (e->prot) vk_prot_unwatch(e->addr, e->size);
     vk_defer_buffer(e->buf, e->mem);
     vc_bytes -= e->size;
     memset(e, 0, sizeof *e);
 }
 
+// Ranges written on every check (skinned/streamed vertices): watching them faults every frame and copies do not pay
+// either, so they go back to the per-submission path for a while instead of being re-protected each time.
+#define VC_DYN 256
+static struct { uint64_t addr, size, seq; } vc_dyn[VC_DYN];
+static uint32_t vc_dyn_slot(uint64_t addr, uint64_t size) {
+    uint64_t h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
+    return (uint32_t)(h ^ (h >> 32)) & (VC_DYN - 1);
+}
+static bool vc_dyn_hit(uint64_t addr, uint64_t size, uint64_t seq) {
+    uint32_t s = vc_dyn_slot(addr, size);
+    return vc_dyn[s].addr == addr && vc_dyn[s].size == size && vc_dyn[s].seq > seq;
+}
+static void vc_dyn_add(uint64_t addr, uint64_t size, uint64_t seq) {
+    uint32_t s = vc_dyn_slot(addr, size);
+    vc_dyn[s].addr = addr, vc_dyn[s].size = size, vc_dyn[s].seq = seq;
+}
+
 static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
-    static int on = -1;
-    if (on < 0) { const char *e = getenv("MHGU_VK_VCACHE"); on = !e || atoi(e) != 0; }
+    static int on = -1, prot_on = -1;
+    if (on < 0) {
+        const char *e = getenv("MHGU_VK_VCACHE");
+        on = !e || atoi(e) != 0;
+        prot_on = on ? vk_prot_available() : 0;
+    }
     if (!on || size < 4096 || size > (32u << 20)) return false;
     uint64_t pend = vk_pending_seq();
+    if (prot_on && vc_dyn_hit(addr, size, pend)) return false;
     uint64_t h = (addr * 0x9E3779B97F4A7C15ull) ^ (size * 0xC2B2AE3D27D4EB4Full);
     uint32_t slot = (uint32_t)(h ^ (h >> 32)) & (VC_TAB - 1), free_slot = ~0u, old = ~0u;
     VcEnt *e = NULL;
@@ -444,7 +471,7 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
     uint32_t since = 0;  // refresh: only pages written after this generation
     if (!e) {
         uint32_t now = 0;
-        if (vk_pages_changed(addr, size, 0, &now) < 0) return false;  // (no tracking here: per-submission copies)
+        if (!prot_on && vk_pages_changed(addr, size, 0, &now) < 0) return false;  // (no tracking here: per-submission copies)
         if (free_slot == ~0u) {
             if (old == ~0u) return false;
             vc_drop(&vc_tab[old]);
@@ -462,19 +489,29 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
                                  .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
         VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
         if (vmaCreateBuffer(g_vk.vma, &bi, &ai, &e->buf, &e->mem, NULL) != VK_SUCCESS) { memset(e, 0, sizeof *e); return false; }
-        e->addr = addr; e->size = size; e->gen = now; e->checked_seq = pend;
+        e->addr = addr; e->size = size; e->gen = now; e->checked_seq = pend; e->prot = (uint8_t)prot_on;
         vc_bytes += size;
         copy = true;
     } else if (e->checked_seq != pend) {  // first use in this submission: written since the last copy?
         uint32_t now = 0;
-        int ch = vk_pages_changed(addr, size, e->gen, &now);
+        int ch = e->prot ? vk_prot_changed(addr, size, e->gen, &now) : vk_pages_changed(addr, size, e->gen, &now);
         e->checked_seq = pend;
-        if (ch != 0) { copy = true; since = ch > 0 ? e->gen : 0; e->gen = now; }
+        if (ch < 0) { vc_drop(e); return false; }
+        if (ch != 0) {
+            if (e->prot && ++e->dirty >= 3) {  // written on every check: watching it costs more than copying it
+                vc_dyn_add(addr, size, pend + 240);
+                vc_drop(e);
+                return false;
+            }
+            copy = true;
+            since = e->gen;
+            e->gen = now;
+        } else e->dirty = 0;
     }
+    VkBufferCopy rg[64];
+    int n = 0;
     if (copy && since) {  // the pages written since the last refresh, as runs
         extern uint32_t vk_page_gen(uint64_t addr);
-        VkBufferCopy rg[64];
-        int n = 0;
         uint64_t first = addr & ~4095ull;
         for (uint64_t p = first; p < addr + size; p += 4096) {
             if (vk_page_gen(p) <= since) continue;
@@ -484,20 +521,24 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
             rg[n++] = (VkBufferCopy){lo - addr, lo - addr, hi - lo};  // (srcOffset fixed up below)
         }
         if (n < 0) since = 0;  // (scattered: the whole range)
-        else {
-            for (int k = 0; k < n; k++) {
-                VkSpan s = vk_transient_copy((uint8_t *)G2H((uint32_t)addr) + rg[k].dstOffset, rg[k].size, 16);
-                rg[k].srcOffset = s.off;
-                vkCmdCopyBuffer(vk_upload_cmd(), s.buf, e->buf, 1, &rg[k]);
-                stat_copy_bytes += rg[k].size;
-            }
-            stat_vc_refresh++;
-        }
     }
-    if (copy && !since) {
+    if (copy && e->prot) {  // protect before reading: a write from now on faults and is seen at the next check
+        uint32_t g;
+        if (vk_prot_watch(addr, size, &g)) e->gen = g;
+        else e->prot = 0;
+    }
+    if (copy && since) {
+        for (int k = 0; k < n; k++) {
+            VkSpan s = vk_transient_copy((uint8_t *)G2H((uint32_t)addr) + rg[k].dstOffset, rg[k].size, 16);
+            rg[k].srcOffset = s.off;
+            vkCmdCopyBuffer(vk_upload_cmd(), s.buf, e->buf, 1, &rg[k]);
+            stat_copy_bytes += rg[k].size;
+        }
+        stat_vc_refresh++;
+    } else if (copy) {
         VkSpan s = vk_transient_copy(G2H((uint32_t)addr), size, 16);
-        VkBufferCopy rg = {s.off, 0, size};
-        vkCmdCopyBuffer(vk_upload_cmd(), s.buf, e->buf, 1, &rg);
+        VkBufferCopy rg1 = {s.off, 0, size};
+        vkCmdCopyBuffer(vk_upload_cmd(), s.buf, e->buf, 1, &rg1);
         stat_copy_bytes += size;
         stat_vc_refresh++;
     } else {
@@ -507,7 +548,6 @@ static bool vcache(uint64_t addr, uint64_t size, VkBuffer *buf) {
     *buf = e->buf;
     return true;
 }
-
 // ================================================================== worker threads (shader / pipeline builds)
 // Two lists per queue: jobs a draw is (or may be) waiting for, and the start-up prewarm's (low: taken only when the
 // first list is empty).

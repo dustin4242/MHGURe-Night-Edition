@@ -180,6 +180,10 @@ void vk_views_forget(TexBackend *b);  // drop (deferred) the cached views of an 
 uint64_t vk_frame_counter(void);
 // Guest memory [addr, addr + size) (guest addresses) changed since generation `since`? 0 no, 1 yes, -1 unknown.
 int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now);
+bool vk_prot_available(void);  // Linux write-watch (platform/linux.c); false on Windows / MHGU_VK_PROT=0
+bool vk_prot_watch(uint64_t addr, uint64_t size, uint32_t *gen);
+int vk_prot_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now);
+void vk_prot_unwatch(uint64_t addr, uint64_t size);
 
 // ---- shaders (shaders.c)
 VkShaderModule vk_compile_glsl(const char *src, int stage, const char *name);  // NULL on failure (logged)

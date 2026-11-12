@@ -159,3 +159,7 @@ extern volatile int g_rt_unwind;
 
 // guest strings / pointers
 static inline const char *gstr(uint32_t a) { return (const char *)G2H(a); }
+
+// A host-side write into guest memory that no guest store performs (a file read into an NVN buffer): the renderer's
+// write tracking must be told, or a cached vertex range would keep its old contents.
+void vk_note_write(uint64_t guest_addr, uint64_t size);

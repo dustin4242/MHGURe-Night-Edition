@@ -85,6 +85,12 @@ int plat_protect(uint64_t addr, uint64_t size, int prot) {
     return VirtualProtect((void *)(uintptr_t)addr, size, p, &old) ? 0 : -1;
 }
 
+// (Linux-only mechanism; Windows uses GetWriteWatch through plat_written_pages)
+bool plat_ww_init(uint64_t heap_host, uint64_t heap_size) { (void)heap_host; (void)heap_size; return false; }
+bool plat_ww_watch(uint64_t host_addr, uint64_t size) { (void)host_addr; (void)size; return false; }
+void plat_ww_unwatch(uint64_t host_addr, uint64_t size) { (void)host_addr; (void)size; }
+void plat_ww_set_hook(void (*fn)(uint64_t host_page)) { (void)fn; }
+
 // ---- time
 static LARGE_INTEGER qpf;
 

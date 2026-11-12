@@ -755,3 +755,59 @@ gives: `draw` 8.1 %, `upload_texture` 5.9 %, `stage_set` 5.3 %, libc `memcpy`/`m
 The remaining structural options are the two from the first pass: page write tracking on Linux for the
 vertex cache (this host has `vm.unprivileged_userfaultfd = 0`, so it would need an mprotect/SIGSEGV
 scheme), and fewer per-draw Vulkan calls (`draw` + `stage_set` + driver ≈ 23 % of CPU in town).
+
+### Third pass: page write tracking on Linux — the vertex cache works
+
+The vertex cache (a device copy of a vertex stream, reused while the guest range does not change)
+was dead on Linux: `vk_pages_changed()` only worked where `plat_written_pages()` exists (Windows
+`GetWriteWatch`) and returned -1 here, so every stream was re-copied every submission. Userfaultfd is
+unavailable to unprivileged processes on this host (`vm.unprivileged_userfaultfd = 0`), so this uses
+`mprotect` instead:
+
+- `plat_ww_*` (`platform/linux.c`): pages of a cached range are made read-only; the SIGSEGV handler
+  recognises a watched page, makes it writable again, stamps its page generation (`textures.c`
+  `prot_hook`, through `pt_gen`) and resumes the store. Watch/unwatch and the handler serialise on a
+  small spinlock so the bitmap and the PTE always agree.
+- `vcache` (`exec.c`): validates through `vk_prot_changed()` instead of the OS query, protects the
+  range **before** copying (a write during or after the copy is caught, not missed), and re-protects
+  after. Ranges written on three consecutive checks are put on a 256-entry denylist for 240
+  submissions, so skinned/streamed vertices fall back to the per-submission copy instead of faulting
+  every frame. Host-side writes that are not guest stores (RomFS/`pread` into NVN buffers) call
+  `vk_note_write()` so the pages are marked written; without that a cached range would keep stale
+  data. `MHGU_VK_PROT=0` disables the watch, `MHGU_VK_VCACHE=0` the whole cache.
+- **Found and fixed while testing:** every guest thread installs the crash handler, but the 256 KB
+  signal alt stack was one shared `static` buffer. Lazy-commit faults are rare, so this never
+  mattered; frequent watch faults made two threads handle a fault at the same time and overwrite
+  each other's signal frames. At the uncapped target that crashed about half of all runs during
+  start-up (`FATAL: no function at 2021c` / SIGSEGV). The alt stack is now `static __thread`; after
+  that, 14 consecutive uncapped runs (30–50 s each) were clean.
+
+Measured on 2026-11-12, 4K, town (host load ~2.5):
+
+| | before (`MHGU_VK_PROT=0`) | after | change |
+|---|---|---|---|
+| vcache hits / copies per 2 s | 0 / all streams | 11,130 / ~190 | 98.3 % hits |
+| copied per 2 s | 3.07 GB | 2.29 GB | −25 % |
+| exec per 2 s (`MHGU_VK_STATS`) | ~1.10 s | ~0.95 s | −14 % |
+| CPU/frame at 240 (4K town) | 5.90 ms | 5.73 ms | −3.0 % |
+| uncapped town, median | 360 fps | 426 fps | +18 % |
+
+- Uncapped numbers are three 95 s runs each, same binary and session: 427.8 / 425.9 / 421.2 fps with
+  the cache vs 361.1 / 358.8 fps with `MHGU_VK_PROT=0`. The gain is larger uncapped because the exec
+  thread is then the limiter; at 240 the saved time shows up as headroom (and less power).
+- The village quest 206 also holds 240.0 fps at 4K with the cache (7.9 k hits/2 s, exec 0.78 s/2 s).
+- The second structural lever (fewer per-draw Vulkan calls) is still open: reusing descriptor sets by
+  content hash regressed +2 % earlier in the session, and `VK_KHR_push_descriptor` needs the device
+  extension plumbed through `device.c` and the layout creation. Worth a dedicated attempt, not a
+  tail-end one.
+
+**Android:** the Android build compiles the same platform layer (`runtime/platform/linux.c`, with
+`android.c` beside it for the app folder), so this is in the APK; the changed files compile clean with
+the NDK for `arm64-v8a` (`--target=aarch64-linux-android29`). The mechanism is portable — it needs
+only `mprotect` and a SIGSEGV handler that resumes the store, which the runtime already relies on for
+lazily committed guest pages on Android — and the per-thread alt-stack fix above matters there too.
+Two Android specifics: phones with 16 KB kernel pages cannot `mprotect` at the 4 KB granularity this
+tracks, so the watch turns itself off on those (`[plat] write-watch off: 16384-byte system pages`)
+and the vertex cache falls back to the old per-submission copies; and the cache budget is 192 MB
+there instead of 384 MB. It has not been run on a phone/emulator here (none attached), so the
+Android numbers are still open.

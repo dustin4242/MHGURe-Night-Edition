@@ -474,6 +474,65 @@ int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now
     return sk_any_gt_u32(pt_gen + lo / PT_PAGE, (size_t)((hi - lo) / PT_PAGE), since);
 }
 
+// ---- write-watch (Linux): the vertex cache registers the pages of a cached range and gets a generation bump when one
+// is written. Windows uses plat_written_pages instead (GetWriteWatch) and never calls these.
+static int prot_state = -1;
+
+static void prot_hook(uint64_t host_page) {  // (SIGSEGV handler: a watched page was written; stamp its generation)
+    if (!pt_gen) return;
+    uint64_t off = host_page - (uint64_t)(uintptr_t)G2H(HEAP_BASE);
+    if (off >= HEAP_MAX) return;
+    uint32_t g = __atomic_add_fetch(&pt_cur, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&pt_gen[off / PT_PAGE], g, __ATOMIC_RELAXED);
+}
+
+bool vk_prot_available(void) {
+    if (prot_state >= 0) return prot_state;
+    const char *e = getenv("MHGU_VK_PROT");
+    if (e && atoi(e) == 0) return prot_state = 0;
+    if (!pt_gen) pt_gen = calloc(HEAP_MAX / PT_PAGE, sizeof *pt_gen);
+    if (!pt_gen || !plat_ww_init((uint64_t)(uintptr_t)G2H(HEAP_BASE), HEAP_MAX)) return prot_state = 0;
+    plat_ww_set_hook(prot_hook);
+    LOG("[vk] write-watch on: vertex cache kept across submissions\n");
+    return prot_state = 1;
+}
+
+bool vk_prot_watch(uint64_t addr, uint64_t size, uint32_t *gen) {
+    if (!vk_prot_available() || addr < HEAP_BASE || addr - HEAP_BASE + size > HEAP_MAX) return false;
+    uint64_t lo = addr & ~(PT_PAGE - 1), hi = (addr + size + PT_PAGE - 1) & ~(PT_PAGE - 1);
+    uint32_t g = __atomic_add_fetch(&pt_cur, 1, __ATOMIC_RELAXED);
+    for (uint64_t p = lo; p < hi; p += PT_PAGE) pt_gen[(p - HEAP_BASE) / PT_PAGE] = g;
+    if (!plat_ww_watch((uint64_t)(uintptr_t)G2H((uint32_t)lo), hi - lo)) return false;
+    *gen = g;
+    return true;
+}
+
+int vk_prot_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) {
+    if (!pt_gen || addr < HEAP_BASE || addr - HEAP_BASE + size > HEAP_MAX) return -1;
+    uint64_t lo = (addr - HEAP_BASE) & ~(PT_PAGE - 1), hi = (addr - HEAP_BASE + size + PT_PAGE - 1) & ~(PT_PAGE - 1);
+    uint32_t g = __atomic_add_fetch(&pt_cur, 1, __ATOMIC_RELAXED);
+    int any = 0;
+    for (uint64_t p = lo / PT_PAGE; p < hi / PT_PAGE; p++)
+        if (pt_gen[p] > since) any = 1, pt_gen[p] = g;
+    *now = g;
+    return any;
+}
+
+void vk_prot_unwatch(uint64_t addr, uint64_t size) {
+    if (!pt_gen || addr < HEAP_BASE || addr - HEAP_BASE + size > HEAP_MAX) return;
+    uint64_t lo = addr & ~(PT_PAGE - 1), hi = (addr + size + PT_PAGE - 1) & ~(PT_PAGE - 1);
+    for (uint64_t p = lo; p < hi; p += PT_PAGE) pt_gen[(p - HEAP_BASE) / PT_PAGE] = 0;
+    plat_ww_unwatch((uint64_t)(uintptr_t)G2H((uint32_t)lo), hi - lo);
+}
+
+// A host-side write into guest memory (file read): stamp the pages as written so a watched copy is refreshed.
+void vk_note_write(uint64_t addr, uint64_t size) {
+    if (!pt_gen || !size || addr < HEAP_BASE || addr - HEAP_BASE + size > HEAP_MAX) return;
+    uint64_t lo = (addr - HEAP_BASE) & ~(PT_PAGE - 1), hi = (addr - HEAP_BASE + size + PT_PAGE - 1) & ~(PT_PAGE - 1);
+    uint32_t g = __atomic_add_fetch(&pt_cur, 1, __ATOMIC_RELAXED);
+    for (uint64_t p = lo / PT_PAGE; p < hi / PT_PAGE; p++) pt_gen[p] = g;
+}
+
 // ================================================================== uploads (change detected)
 // Four independent lanes (dynamic textures are hashed every frame). Values are only compared within a run.
 static uint64_t hash_full(const uint8_t *p, uint64_t n) {

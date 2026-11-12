@@ -32,6 +32,11 @@ int plat_protect(uint64_t host_addr, uint64_t size, int prot);
 // tracking granularity. -1: no write tracking.
 // Is host addr in committed, readable memory? *end = where that region (committed or not) ends. (Debug scans.)
 bool plat_committed(uint64_t addr, uint64_t *end);int plat_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, int max, uint64_t *page);
+// ---- write-watch for the renderer's vertex cache (Linux: mprotect + SIGSEGV; Windows: GetWriteWatch instead)
+bool plat_ww_init(uint64_t heap_host, uint64_t heap_size);
+bool plat_ww_watch(uint64_t host_addr, uint64_t size);
+void plat_ww_unwatch(uint64_t host_addr, uint64_t size);
+void plat_ww_set_hook(void (*fn)(uint64_t host_page));
 
 // ---- time
 uint64_t plat_now_ns(void);                // monotonic

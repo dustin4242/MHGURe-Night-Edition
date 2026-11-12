@@ -111,6 +111,7 @@ static bool lazy_commit(uint64_t a) {
 
 void (*plat_touch_hook)(uint64_t guest_addr, int write);
 static void fault_handler(int sig, siginfo_t *si, void *uc);
+static bool ww_fault(uint64_t fa);
 
 bool plat_reserve_guest(uint64_t base, uint64_t size) {
     void *p = mmap((void *)(uintptr_t)base, size, PROT_NONE,
@@ -157,6 +158,74 @@ int plat_protect(uint64_t addr, uint64_t size, int prot) {
     int p = prot == PLAT_PROT_NONE ? PROT_NONE : prot == PLAT_PROT_READ ? PROT_READ : PROT_READ | PROT_WRITE;
     if (addr >= g_lo && addr < g_hi) plat_commit(addr, size);
     return mprotect((void *)(uintptr_t)addr, size, p) == 0 ? 0 : -1;
+}
+
+// ---- write-watch (the renderer's vertex cache): Linux has no GetWriteWatch, so cached pages are made read-only and
+// a write to one faults, is marked dirty/unprotected here, and the store resumes. Only pages a caller registered are
+// touched; everything else keeps the ordinary lazy-commit fault path.
+static uint8_t *g_ww_map;
+static uint64_t g_ww_base, g_ww_pages;
+static void (*g_ww_hook)(uint64_t host_page);
+static atomic_int g_ww_lock;  // (watch/unwatch and the fault handler serialise: the bitmap and the PTE must agree)
+
+static void ww_lock(void) { while (atomic_exchange_explicit(&g_ww_lock, 1, memory_order_acquire)) ; }
+static void ww_unlock(void) { atomic_store_explicit(&g_ww_lock, 0, memory_order_release); }
+
+bool plat_ww_init(uint64_t heap_host, uint64_t heap_size) {
+    if (g_ww_map) return true;
+    long ps = sysconf(_SC_PAGESIZE);
+    if (ps != (long)PLAT_PAGE) {  // (16 KB-page Android kernels: mprotect needs the system page as its unit)
+        fprintf(stderr, "[plat] write-watch off: %ld-byte system pages\n", ps);
+        return false;
+    }
+    g_ww_base = heap_host & ~(PLAT_PAGE - 1);
+    g_ww_pages = heap_size / PLAT_PAGE;
+    g_ww_map = calloc((g_ww_pages + 7) / 8, 1);
+    return g_ww_map != NULL;
+}
+
+bool plat_ww_watch(uint64_t host, uint64_t size) {
+    if (!g_ww_map || host < g_ww_base) return false;
+    uint64_t a = host & ~(PLAT_PAGE - 1), e = (host + size + PLAT_PAGE - 1) & ~(PLAT_PAGE - 1);
+    if (e > g_ww_base + g_ww_pages * PLAT_PAGE) return false;
+    ww_lock();
+    bool ok = plat_protect(a, e - a, PLAT_PROT_READ) == 0;
+    if (ok)
+        for (uint64_t i = (a - g_ww_base) / PLAT_PAGE; i < (e - g_ww_base) / PLAT_PAGE; i++)
+            g_ww_map[i >> 3] |= (uint8_t)(1u << (i & 7));
+    ww_unlock();
+    return ok;
+}
+
+void plat_ww_unwatch(uint64_t host, uint64_t size) {
+    if (!g_ww_map || host < g_ww_base) return;
+    uint64_t a = host & ~(PLAT_PAGE - 1), e = (host + size + PLAT_PAGE - 1) & ~(PLAT_PAGE - 1);
+    if (e > g_ww_base + g_ww_pages * PLAT_PAGE) e = g_ww_base + g_ww_pages * PLAT_PAGE;
+    ww_lock();
+    for (uint64_t i = (a - g_ww_base) / PLAT_PAGE; i < (e - g_ww_base) / PLAT_PAGE; i++)
+        g_ww_map[i >> 3] &= (uint8_t)~(1u << (i & 7));
+    plat_protect(a, e - a, PLAT_PROT_RW);
+    ww_unlock();
+}
+
+void plat_ww_set_hook(void (*fn)(uint64_t host_page)) { g_ww_hook = fn; }
+
+static bool ww_fault(uint64_t fa) {
+    if (!g_ww_map || fa < g_ww_base) return false;
+    uint64_t off = fa - g_ww_base;
+    if (off >= g_ww_pages * PLAT_PAGE) return false;
+    uint64_t i = off / PLAT_PAGE;
+    uint8_t bit = (uint8_t)(1u << (i & 7));
+    ww_lock();
+    bool mine = (g_ww_map[i >> 3] & bit) != 0;
+    if (mine) {
+        g_ww_map[i >> 3] &= (uint8_t)~bit;
+        uint64_t page = fa & ~(PLAT_PAGE - 1);
+        mprotect((void *)(uintptr_t)page, PLAT_PAGE, PROT_READ | PROT_WRITE);
+        if (g_ww_hook) g_ww_hook(page);
+    }
+    ww_unlock();
+    return mine;  // (the instruction retries with the page writable again)
 }
 
 // ---- time
@@ -383,6 +452,7 @@ static const char *sig_name(int sig) {
 static void fault_handler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *ctx = (ucontext_t *)uc;
     uint64_t fa = si && si->si_addr ? (uint64_t)(uintptr_t)si->si_addr : 0;
+    if ((sig == SIGSEGV || sig == SIGBUS) && ww_fault(fa)) return;
     if ((sig == SIGSEGV || sig == SIGBUS) && lazy_commit(fa)) {  // (a guest page first touched: back it, resume)
         if (plat_touch_hook) plat_touch_hook(fa - g_lo, ctx_write(ctx));
         return;
@@ -398,13 +468,15 @@ static void fault_handler(int sig, siginfo_t *si, void *uc) {
     snprintf(what, sizeof what, "%s (code %d, addr %llx)", sig_name(sig), si ? si->si_code : 0,
              (unsigned long long)fa);
     rt_fault_report(what, fa, pc, lr);
+    fflush(stderr);  // (the log is block-buffered: a crash must not lose its own report)
     _exit(139);  // (rt_fault_report does not return)
 }
 
 void plat_crash_handler_install(void) {
     // A guard page under an exhausted stack faults with no room left to run a handler, so run it on its own stack.
-    // Signal stacks are per thread: this covers the calling thread, guest threads keep theirs.
-    static char altstack[256 * 1024] __attribute__((aligned(16)));  // (SIGSTKSZ is not a compile-time constant here)
+    // The signal stack is per thread: a shared one would be overwritten when two threads fault at once (write-watch
+    // faults are frequent), corrupting the resumed context.
+    static __thread char altstack[128 * 1024] __attribute__((aligned(16)));  // (SIGSTKSZ is not a compile-time constant here)
     stack_t ss = {.ss_sp = altstack, .ss_size = sizeof altstack}, old;
     if (sigaltstack(NULL, &old) == 0 && !(old.ss_flags & SS_ONSTACK)) sigaltstack(&ss, NULL);
     struct sigaction sa = {0};
