@@ -949,7 +949,7 @@ static void render_frame(Renderer *r, float *stereo) {
     if (hf_log < 0) hf_log = getenv("MHGU_AUDIO_HF") ? 1 : 0;
     uint32_t N = r->sample_count;
     for (uint32_t m = 0; m < r->nmix; m++)
-        if (r->mix[m].buf) memset(r->mix[m].buf, 0, sizeof(float) * MIXBUF_MAX * N);
+        if (r->mix[m].buf) memset(r->mix[m].buf, 0, sizeof(float) * r->mix[m].bufs * N);  // (bufs used, not all 24)
     int16_t tmp[HIST + 4096];
     float smp[4096];
     uint32_t playing = 0;

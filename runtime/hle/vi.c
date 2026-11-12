@@ -22,10 +22,24 @@ uint32_t g_native_window;
 #define FPS_OBJ_GLOBAL 0x2326764u
 static float g_fps;  // MHGU_FRAMERATE's target, when given
 static bool fps_env, fps_logged;
+// (benchmarking) MHGU_BENCH_FPS: raise the limiter above the settings' 240 cap, so a frame-rate change can be
+// measured on hardware that would otherwise sit at the cap. Not a player setting; game logic runs at that rate.
+static float g_bench_fps;
+static bool bench_read;
 static float framerate(void) {
     if (!fps_env && !g_fps) {  // first call: MHGU_FRAMERATE overrides the ini
         const char *e = getenv("MHGU_FRAMERATE");
         if (e && *e) { g_fps = (float)atof(e); fps_env = true; }
+    }
+    if (!bench_read) {
+        bench_read = true;
+        const char *b = getenv("MHGU_BENCH_FPS");
+        if (b && *b) g_bench_fps = (float)strtof(b, NULL);
+        if (!(g_bench_fps >= 30.0f)) g_bench_fps = 0;
+    }
+    if (g_bench_fps > 0) {
+        if (!fps_logged) { fps_logged = true; LOG("[vi] frame rate target %.0f (benchmark)\n", g_bench_fps); }
+        return g_bench_fps;
     }
     float f = fps_env ? g_fps : config_live_fps();
     if (!(f >= 30.0f)) f = 30.0f;

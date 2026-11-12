@@ -739,6 +739,7 @@ static void exit_handler(void) {
     if (g_vk.dev) {
         vkDeviceWaitIdle(g_vk.dev);
         pipeline_cache_save();
+        { void pipecache_flush(void); pipecache_flush(); }  // (buffered pipeline records: keep the session's)
     }
     fflush(stdout);
     fflush(stderr);

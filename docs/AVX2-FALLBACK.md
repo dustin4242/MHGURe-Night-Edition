@@ -80,7 +80,7 @@ port spends its time. Measured on the same 700 KB chunk of game code, three buil
 
 `-march=x86-64-v3` there mostly re-encodes scalar `movss`/`mulss`/`addss` in their VEX form: to the CPU it is the
 same work, and to the file it is the same size. The reason is the shape of the code: `tools/lifter.py` emits scalar
-C with loads and stores through `LD32`/`ST32`, and that is compiled at `-O1` with `-ffp-contract=off` (game code has
+C with loads and stores through `LD32`/`ST32`, and that is compiled at `-O2` with `-ffp-contract=off` (game code has
 to round exactly as the ARM does), so there is next to nothing for the vectorizer to bite on.
 Two `ymm` registers in a chunk of that size is noise.
 

@@ -227,6 +227,7 @@ static int ndead, cap_dead;
 static void views_forget(TexBackend *b);
 
 void vk_collect_dead(void) {
+    if (!ndead) return;  // (nothing deferred: skip the semaphore query)
     uint64_t done = vk_completed_seq();
     int k = 0;
     for (int i = 0; i < ndead; i++) {
@@ -591,7 +592,7 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
             VkSpan s = vk_transient((uint64_t)out_row * l.hb * l.d, 16);
             uint8_t *lin = expand ? malloc(sz) : s.ptr;
             if (linear) {
-                for (uint32_t y = 0; y < l.hb; y++) memcpy(lin + (uint64_t)y * row, src + (uint64_t)y * t->stride, row);
+                if (l.d == 1 && t->stride == row) memcpy(lin, src, (uint64_t)row * l.hb); else for (uint32_t y = 0; y < l.hb; y++) memcpy(lin + (uint64_t)y * row, src + (uint64_t)y * t->stride, row);
             } else {
                 tegra_deswizzle(src, lin, l.wb, l.hb, l.d, fi->bpb, l.block_height_log2, l.block_depth_log2);
             }
@@ -618,10 +619,14 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     if (b->pending_rgba) upload_pending(b);
     if (for_render) b->gpu_owned = true;
     else if (!b->gpu_owned) {
-        extern uint64_t stat_upload_ns;
-        uint64_t t0 = plat_now_ns();
-        upload_texture(t, b);
-        stat_upload_ns += plat_now_ns() - t0;
+        static int upload_stats = -1;  // (the timing is only read by MHGU_VK_STATS; two clock reads per bind otherwise)
+        if (upload_stats < 0) upload_stats = getenv("MHGU_VK_STATS") != NULL;
+        if (upload_stats) {
+            extern uint64_t stat_upload_ns;
+            uint64_t t0 = plat_now_ns();
+            upload_texture(t, b);
+            stat_upload_ns += plat_now_ns() - t0;
+        } else upload_texture(t, b);
     }
     return b;
 }

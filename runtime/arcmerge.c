@@ -109,7 +109,7 @@ bool arc_merge(const char *orig, const char *prev, const char *mod, char *out, s
     snprintf(out, outsz, "cache/arcmerge/%016llx.arc", (unsigned long long)h);
     struct stat st;
     bool cached = !stat(out, &st) && st.st_size > 0;  // (the same files merged on an earlier start)
-    if (cached && !strcmp(orig, prev)) return true;   // (no earlier mod to report overlaps with: nothing to read)
+    if (cached) return true;  // (the merge exists: no need to read the archives; the overlap report is only made when it is built)
 
     Arc o = {0}, p = {0}, m = {0};
     bool ok = false;

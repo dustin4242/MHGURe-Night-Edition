@@ -2751,8 +2751,11 @@ static void pipecache_init(const CacheHeader *hdr) {
         if (f) fwrite(&fh, sizeof fh, 1, f);
     }
     pipecache_f = f;
+    if (f) setvbuf(f, NULL, _IOFBF, 1u << 16);  // (whole records land together; a kill loses at most this tail)
     if (n) LOG("[vk] pipeline cache: %d pipelines to build\n", n);
 }
+
+void pipecache_flush(void) { if (pipecache_f) fflush(pipecache_f); }
 
 static void pipecache_store(const Pipe *pp) {
     if (!pipecache_f || !pp->k.prog->ck) return;
@@ -2766,7 +2769,6 @@ static void pipecache_store(const Pipe *pp) {
     r.k.prog = NULL;
     r.k.rp = VK_NULL_HANDLE;
     fwrite(&r, sizeof r, 1, pipecache_f);
-    fflush(pipecache_f);
 }
 
 // ---- shipped pipeline list: pipelines.list beside the executable, the pipelines recorded while playing the common
@@ -3144,18 +3146,51 @@ static VkDescriptorBufferInfo ubo_span(VkSpan s, uint64_t size) {
     return (VkDescriptorBufferInfo){s.buf, s.off, size > max ? max : size};
 }
 
+// Constant descriptor contents that never change (zero-filled storage/GMem ranges, the rscale table): one mapped
+// buffer filled once, instead of copying 0.5-4 KB into the transient ring for every binding.
+#define CONST_ZERO_SIZE 0x10000ull
+#define CONST_ALLOC (CONST_ZERO_SIZE + 0x440)  // (zero ranges and the rscale table: one buffer, allocated once, never grown)
+static VkBuffer const_buf;
+static VmaAllocation const_mem;
+static uint8_t *const_ptr;
+static void const_buf_ensure(void) {
+    if (const_buf) return;  // (growing it mid-submission would free memory recorded descriptors still point at)
+    uint64_t const_cap = CONST_ALLOC;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = const_cap,
+                             .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                  .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VmaAllocationInfo info;
+    VK_CHECK(vmaCreateBuffer(g_vk.vma, &bi, &ai, &const_buf, &const_mem, &info));
+    const_ptr = info.pMappedData;
+    memset(const_ptr, 0, const_cap);
+}
 static VkDescriptorBufferInfo zero_buffer(uint64_t size) {
-    static const uint8_t zeros[0x10000];
-    if (size > sizeof zeros) size = sizeof zeros;
-    VkSpan s = vk_transient_copy(zeros, size, 256);
-    return (VkDescriptorBufferInfo){s.buf, s.off, size};
+    if (size > CONST_ZERO_SIZE) size = CONST_ZERO_SIZE;
+    const_buf_ensure();
+    return (VkDescriptorBufferInfo){const_buf, 0, size};
+}
+static VkDescriptorBufferInfo rscale_buffer(void) {
+    const_buf_ensure();
+    static int init;
+    if (!init) {
+        float rs[67][4];
+        for (int k = 0; k < 67; k++) rs[k][0] = rs[k][1] = 1, rs[k][2] = rs[k][3] = 0;
+        memset(rs[66], 0xFF, 4);  // [66].x: the front-face mask's all-ones word (translate.c)
+        memcpy(const_ptr + CONST_ZERO_SIZE, rs, sizeof rs);
+        init = 1;
+    }
+    return (VkDescriptorBufferInfo){const_buf, CONST_ZERO_SIZE, 67 * 4 * sizeof(float)};
 }
 
 // Constant buffer k of a stage: 0 the driver's (storage buffer table, compute group counts), 1 the compiler constants
 // stored after the shader code, 3.. the game's bound uniform buffers. Copied into transient memory.
 static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32_t gx, uint32_t gy, uint32_t gz) {
     if (k == 0) {
-        uint32_t drv[0x800 / 4] = {0};
+        uint64_t dsize = si->cbuf_size[0] > 0x800 ? 0x800 : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
+        if (dsize < 0x500 && stage == 5) dsize = 0x500;
+        uint32_t drv[0x800 / 4];
+        memset(drv, 0, dsize);  // (only what is copied: it was zeroing all 2 KB for a 256-byte block)
         if (stage == 5) {
             drv[0x200 / 4] = gx; drv[0x204 / 4] = gy; drv[0x208 / 4] = gz;
             for (int i = 0; i < 16; i++) {
@@ -3172,9 +3207,7 @@ static VkDescriptorBufferInfo cbuf_info(int stage, ShaderInfo *si, int k, uint32
                 e[2] = (uint32_t)st.sbuf[stage][i].size;
             }
         }
-        uint64_t size = si->cbuf_size[0] > sizeof drv ? sizeof drv : (si->cbuf_size[0] ? si->cbuf_size[0] : 256);
-        if (size < 0x500 && stage == 5) size = 0x500;
-        return ubo_span(vk_transient_copy(drv, size, 256), size);
+        return ubo_span(vk_transient_copy(drv, dsize, 256), dsize);
     }
     if (k == 1) {  // compiler constants stored after the shader code
         NvnShaderStage *ss = &st.program->stages[stage];
@@ -3481,10 +3514,7 @@ static VkDescriptorSet stage_set(int nbinds, const VkBindingInfo *binds, VkDescr
             bi[n] = ubo_span(vk_transient_copy(base, sizeof base, 256), sizeof base);
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding == 18) {  // rscale: no scaling here
-            float rs[67][4];
-            for (int k = 0; k < 67; k++) rs[k][0] = rs[k][1] = 1, rs[k][2] = rs[k][3] = 0;
-            memset(rs[66], 0xFF, 4);  // [66].x: the front-face mask's all-ones word (translate.c)
-            bi[n] = ubo_span(vk_transient_copy(rs, sizeof rs, 256), sizeof rs);
+            bi[n] = rscale_buffer();
             w[n].pBufferInfo = &bi[n];
         } else if (b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->binding == ALPHA_REF_BUFFER_INDEX) {
             float ref[4] = {st.alpha_ref, 0, 0, 0};
@@ -3982,7 +4012,7 @@ static void draw(CmdRec *r, bool indexed) {
         if (native && itype != 0) {
             itype_vk = itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
             icount = count;
-            ib = vk_transient_copy(src, (uint64_t)count * isz + 4, 4);
+            ib = guest_copy(iaddr, (uint64_t)count * isz);  // (deduped per submission, like the vertex/UBO copies)
             if (isz == 2) { const uint16_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != (uint16_t)restart) max_index = s[i]; }
             else { const uint32_t *s = src; for (uint32_t i = 0; i < count; i++) if (s[i] > max_index && s[i] != restart) max_index = s[i]; }
         } else if (native) {  // 8-bit indices: widened to 16
@@ -4475,14 +4505,17 @@ static void exec_list(uint64_t handle, int depth) {
         case CMD_SET_POLYGON_OFFSET: memcpy(st.poly_offset, r->f, sizeof st.poly_offset); break;
         case CMD_SET_ALPHA_REF: st.alpha_ref = r->f[0]; break;
         case CMD_SET_PRIMITIVE_RESTART: st.prim_restart = r->x[0] != 0; st.restart_index = (uint32_t)r->x[1]; break;
-        case CMD_SET_DEPTH_CLAMP:
+        case CMD_SET_DEPTH_CLAMP: {
             st.depth_clamp = r->x[0] != 0;
-            if (getenv("MHGU_DUMP_VERBOSE")) {
+            static int verbose = -1;
+            if (verbose < 0) verbose = getenv("MHGU_DUMP_VERBOSE") != NULL;
+            if (verbose) {
                 static int n, last = -1;
                 if (st.depth_clamp != last && n++ < 20) LOG("[vk] depth clamp -> %d\n", st.depth_clamp);
                 last = st.depth_clamp;
             }
             break;
+        }
         case CMD_SET_COPY_STRIDES: st.copy_row_stride = r->x[0]; st.copy_image_stride = r->x[1]; break;
         case CMD_CLEAR_COLOR: {
             snapshots_invalidate(NULL);
@@ -4589,6 +4622,7 @@ void backend_execute(uint64_t handle) {
             (unsigned long long)stat_draws, (unsigned long long)stat_skipped, (unsigned long long)stat_passes,
             (unsigned long long)stat_dispatches, (unsigned long long)stat_snapshots, atomic_exchange(&stat_compiles, 0),
             stat_exec_ns / 1e6, stat_upload_ns / 1e6, stat_wait_ns / 1e6, stat_copy_bytes / 1048576.0);
+
         if (stat_skipped || stat_waits || stat_prog_cached || atomic_load(&stat_job_n[0]) || atomic_load(&stat_job_n[2])) {
             double ms[3], mx[3];
             uint64_t n[3];

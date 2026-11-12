@@ -171,10 +171,10 @@ void plat_sleep_until_ns(uint64_t t) {
         uint64_t now = plat_now_ns();
         if (now >= t) return;
         uint64_t left = t - now;
-        if (left < 200000) { sched_yield(); continue; }  // (the last bit: spinning beats a syscall)
-        // Asleep until 200 us before t (an absolute time on plat_now_ns's clock). (It was given the time left as if it
+        if (left < 20000) { sched_yield(); continue; }  // (the last bit: spinning beats a syscall)
+        // Asleep until 20 us before t (an absolute time on plat_now_ns's clock). (It was given the time left as if it
         // were absolute: long past, so it returned at once and every sleep was a busy loop of syscalls.)
-        uint64_t wake = t - 200000;
+        uint64_t wake = t - 20000;
         struct timespec due = {(time_t)(wake / 1000000000ull), (long)(wake % 1000000000ull)};
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &due, NULL);  // (EINTR: the loop re-reads the clock)
     }
@@ -231,7 +231,7 @@ void plat_standalone(void) {
     android_unpack_assets();  // (pipelines.list and bonus/system, which a PC release has beside the exe)
 #endif
     if (!isatty(STDERR_FILENO)) {
-        if (freopen("log.txt", "w", stderr)) { setvbuf(stderr, NULL, _IONBF, 0); g_own_log = true; }
+        if (freopen("log.txt", "w", stderr)) { setvbuf(stderr, NULL, _IOFBF, 65536); g_own_log = true; }
     }
 }
 
