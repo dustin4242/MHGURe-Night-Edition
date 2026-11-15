@@ -6,7 +6,9 @@
 // link the games speak over a direct connection (ldn.c link frames), which this server neither reads nor changes.
 // Game packets go by UDP when that gets through: datagrams to this server's UDP port, prefixed with the pair's id
 // and the sender's secret, are passed to the other end of the pair (without the prefix). Nobody needs a forwarded
-// port, and players never see each other's IP addresses.
+// port, and players never see each other's IP addresses - unless both ends ask for direct UDP (hole punching, see
+// peerQuery): then each is told the other's public UDP address, the games send their packets straight to each other
+// when their routers let them, and the relay stays as the fallback.
 //
 // Control frames: u32 size (of what follows), u8 type, payload; little endian. The first frame of a connection is a
 // request, whose payload starts with a header: "MHGS", u16 server protocol, u16 link protocol (the port's
@@ -22,14 +24,17 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	mrand "math/rand/v2"
 	"net"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -57,12 +62,21 @@ const (
 	errNotFound = 1 // no such hub (or not for this key / version)
 	errNoAnswer = 2 // the host did not take the player
 	errBusy     = 3 // a limit was reached
-	errVersion  = 4 // server protocol mismatch
+	errVersion  = 4 // server protocol mismatch, or a link protocol older than Config.MinProto
 	errBadReq   = 5
 
 	udpMagic  = "MHGR"
 	udpHeader = 16 // magic, u32 pair, u64 secret
 	udpMax    = udpHeader + 12 + 16 + 8192
+	// Direct UDP between the two ends (hole punching): a datagram of exactly udpQuerySize bytes whose payload is
+	// "MHGQ" + 12 zero bytes asks for the other end's address. It is not passed on; once both ends have asked (each
+	// end's consent to show its address to the other; a game too old to ask stays on the relay), the answer goes
+	// back to the asker, as big as the query: "MHGP", u32 pair, u64 the asker's secret, IPv4 address[4], u16 port
+	// (big endian), 2 zero bytes, u64 the pair's direct key. The games prefix their direct datagrams with "MHGR",
+	// the pair and that key, so each end can tell the other's datagrams from anything else reaching its port.
+	peerQuery    = "MHGQ"
+	peerAnswer   = "MHGP"
+	udpQuerySize = udpHeader + 16
 
 	// NetworkInfo offsets (runtime/net/ldn.c)
 	niSSID      = 0x26
@@ -70,8 +84,16 @@ const (
 	niNodeMax   = 0x66
 	niNodeCount = 0x67
 	niAdvSize   = 0x26A
+	niAdv       = 0x26C
 	advMax      = 0x180
-	maxNodes    = 8
+
+	// MHGU's advertise data: u16 passcode at 0xC0, 0xFFFF = none, else the 4-digit code in bits 0-14 and bit 15 set
+	// when it applies to everyone (clear: everyone but friends)
+	advPasscode = 0xC0
+	// ... and 0xFF at 0x1C in a Hunter Search network (hubs have 1 there, after the constant 0x90abcdef 0x12345678
+	// at 0x14): see huntSearch
+	advHuntSearch = 0x1C
+	maxNodes      = 8
 )
 
 type Config struct {
@@ -81,25 +103,33 @@ type Config struct {
 	MaxHubs       int     // hubs listed at once
 	MaxHubsPerIP  int     // hubs one IP address hosts
 	ListMax       int     // hubs in one LIST answer (the game's Join Hub list shows 18: 3 pages of 6)
+	ListSearchMax int     // Hunter Search networks in one LIST answer, after the hubs (its list shows 6; the game scans for 24)
 	ReqRate       float64 // LIST / JOIN requests a second per IP address (burst: ReqBurst)
 	ReqBurst      float64
 	Bandwidth     float64       // bytes a second per pair and direction (TCP), and per pair (UDP)
 	HandshakeTime time.Duration // for the first frame, and a joining player's wait for the host
 	PingEvery     time.Duration
-	Verbose       bool
+	// The two settings that can change while the server runs (Server.Apply): their values at the start.
+	MinProto uint16 // the oldest link protocol (PROTO_VERSION) served; older games get errVersion (0: any)
+	// Android's public hubs (the game sends the key "public-phone" when it has none) in a room of their own, as the
+	// game asks; false: that room is the public room, so phones and PCs without a key see each other's hubs
+	SeparatePhones bool
+	Verbose        bool
 }
 
 func DefaultConfig() Config {
 	return Config{
-		Addr: ":39510", MaxConns: 4000, MaxConnsPerIP: 24, MaxHubs: 2000, MaxHubsPerIP: 4, ListMax: 18,
+		Addr: ":39510", MaxConns: 4000, MaxConnsPerIP: 24, MaxHubs: 2000, MaxHubsPerIP: 4, ListMax: 18, ListSearchMax: 6,
 		ReqRate: 2, ReqBurst: 15, Bandwidth: 1 << 20, HandshakeTime: 10 * time.Second, PingEvery: 15 * time.Second,
+		SeparatePhones: true,
 	}
 }
 
 type hub struct {
 	id      uint64
-	room    [16]byte
+	room    [16]byte // as the host sent it (Android's public room too: whether it is the public room is decided per request)
 	proto   uint16
+	conn    *net.TCPConn      // the host's connection (Apply closes it when the hub's protocol is no longer served)
 	info    [netInfoSize]byte // guarded by Server.mu
 	created time.Time
 	ip      string
@@ -119,6 +149,8 @@ type pair struct {
 	secret [2]uint64 // 0: host, 1: player
 	mu     sync.Mutex
 	addr   [2]*net.UDPAddr
+	direct [2]bool // the end asked for the other's address (it may see its own then)
+	dkey   uint64  // the pair's direct key (both ends get it with the address)
 	lim    *bucket
 }
 
@@ -138,17 +170,88 @@ type Server struct {
 	conns   int
 	ln      *net.TCPListener
 	udp     *net.UDPConn
+	// the live settings (Apply): cfg.MinProto and cfg.SeparatePhones are only their first values
+	minProto atomic.Uint32
+	separate atomic.Bool
 }
 
 func NewServer(cfg Config) *Server {
-	return &Server{cfg: cfg, hubs: map[uint64]*hub{}, pending: map[uint64]*pending{}, pairs: map[uint32]*pair{},
+	s := &Server{cfg: cfg, hubs: map[uint64]*hub{}, pending: map[uint64]*pending{}, pairs: map[uint32]*pair{},
 		ips: map[string]*ipState{}}
+	s.minProto.Store(uint32(cfg.MinProto))
+	s.separate.Store(cfg.SeparatePhones)
+	return s
+}
+
+// Settings: what can change while the server runs.
+type Settings struct {
+	MinProto       uint16
+	SeparatePhones bool
+}
+
+func (s *Server) Settings() Settings {
+	return Settings{uint16(s.minProto.Load()), s.separate.Load()}
+}
+
+// Apply changes the settings without a restart; open connections stay. A higher MinProto refuses older games from the
+// next request on and takes their hubs off the list: their hosts' connections here are closed (the game tries again
+// and is told the server runs another version), while players already in such a hub play on through the relay until
+// they leave. SeparatePhones applies to every search and join from now on, to the hubs already listed too (no host
+// has to reconnect). Returns how many hubs were taken off.
+func (s *Server) Apply(n Settings) int {
+	old := s.Settings()
+	s.minProto.Store(uint32(n.MinProto))
+	s.separate.Store(n.SeparatePhones)
+	var gone []*net.TCPConn
+	s.mu.Lock()
+	for _, h := range s.hubs {
+		if h.proto < n.MinProto {
+			gone = append(gone, h.conn)
+		}
+	}
+	s.mu.Unlock()
+	for _, c := range gone {
+		c.Close()
+	}
+	if old != n {
+		log.Printf("settings: min-proto %d -> %d, separate-phones %v -> %v (%d hub(s) of older games taken off)",
+			old.MinProto, n.MinProto, old.SeparatePhones, n.SeparatePhones, len(gone))
+	}
+	return len(gone)
+}
+
+// The room a hub or request is in: Android's public room is the public room unless phones are kept apart.
+func meet(r [16]byte, separate bool) [16]byte {
+	if r == phoneRoom && !separate {
+		return [16]byte{}
+	}
+	return r
 }
 
 func (s *Server) vlog(format string, args ...any) {
 	if s.cfg.Verbose {
 		log.Printf(format, args...)
 	}
+}
+
+// The room of Android's public hubs: the key "public-phone" (runtime/net/ldn.c lobby_header).
+var phoneRoom = func() (r [16]byte) {
+	h := sha256.Sum256([]byte("MHGURecomp matchmaking key:public-phone"))
+	copy(r[:], h[:])
+	return
+}()
+
+// A room for the log: "public", "phone" (Android's public room) or "key" and the room: the key's hash as the game
+// sends it (the key itself never reaches the server). A guessed key's room, to compare: the first 16 bytes of
+// SHA-256("MHGURecomp matchmaking key:" + key), README.md.
+func roomName(r [16]byte) string {
+	switch r {
+	case [16]byte{}:
+		return "public"
+	case phoneRoom:
+		return "phone"
+	}
+	return fmt.Sprintf("key %x", r)
 }
 
 // Listen opens the TCP and UDP ports (the same number); Serve then runs until Close.
@@ -322,6 +425,13 @@ func (s *Server) handle(c *net.TCPConn) {
 	proto := binary.LittleEndian.Uint16(p[6:])
 	var room [16]byte
 	copy(room[:], p[8:24])
+	if uint32(proto) < s.minProto.Load() { // (the game: "the hub server runs another version", LAN / Join hubs only)
+		if t == tHost {
+			s.vlog("hub refused (protocol %d, %s)", proto, roomName(room))
+		}
+		sendError(c, errVersion)
+		return
+	}
 	body := p[headerSize:]
 	switch t {
 	case tList:
@@ -353,40 +463,87 @@ func (s *Server) handle(c *net.TCPConn) {
 	}
 }
 
-// The hubs a player with this key and version sees: the ones with room for more players first, then the fullest,
-// then the newest.
-func (s *Server) list(c *net.TCPConn, proto uint16, room [16]byte) {
-	type entry struct {
-		id      uint64
-		info    [netInfoSize]byte
-		created time.Time
+// passcoded: the hub asks a passcode (of everyone, or of everyone but friends: the same here, internet hub players
+// aren't each other's Switch friends).
+func passcoded(info []byte) bool {
+	if int(binary.LittleEndian.Uint16(info[niAdvSize:])) < advPasscode+2 {
+		return false
 	}
-	var es []entry
-	s.mu.Lock()
-	for _, h := range s.hubs {
-		if h.proto == proto && h.room == room {
-			es = append(es, entry{h.id, h.info, h.created})
+	return binary.LittleEndian.Uint16(info[niAdv+advPasscode:]) != 0xFFFF
+}
+
+// huntSearch: a Hunter Search network, not a hub. With Hunter Search on (in a village or the offline Hub) the game
+// hosts one for ~10 s between its searches, over and over: room for 2 players, and 0xFF at advertise byte 0x1C,
+// where hubs have 1 (a 2-player hub too: checked). The game scans for 24 networks and shows up to 18 hubs in Join Hub and 6 players in its Hunter
+// Search list, so in an answer these get places of their own instead of taking the hubs'.
+func huntSearch(info []byte) bool {
+	adv := info[niAdv:]
+	return info[niNodeMax] == 2 && int(binary.LittleEndian.Uint16(info[niAdvSize:])) > advHuntSearch &&
+		binary.LittleEndian.Uint32(adv[0x14:]) == 0x90abcdef && binary.LittleEndian.Uint32(adv[0x18:]) == 0x12345678 &&
+		adv[advHuntSearch] == 0xFF
+}
+
+type listEntry struct {
+	id      uint64
+	info    [netInfoSize]byte
+	created time.Time
+	rank    int // 0 room and no passcode, 1 room and a passcode, 2 full, 3 full with a passcode
+}
+
+// pick: at most max of es for an answer, sorted: the ones with room for more players first (without a passcode before
+// passcoded ones), then the fullest, then the newest. With more than max, a random choice by rank (so passcoded hubs
+// only take the places open hubs with room leave), so each search (the game's Retry) can show others.
+func pick(es []listEntry, max int) []listEntry {
+	for i := range es {
+		e := &es[i]
+		if e.info[niNodeCount] >= e.info[niNodeMax] {
+			e.rank = 2
+		}
+		if passcoded(e.info[:]) {
+			e.rank++
 		}
 	}
-	s.mu.Unlock()
-	free := func(e *entry) bool { return e.info[niNodeCount] < e.info[niNodeMax] }
-	// more hubs than one answer holds: a random ListMax of them, those with a free place before full ones, so each
-	// search (the game's Retry) can show others
-	if len(es) > s.cfg.ListMax {
+	if max < 0 {
+		max = 0
+	}
+	if len(es) > max {
 		mrand.Shuffle(len(es), func(i, j int) { es[i], es[j] = es[j], es[i] })
-		sort.SliceStable(es, func(i, j int) bool { return free(&es[i]) && !free(&es[j]) })
-		es = es[:s.cfg.ListMax]
+		sort.SliceStable(es, func(i, j int) bool { return es[i].rank < es[j].rank })
+		es = es[:max]
 	}
 	sort.Slice(es, func(i, j int) bool {
 		a, b := &es[i], &es[j]
-		if free(a) != free(b) {
-			return free(a)
+		if a.rank != b.rank {
+			return a.rank < b.rank
 		}
 		if a.info[niNodeCount] != b.info[niNodeCount] {
 			return a.info[niNodeCount] > b.info[niNodeCount]
 		}
 		return a.created.After(b.created)
 	})
+	return es
+}
+
+// The hubs a player with this key and version sees (up to ListMax, picked and sorted by pick), then the Hunter
+// Search networks (up to ListSearchMax, the same way). They come last: the game puts LAN hubs before the server's,
+// and an older game keeps fewer, so what doesn't fit is theirs.
+func (s *Server) list(c *net.TCPConn, proto uint16, room [16]byte) {
+	var hubs, searches []listEntry
+	sep := s.separate.Load()
+	room = meet(room, sep)
+	s.mu.Lock()
+	for _, h := range s.hubs {
+		if h.proto == proto && meet(h.room, sep) == room {
+			e := listEntry{id: h.id, info: h.info, created: h.created}
+			if huntSearch(h.info[:]) {
+				searches = append(searches, e)
+			} else {
+				hubs = append(hubs, e)
+			}
+		}
+	}
+	s.mu.Unlock()
+	es := append(pick(hubs, s.cfg.ListMax), pick(searches, s.cfg.ListSearchMax)...)
 	out := u32(uint32(len(es)))
 	for i := range es {
 		out = append(out, u64(es[i].id)...)
@@ -396,10 +553,15 @@ func (s *Server) list(c *net.TCPConn, proto uint16, room [16]byte) {
 }
 
 func (s *Server) host(c *net.TCPConn, ip string, proto uint16, room [16]byte, info []byte) {
-	h := &hub{room: room, proto: proto, created: time.Now(), ip: ip, out: make(chan []byte, 16),
+	h := &hub{room: room, proto: proto, conn: c, created: time.Now(), ip: ip, out: make(chan []byte, 16),
 		done: make(chan struct{})}
 	copy(h.info[:], info)
 	s.mu.Lock()
+	if uint32(proto) < s.minProto.Load() { // (Apply raised it since handle checked: Apply's sweep may have run already)
+		s.mu.Unlock()
+		sendError(c, errVersion)
+		return
+	}
 	st := s.ips[ip]
 	if len(s.hubs) >= s.cfg.MaxHubs || st.hubs >= s.cfg.MaxHubsPerIP {
 		s.mu.Unlock()
@@ -412,7 +574,7 @@ func (s *Server) host(c *net.TCPConn, ip string, proto uint16, room [16]byte, in
 	s.hubs[h.id] = h
 	st.hubs++
 	s.mu.Unlock()
-	s.vlog("hub %016x up (%d players)", h.id, h.info[niNodeCount])
+	s.vlog("hub %016x up (%d players, protocol %d, %s)", h.id, h.info[niNodeCount], proto, roomName(room))
 	defer func() {
 		s.mu.Lock()
 		delete(s.hubs, h.id)
@@ -469,7 +631,8 @@ func (s *Server) host(c *net.TCPConn, ip string, proto uint16, room [16]byte, in
 func (s *Server) join(c *net.TCPConn, proto uint16, room [16]byte, id uint64) {
 	s.mu.Lock()
 	h := s.hubs[id]
-	if h == nil || h.room != room || h.proto != proto {
+	sep := s.separate.Load()
+	if h == nil || meet(h.room, sep) != meet(room, sep) || h.proto != proto {
 		s.mu.Unlock()
 		sendError(c, errNotFound)
 		return
@@ -519,7 +682,7 @@ func (s *Server) join(c *net.TCPConn, proto uint16, room [16]byte, id uint64) {
 		}
 		hc = <-pj.host
 	}
-	p := &pair{secret: [2]uint64{rand64(), rand64()}, lim: newBucket(s.cfg.Bandwidth, s.cfg.Bandwidth)}
+	p := &pair{secret: [2]uint64{rand64(), rand64()}, dkey: rand64(), lim: newBucket(s.cfg.Bandwidth, s.cfg.Bandwidth)}
 	s.mu.Lock()
 	for p.id == 0 || s.pairs[p.id] != nil {
 		p.id = uint32(rand64())
@@ -619,10 +782,31 @@ func (s *Server) serveUDP() {
 		if side < 0 {
 			continue
 		}
+		query := n == udpQuerySize && string(buf[udpHeader:udpHeader+4]) == peerQuery
 		p.mu.Lock()
 		p.addr[side] = from // (NAT may change it: the latest wins)
 		to := p.addr[1-side]
+		if query {
+			p.direct[side] = true
+		}
+		both := p.direct[0] && p.direct[1]
 		p.mu.Unlock()
+		if query {
+			// direct UDP (hole punching): the other end's address, once both ends asked for each other's; never bigger
+			// than the query
+			if both && to != nil && to.IP.To4() != nil && p.lim.take(float64(n)) {
+				a := make([]byte, 0, udpQuerySize)
+				a = append(a, peerAnswer...)
+				a = binary.LittleEndian.AppendUint32(a, id)
+				a = binary.LittleEndian.AppendUint64(a, secret)
+				a = append(a, to.IP.To4()...)
+				a = binary.BigEndian.AppendUint16(a, uint16(to.Port))
+				a = append(a, 0, 0)
+				a = binary.LittleEndian.AppendUint64(a, p.dkey)
+				s.udp.WriteToUDP(a, from)
+			}
+			continue
+		}
 		// (an empty datagram only tells where its sender is)
 		if n > udpHeader && to != nil && p.lim.take(float64(n)) {
 			s.udp.WriteToUDP(buf[udpHeader:n], to)

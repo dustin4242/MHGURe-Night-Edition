@@ -24,6 +24,10 @@
 #include "../nvn.h"
 #include "../maxwell/shader.h"
 
+// The most window images a swapchain may have. Android's swapchain makes more than asked for (it adds the compositor's
+// spare buffers to minImageCount): 8 was too few on a Mali-G57 (Helio G100), whose image 8 then had no framebuffer.
+#define SC_MAX 16
+
 #define VK_CHECK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) FATAL("%s failed: %d (%s:%d)\n", #x, r_, __FILE__, __LINE__); } while (0)
 
 typedef struct {
@@ -63,8 +67,8 @@ typedef struct {
     VkFormat sc_format;
     VkExtent2D sc_extent;
     uint32_t sc_count;
-    VkImage sc_images[8];
-    VkImageView sc_views[8];
+    VkImage sc_images[SC_MAX];
+    VkImageView sc_views[SC_MAX];
 } VkG;
 extern VkG g_vk;
 
@@ -125,6 +129,8 @@ typedef struct TexBackend {
     VkFormat format;
     VkImageViewType base_type;
     uint32_t width, height, depth, layers, levels, samples;
+    float sx, sy;  // resolution scaling: width / the guest's width (and height), 1 for images made at the guest's size
+                   // (0 for the renderer's own images: treated as 1). textures.c tex_scalable
     VkImageAspectFlags aspect;
     bool gpu_owned, uploaded, dynamic;
     uint64_t data_hash, sample_hash, checked_frame, full_frame;
@@ -139,13 +145,19 @@ typedef struct TexBackend {
     bool ms_valid;          // ms holds this image's contents (its last write was a pass through ms)
     bool ms_dirty;          // ms is newer than this image: resolved when this one is next read (exec.c vk_ms_resolve)
     VkFormat ms_fmt;        // the format ms is rendered as
-    bool wide;              // RGBA16 UNORM standing in for the game's RGBA8 render target (textures.c vk_rt_widen)
+    uint8_t wide;           // WIDE_*: RGBA16 UNORM (SmoothGradients) or RGBA16F (native HDR, hdr.c) standing in for the
+                            // game's RGBA8 render target (textures.c vk_rt_widen)
     uint64_t ms_models;     // (colour) the frame 3D models (depth-writing draws) were last drawn into this image, once
                             // a pass without MSAA did (g_present_count; menus: exec.c ms_expand), 0 none lately
 } TexBackend;
 
 bool vk_wide_rt_on(void);  // (textures.c) RGBA8 render targets as RGBA16 UNORM ([Graphics] SmoothGradients)
-void vk_rt_widen(NvnTexture *t, bool wide);  // (exec.c begin_pass, outside a render pass)
+enum { WIDE_NONE, WIDE_UNORM16, WIDE_FLOAT16 };
+void vk_rt_widen(NvnTexture *t, int wide);  // WIDE_* (exec.c begin_pass, outside a render pass)
+static inline VkFormat vk_wide_format(int wide) {
+    return wide == WIDE_FLOAT16 ? VK_FORMAT_R16G16B16A16_SFLOAT : wide == WIDE_UNORM16 ? VK_FORMAT_R16G16B16A16_UNORM
+                                                                                     : VK_FORMAT_R8G8B8A8_UNORM;
+}
 // Images of a compressed format the GPU lacks (ASTC on desktop, BC on phones) hold decoded texels: blocks
 // (row-major, w x h texels' worth) -> w*h texels of vk_tex_texel_size bytes, tightly packed.
 static inline bool vk_tex_decoded(const TexBackend *b) { return b->astc_bw || b->bcn; }
@@ -153,6 +165,10 @@ uint32_t vk_tex_texel_size(const TexBackend *b);
 void vk_tex_decode(const TexBackend *b, const uint8_t *blocks, uint32_t w, uint32_t h, uint8_t *out);
 
 TexBackend *vk_tex(NvnTexture *t, bool for_render);  // backend image (uploads CPU contents unless for_render)
+// Resolution scaling (textures.c): b's image is larger than the guest's texture (b->sx / b->sy above 1)
+static inline bool vk_tex_scaled(const TexBackend *b) { return b && b->sx > 1.0f; }
+static inline float vk_tex_sx(const TexBackend *b) { return b && b->sx > 0.0f ? b->sx : 1.0f; }
+static inline float vk_tex_sy(const TexBackend *b) { return b && b->sy > 0.0f ? b->sy : 1.0f; }
 VkFormat vk_format(uint32_t nvn_format);
 bool vk_format_alpha_one(uint32_t nvn_format);
 bool renderer_format_is_depth(uint32_t f);
@@ -184,6 +200,7 @@ int vk_pages_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now
 // ---- shaders (shaders.c)
 VkShaderModule vk_compile_glsl(const char *src, int stage, const char *name);  // NULL on failure (logged)
 VkShaderModule vk_builtin_shader(const char *name);  // internal shaders (clear, present)
+const char *vk_builtin_source(const char *name);     // (the GLSL of one)
 
 // ---- device / window (device.c)
 void vk_save_png(const char *path, const uint8_t *rgba, uint32_t w, uint32_t h);

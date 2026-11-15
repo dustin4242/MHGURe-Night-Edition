@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "engine_module.h"
 #include "gamelib.h"
 #include "hle.h"
 #include "interp.h"
@@ -192,6 +193,7 @@ void fnhook_keep_entry(uint32_t addr, uint32_t w0, uint32_t w1) {
         __atomic_store_n(&nkept, n + 1, __ATOMIC_RELEASE);
     }
     pthread_mutex_unlock(&kept_lock);
+    interp_code_changed();
 }
 
 bool fnhook_entry_word(uint32_t pc, uint32_t *w) {
@@ -207,7 +209,7 @@ bool fnhook_entry_word(uint32_t pc, uint32_t *w) {
 // ---- function hooks (rt.h)
 uint8_t g_fnhook[HLE_BASE >> 5];
 #define MAX_HOOKS 1024
-static struct { uint32_t addr, detour; } hooks[MAX_HOOKS];
+static struct { uint32_t addr, detour, outer; } hooks[MAX_HOOKS];  // outer: a host layer that runs before any other hook (fnhook_set_outer)
 static struct { uint32_t at, addr; bool original; } tramps[MAX_HOOKS];
 static int nhooks, ntramps;
 static pthread_mutex_t hook_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -232,9 +234,39 @@ bool fnhook_set(uint32_t addr, uint32_t detour) {
     }
     __atomic_store_n(&hooks[i].detour, detour, __ATOMIC_RELEASE);
     uint8_t bit = (uint8_t)(1u << ((addr >> 2) & 7));
-    if (detour) __atomic_fetch_or(&g_fnhook[addr >> 5], bit, __ATOMIC_RELEASE);
+    if (detour || hooks[i].outer) __atomic_fetch_or(&g_fnhook[addr >> 5], bit, __ATOMIC_RELEASE);
     else __atomic_fetch_and(&g_fnhook[addr >> 5], (uint8_t)~bit, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&hook_lock);
+    interp_code_changed();  // (code_word reads the bit)
+    return true;
+}
+
+// A host layer in front of every other hook at addr, whenever those are made (before or after it): the call reaches it
+// first, and its fnhook_call_next goes on to the hooks of mods and plugins (the nearest first), then the function. fnhook_get
+// and the plugins' trampolines see only those hooks, so a mod's hook and its original work as if the layer were not there.
+bool fnhook_set_outer(uint32_t addr, uint32_t detour) {
+    if (addr >= HLE_BASE || !dispatch_lookup(addr)) {
+        LOG("[hook] %08x is not the start of a recompiled function: not hooked\n", addr);
+        return false;
+    }
+    pthread_mutex_lock(&hook_lock);
+    int i = 0;
+    while (i < nhooks && hooks[i].addr != addr) i++;
+    if (i == nhooks) {
+        if (nhooks == MAX_HOOKS) {
+            pthread_mutex_unlock(&hook_lock);
+            LOG("[hook] too many function hooks (%d): %08x is not hooked\n", MAX_HOOKS, addr);
+            return false;
+        }
+        hooks[i].addr = addr;
+        __atomic_store_n(&nhooks, nhooks + 1, __ATOMIC_RELEASE);
+    }
+    __atomic_store_n(&hooks[i].outer, detour, __ATOMIC_RELEASE);
+    uint8_t bit = (uint8_t)(1u << ((addr >> 2) & 7));
+    if (detour || hooks[i].detour) __atomic_fetch_or(&g_fnhook[addr >> 5], bit, __ATOMIC_RELEASE);
+    else __atomic_fetch_and(&g_fnhook[addr >> 5], (uint8_t)~bit, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&hook_lock);
+    interp_code_changed();
     return true;
 }
 
@@ -245,16 +277,35 @@ uint32_t fnhook_get(uint32_t addr) {
     return 0;
 }
 
+static uint32_t fnhook_outer(uint32_t addr) {
+    int n = __atomic_load_n(&nhooks, __ATOMIC_ACQUIRE);
+    for (int i = 0; i < n; i++)
+        if (hooks[i].addr == addr) return __atomic_load_n(&hooks[i].outer, __ATOMIC_ACQUIRE);
+    return 0;
+}
+
 int fnhook_enter(Cpu *c, uint32_t addr) {
     if (t_hook_bypass == addr) {
         t_hook_bypass = 0;
         return 0;
     }
-    uint32_t detour = fnhook_get(addr);
+    uint32_t detour = fnhook_outer(addr);
+    if (!detour) detour = fnhook_get(addr);
     if (!detour) return 0;
     c->pc = detour;  // (in the function's place: the detour returns to the function's caller)
     rt_dispatch(c);
     return 1;
+}
+
+// From an outer layer: on to the hook behind it (a mod's), or the function itself when there is none
+void fnhook_call_next(Cpu *c, uint32_t addr) {
+    uint32_t next = fnhook_get(addr);
+    if (!next) {
+        fnhook_call_original(c, addr);
+        return;
+    }
+    c->pc = next;
+    rt_dispatch(c);
 }
 
 void fnhook_call_original(Cpu *c, uint32_t addr) {
@@ -442,6 +493,7 @@ void rt_fault_report(const char *what, uint64_t fa, uint64_t pc, uint64_t lr) {
     if (fa >= GUEST_BASE && fa < GUEST_BASE + GUEST_SPACE) fprintf(stderr, " (guest %08llx)", (unsigned long long)(fa - GUEST_BASE));
     fprintf(stderr, "\n    host pc %llx (%s+%llx)\n    host lr %llx (%s)\n", (unsigned long long)pc, ps ? ps : "?",
             (unsigned long long)po, (unsigned long long)lr, ls ? ls : "?");
+    engine_modules_report();
     rt_fatal_trace();
 }
 

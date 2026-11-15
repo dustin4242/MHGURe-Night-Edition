@@ -33,6 +33,8 @@
 #define ALIAS_SIZE    0x28000000u
 #define STACK_BASE    0xD0000000u   // stack region (main thread stack, mapped thread stacks)
 #define STACK_SIZE    0x20000000u
+#define PLUGIN2_BASE  0xF0100000u   // Forge plugins that do not fit in PLUGIN_BASE..PLUGIN_END (unassigned above the stacks)
+#define PLUGIN2_END   0xF8100000u
 #define GUEST_SPACE   0x100000000ull
 
 // ---- loader.c
@@ -92,6 +94,11 @@ void hle_override(uint32_t guest_addr, HostFn fn, const char *name);
 bool fnhook_set(uint32_t addr, uint32_t detour);
 uint32_t fnhook_get(uint32_t addr);
 void fnhook_call_original(Cpu *c, uint32_t addr);
+// A host layer that always runs first at addr, in front of the hooks of mods and plugins made before or after it (they
+// see what it passes on, and what they change on the way back is not undone): fnhook_set_outer installs it, and it
+// continues with fnhook_call_next (the hook behind it, else the function). fnhook_get shows only the hooks behind it.
+bool fnhook_set_outer(uint32_t addr, uint32_t detour);
+void fnhook_call_next(Cpu *c, uint32_t addr);
 bool fnhook_add_trampoline(uint32_t at, uint32_t addr, bool original);  // false: the table is full
 bool fnhook_room(uint32_t addr, bool tramp);  // a hook at addr (with a trampoline) fits in the tables (1024 each)
 // A hook that writes over a function's first two words in guest memory (Forge's `ldr pc, [pc, #-4]; .word detour`)
@@ -130,6 +137,19 @@ union SDL_Event;
 void host_input_event(const union SDL_Event *e);
 void host_input_update(void);            // recompute the controller state the game reads (each loop pass)
 bool host_input_press(const char *button, unsigned frames);  // scripted press from the next frame (UI thread)
+// The mouse for mods (runtime/forge.c: forge_input_getMouse, getMouseMove, setMouseFree). Any thread.
+typedef struct {
+    float x, y;        // the pointer in the window (pixels), where it last moved
+    bool inside;       // it is over the window
+    uint32_t buttons;  // held, or pressed since the last take (1 left, 2 middle, 4 right, 8 / 16 the side buttons)
+    float dx, dy;      // moved since the last take (counts while captured, else window pixels; y down)
+} HostMouse;
+void host_input_mouse_take(HostMouse *out);  // (the presses and the movement start again: forge.c, once a frame)
+void host_input_set_mouse_free(bool free);   // a mod's own pointer: the mouse not captured, its clicks the mod's only
+bool host_input_mouse_free(void);
+// For a mod's keybind menu: the first key, mouse button or wheel notch pressed since the last take, whoever took it, as
+// [Keybinds] codes it (config.h: an SDL scancode, KEY_MOUSE + button, KEY_WHEEL_*; 0 none). Not the port's own keys but Esc.
+int host_input_key_take(void);
 void quickhunt_poll(void);               // (debug) MHGU_QUICKHUNT's presses (runtime/hle/quickhunt.c; UI thread)
 void playerpos_log(void);                // (debug) F2: logs the player's position and facing (runtime/hle/playerpos.c; UI thread)
 void playerpos_teleport(float x, float y, float z, float yaw);  // (debug) control file "tp": the player there (yaw < 0 keeps it)

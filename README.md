@@ -188,6 +188,7 @@ You may be able to extract the files with another tool, just make sure that you 
 | Log | `log.txt`, please attach this file when opening an issue |
 | Screenshots | `shots\` (press F12) |
 | Mods | `mods\` one folder per mod (see below) |
+| Engine modules | `engine_modules\` (see below) |
 | Cheats | `cheats\` `.txt` files with cheat codes (see below) |
 | Shader cache | `cache\` |
 
@@ -250,6 +251,16 @@ This fork has no settings menu, so the Android tab's buttons aren't there. The s
 `mhgurecomp.ini` (`[Android] SaveFolder`, `GameFolder`), and files can be put in place with the device's own file
 manager; the rest of this section is kept for reference:
 
+- **Files folder:** keeps the app's files (settings, save, mods, cheats, screenshots, `log.txt`, `env.txt`) in a folder
+  you pick instead of `Android/data`, so the device's own file managers can open them. The app copies its files there
+  (files missing there are copied; if files there are older than the app's, the save after playing elsewhere for
+  example, it asks whether to replace them, keeping the replaced ones as `.bak`; not the game files, which are then used where they are, nor the shader cache, which is
+  made again) and closes; start it again. Android asks you to allow "All files access". **Use the app's folder** copies
+  them back, with a progress dialog either way. The app asks once at the first start too (and after a reinstall, which
+  forgets the folder: choose it again and what's in it is used; game files left in the app's own folder are deleted by
+  the uninstall and need importing again). If the chosen folder can't be used at a start ("All files access" turned
+  off, the folder moved or deleted, its drive gone), the app says so and offers to choose it again or use its own folder
+  for that time; **Use the app's folder** then forgets it for good.
 - **Import save:** pick the `system` and `system_backup` files from anywhere on the device. The app copies them in,
   keeping your current save in `save/save_0.before-import-<date>`, and closes; start it again to play. (Over USB you
   can also put the two files in `save/save_0/` yourself.)
@@ -344,6 +355,11 @@ The most used ones are also in `mhgurecomp.ini` before you start: resolution, MS
   `docs/FSR-PORT.md`, `docs/FSR4-PORT.md`
 - `[Graphics]`: `DrawDistance` (how far away people in the villages and the Hubs are still drawn: 1 = the game's,
   2 = twice as far, 0.5 = half, 0 = no limit; up to 10)
+- `[HDR]`: `HDR` (Off / On, default Off: native HDR10 or scRGB output on an HDR display, a port of the RenoDX HDR mod
+  for this game; turn HDR on in the system's display settings first), `PeakBrightness`, `GameBrightness`,
+  `UIBrightness` (nits), `ToneMapper` (Vanilla / None / RenoDRT), `GammaCorrection` (Off / 2.2 / BT.1886),
+  `Exposure`, `Highlights`, `Shadows`, `Contrast`, `Saturation`, `HighlightSaturation`, `Flare`, `Bloom`,
+  `UnclampedScene`, `HDRFormat` (ini only). Use it with FSR off. Details: [docs/HDR.md](docs/HDR.md)
 - `[Performance]`: `FPS` (30 to 240), `VSync` (On / Off; above your monitor's refresh rate, turn VSync off), `ShaderPrewarm`
   (On / Off: translate all of the game's shaders in the background at startup, so fewer things are drawn black the
   first time they appear; the first start takes about 20 s for it, during the logos, and the cache folder needs about
@@ -367,10 +383,12 @@ The most used ones are also in `mhgurecomp.ini` before you start: resolution, MS
   each other's hubs; empty = public, on Android public among Android players only), `SyncSmallMonsters`,
   `ShareUrgentCredit` (default On: an Urgent quest someone else posted counts for you too when you clear it, if you
   have unlocked it yourself)
-- `[Monster HP]`: HP factors for 1 to 4 hunters in Hub quests, and per-quest exceptions (default: all 1, the
+- `[Monster HP]`: factors on monster HP and part HP (flinches, breaks, severs) for 1 to 4 hunters in Hub quests, and per-quest exceptions (default: all 1, the
   original game)
 - `[Village Quests]`: `VillageQuestsInHub` (default On), `HubHP` (default 2.0: Village quests posted in the Hub
-  multiply their monsters' HP by this first, then by the `[Monster HP]` factor)
+  multiply their monsters' HP and part HP by this first, then by the `[Monster HP]` factor)
+- `[Quest Rewards]`: `HoldASend` (default On: at the end of a quest, hold A on the Reward Box's Send to the Item Box
+  screen to send the items to the box one after another)
 - `[Discord]`: `RichPresence` (default On: your Discord profile shows where you are, the monsters you're hunting
   and the map, how many are in your hub or quest; Discord must be running on the same computer), `ShowHunter`
   (default On: your hunter's name, HR and weapon type too)
@@ -396,6 +414,42 @@ See [server/README.md](server/README.md) if you want to host your own LDN server
 You can also play multiplayer without an LDN server if you want to play with your friends. The host needs to forward the right port (39500 TCP/UDP by default), and all clients need to configure the host's IP address in their .ini file. (`Join = xxx.xxx.xxx.xxx`)
 
 Choose the "Local Wireless" multiplayer options, as this port pretends to be a local nearby Switch with a wireless connection. The online options are unavailable and are unnecessary.
+
+### Crossplay with emulators (experimental)
+
+You can also play with people on Ryujinx / Ryubing, and on suyu, yuzu, Eden, Citron and the other forks that kept their multiplayer rooms. This is still experimental: it has been tested against the emulators' server software, but not yet in real hunts with real emulator players. Please [open an issue](https://github.com/morerokk/MHGURecomp/issues/new/choose) with your `log.txt` if something goes wrong.
+
+Some things to know first:
+- Crossplay is set up in `mhgurecomp.ini`, under `[Multiplayer]`, not in the F1 menu. If your .ini is from an older version and doesn't have the settings below yet, just add them.
+- Everyone needs game version 1.4.0, the emulator players too.
+- This port's extras (small monster sync, HP scaling) are off in a hub with emulator players: only players on this port understand them.
+
+**The easy way: one player on this port hosts everything.** The host turns on the servers that are built into the game:
+
+```ini
+RyuServe = On        ; for Ryujinx / Ryubing players (TCP port 30456)
+RoomServe = On       ; for suyu, yuzu, Eden, Citron... players (UDP port 24872)
+RoomPassword =       ; optional: a password for the room
+```
+
+These only run while Local Wireless play is open, so the host creates a hub as usual. To play over the internet, the host forwards those ports, or everyone uses a VPN such as Radmin. Then:
+- **Ryujinx players** set their LDN server to the host's address (port 30456) and search for hubs in Local Play.
+- **suyu / Eden / Citron players** connect to a multiplayer room at the host's IP, port 24872 (with the room password, if there is one).
+- **Other players on this port** set `RyuServers = <the host's address>`, so the hub shows up in their Search Hubs.
+
+With both servers on, Ryujinx players and room players all play in the same hub.
+
+**Using a server that already exists:**
+- `RyuServers = host[:port], ...`: Ryujinx LDN servers whose lobbies show up in Search Hubs (default port 30456).
+- `RyuHost = host`: hubs you create are made on that server, so Ryujinx players on it can join them.
+- `RoomServer = host[:port]` and `RoomHost = On`: the same for a suyu-style multiplayer room (default port 24872). `RoomName` is your name in the room, `RoomPassword` its password.
+- `RyuHost` and `RoomHost` together make one hub that both Ryujinx and room players can join.
+- Please don't use Ryujinx's own public LDN server for this, it's meant for Ryujinx users. Run your own Ryujinx LdnServer, or just use `RyuServe`.
+
+**Good to know:**
+- For a private group with Ryujinx players, set `RyuPassphrase` to `Ryujinx-` followed by exactly 8 hex digits (for example `Ryujinx-1a2b3c4d`), and have the Ryujinx players enter the same one. Anything else (a typo too) counts as no passphrase, which means your lobby is **public**. Ryujinx does the same.
+- Hubs with both Ryujinx and room players are the least tested. If something odd happens there (players not seeing each other in a quest, for example), try a hub with only Ryujinx players or only room players.
+- If things get strange after someone left and rejoined a crossplay hub, make a new hub.
 
 ## Bonus content
 
@@ -423,9 +477,17 @@ To install a mod, put the mod folder in `mods\`. Remove the folder to uninstall 
   what was patched and loaded (`[mods]` lines).
 - Forge plugins (`.nro` in `romfs\nativeNX\plugins\`) are loaded. Forge's own loader (the `exefs\subsdk9` that
   Forge and mods with Forge plugins include) is not needed and is passed over: the port runs the plugins itself. Forge's menu with the plugins' settings opens with
-  Insert (or the key in Forge's own `config.ini`, if a mod includes Forge's files, which can also set `[log] level`);
-  use the mouse, keyboard or controller in it. While it is open the game gets no controller input. Window positions
+  Insert (or the key in Forge's own `config.ini`, if a mod includes Forge's files, which can also set `[log] level`),
+  or, with a controller alone, with **Open the Forge menu** at the bottom of the settings' Mods tab;
+  use the mouse, keyboard or controller in it. On a controller, the button that cancels in the game's menus (when
+  nothing in the Forge window is left to cancel) or Start + Back closes it. While it is open the game gets no controller input. Window positions
   are kept in `forge_imgui.ini`.
+- For mod makers: besides Forge's API, the port gives mods the mouse: `forge_input_getMouse` (the pointer on the
+  1280x720 screen and the buttons), `forge_input_getMouseMove` (the movement, also while the hunt camera has it) and
+  `forge_input_setMouseFree` (no capture while a mod's own menu is open), and keybinds: `forge_input_setKeybind` (other
+  keys for a `[Keybinds]` row for a while, without changing the player's settings), `forge_input_getKeybind`,
+  `forge_input_getModKeybind` (what a mod has set for a row, if any) and `forge_input_getKeyPressed` (the key just
+  pressed, by name, for a mod's own keybind menu). The settings menu shows which rows a mod has. See `runtime/forge.c`.
 - You do not need any resolution, FPS cap or connection fix mods. These features are included with this port.
 
 **Places to get mods:**
@@ -436,6 +498,13 @@ To install a mod, put the mod folder in `mods\`. Remove the folder to uninstall 
 **Modding resources:**
 - [MHGU-Modding Wiki](https://github.com/RTHKKona/MHGU-Modding/wiki)
 - [Fexty's Forge](https://github.com/Fexty12573/forge)
+
+## Engine modules
+
+Engine modules are native programs that extend the port itself, not the game (for example a different upscaler). They aren't
+mods or Forge plugins, and **they run with the same rights as the game, so only install ones you trust**. Nothing loads unless
+you ask for it: put the module's folder in `engine_modules\` and add its folder name on a line of its own in
+`engine_modules\enabled.txt`. `log.txt` lists what was loaded. Details for module authors: [docs/ENGINE-MODULES.md](docs/ENGINE-MODULES.md).
 
 ## Cheats
 

@@ -8,6 +8,7 @@
 //   MHGU_FPS=1             frames per second in the log every 2 s
 //   MHGU_NO_BC=1           act as if the GPU had no BC textures, as phone GPUs (they are decoded on the CPU then)
 //   MHGU_VK11=1            take the path for Vulkan 1.1 devices on any device (g_vk.api11), to test it on a PC
+//   MHGU_NO_LOADING_SCREEN=1   no loading indicator before the game's first frame (a black window, as before)
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <math.h>
@@ -16,9 +17,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "../../engine_module.h"
 #include "../../overlay.h"
 #include "fsr.h"
 #include "fsr4.h"
+#include "hdr.h"
 #include "vk.h"
 
 VkG g_vk;
@@ -34,6 +37,10 @@ typedef struct {
 } FullScreenExclusiveInfo;
 enum { FULL_SCREEN_EXCLUSIVE_DISALLOWED = 2 };  // VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT
 static bool surface_caps2, no_exclusive;  // VK_KHR_get_surface_capabilities2 (instance), VK_EXT_full_screen_exclusive
+// HDR ([HDR] HDR, hdr.c): VK_EXT_swapchain_colorspace (instance; without it no surface lists HDR formats) and
+// VK_EXT_hdr_metadata (device; the display is told the peak brightness)
+static bool colorspace_ext;
+static PFN_vkSetHdrMetadataEXT set_hdr_metadata;
 
 static pthread_mutex_t g_vk_mutex = PTHREAD_MUTEX_INITIALIZER;
 static volatile bool g_vk_owner;  // who holds it: exit() may run inside a submission, from the guest's own code
@@ -83,10 +90,13 @@ static void create_instance(void) {
     vkEnumerateInstanceExtensionProperties(NULL, &ni, NULL);
     VkExtensionProperties *ip = calloc(ni ? ni : 1, sizeof *ip);
     vkEnumerateInstanceExtensionProperties(NULL, &ni, ip);
-    for (uint32_t i = 0; i < ni; i++)
+    for (uint32_t i = 0; i < ni; i++) {
         if (!strcmp(ip[i].extensionName, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) surface_caps2 = true;
+        else if (!strcmp(ip[i].extensionName, VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME)) colorspace_ext = true;
+    }
     free(ip);
     if (surface_caps2) ext[n_ext++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
+    if (colorspace_ext) ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;  // (HDR window images)
     bool validate = getenv("MHGU_VK_VALIDATION") != NULL;
     if (validate) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
@@ -203,6 +213,8 @@ static void create_device(void) {
     }
     if (bias_ctl) ext[n_ext++] = VK_EXT_DEPTH_BIAS_CONTROL_EXTENSION_NAME;
 #endif
+    bool hdr_meta = has_ext(ep, ne, VK_EXT_HDR_METADATA_EXTENSION_NAME);  // (HDR: hdr.c)
+    if (hdr_meta) ext[n_ext++] = VK_EXT_HDR_METADATA_EXTENSION_NAME;
     if (g_vk.api11) {  // (Vulkan 1.2 has it as the feature samplerMirrorClampToEdge)
         g_vk.no_mirror_clamp = !has_ext(ep, ne, VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME);
         if (!g_vk.no_mirror_clamp) ext[n_ext++] = VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME;
@@ -288,6 +300,7 @@ static void create_device(void) {
 #ifdef VK_EXT_depth_bias_control
     if (bias_ctl) g_vk.set_depth_bias2 = (PFN_vkCmdSetDepthBias2EXT)vkGetDeviceProcAddr(g_vk.dev, "vkCmdSetDepthBias2EXT");
 #endif
+    if (hdr_meta) set_hdr_metadata = (PFN_vkSetHdrMetadataEXT)vkGetDeviceProcAddr(g_vk.dev, "vkSetHdrMetadataEXT");
     LOG("[vk] polygon offsets on the D32S8 made for D24S8: %s\n",
         vk_depth24_stencil8() != VK_FORMAT_D32_SFLOAT_S8_UINT ? "not needed (D24S8)"
         : g_vk.set_depth_bias2                               ? "in D24 steps (VK_EXT_depth_bias_control)"
@@ -404,11 +417,142 @@ static VkPresentModeKHR present_mode(void) {
 }
 
 static VkRenderPass sc_pass;
-static VkFramebuffer sc_fb[8];
+static VkFramebuffer sc_fb[SC_MAX];
+
+// HDR ([HDR] HDR = On, hdr.c): the game and the overlay draw into the composition image (sc_pass, RGBA16F, ends in
+// GENERAL) instead of the window image; hdr_pass then draws it into the HDR10 / scRGB window image (hdr.c
+// vk_hdr_encode). Everything that draws "into the window" (the present, the overlay, the loading screen) is unchanged.
+#define COMPOSE_FORMAT VK_FORMAT_R16G16B16A16_SFLOAT
+static int swapchain_hdr = -1;  // the setting the swapchain was made for: 0 off, else HDRFormat + 1
+static TexBackend compose;
+static VkImageView compose_view;  // (its own: a cached view can be evicted while the framebuffer still uses it)
+static VkFramebuffer compose_fb;
+static VkRenderPass hdr_pass;
+static VkFramebuffer hdr_fb[SC_MAX];
+
+static bool hdr_broken;  // the composition image could not be made: SDR
+static int hdr_wanted(void) { return config_live_hdr() && !hdr_broken ? config_live_hdr_format() + 1 : 0; }
+
+static void compose_free(void) {
+    if (compose_fb) vkDestroyFramebuffer(g_vk.dev, compose_fb, NULL);
+    if (compose_view) vkDestroyImageView(g_vk.dev, compose_view, NULL);
+    compose_fb = VK_NULL_HANDLE;
+    compose_view = VK_NULL_HANDLE;
+    if (compose.image) {
+        vk_views_forget(&compose);
+        vk_defer_image(compose.image, compose.mem);
+    }
+    memset(&compose, 0, sizeof compose);
+}
+
+static bool compose_make(VkExtent2D ext) {
+    if (compose.image && compose.width == ext.width && compose.height == ext.height && compose_fb) return true;
+    compose_free();
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = COMPOSE_FORMAT,
+                            .extent = {ext.width, ext.height, 1}, .mipLevels = 1, .arrayLayers = 1,
+                            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (vmaCreateImage(g_vk.vma, &ci, &ai, &compose.image, &compose.mem, NULL) != VK_SUCCESS) {
+        memset(&compose, 0, sizeof compose);
+        return false;
+    }
+    compose.format = COMPOSE_FORMAT, compose.base_type = VK_IMAGE_VIEW_TYPE_2D;
+    compose.width = ext.width, compose.height = ext.height;
+    compose.depth = compose.layers = compose.levels = compose.samples = 1;
+    compose.aspect = VK_IMAGE_ASPECT_COLOR_BIT, compose.gpu_owned = true;
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = compose.image,
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = COMPOSE_FORMAT,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    if (vkCreateImageView(g_vk.dev, &vi, NULL, &compose_view) != VK_SUCCESS) compose_view = VK_NULL_HANDLE;
+    VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = sc_pass, .attachmentCount = 1,
+                                  .pAttachments = &compose_view, .width = ext.width, .height = ext.height, .layers = 1};
+    if (!compose_view || vkCreateFramebuffer(g_vk.dev, &fi, NULL, &compose_fb) != VK_SUCCESS) {
+        compose_fb = VK_NULL_HANDLE;
+        compose_free();
+        return false;
+    }
+    return true;
+}
+
+// The window format for HDR: HDR10 (A2B10G10R10 / A2R10G10B10 + ST.2084) or scRGB (RGBA16F + extended sRGB linear),
+// as HDRFormat asks and the surface offers. -1: none (SDR).
+static int hdr_surface_format(const VkSurfaceFormatKHR *fmts, uint32_t nf, int want, int *out) {
+    int pq = -1, lin = -1;
+    for (uint32_t i = 0; i < nf; i++) {
+        if (fmts[i].colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
+            (fmts[i].format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || fmts[i].format == VK_FORMAT_A2R10G10B10_UNORM_PACK32) && pq < 0)
+            pq = (int)i;
+        if (fmts[i].colorSpace == VK_COLOR_SPACE_EXTENDED_SRGB_LINEAR_EXT && fmts[i].format == VK_FORMAT_R16G16B16A16_SFLOAT && lin < 0)
+            lin = (int)i;
+    }
+    int fmt = want - 1;  // HDR_FORMAT_*
+    if (fmt == HDR_FORMAT_SCRGB && lin >= 0) return *out = HDR_OUT_SCRGB, lin;
+    if (pq >= 0) return *out = HDR_OUT_PQ, pq;
+    if (lin >= 0) return *out = HDR_OUT_SCRGB, lin;
+    return *out = HDR_OUT_NONE, -1;
+}
+
+static void hdr_send_metadata(bool force) {
+    static float sent_peak = -1, sent_avg = -1;
+    if (!set_hdr_metadata || !g_hdr_out || !g_vk.swapchain) return;
+    float peak, avg;
+    vk_hdr_metadata_values(&peak, &avg);
+    if (!force && peak == sent_peak && avg == sent_avg) return;
+    VkHdrMetadataEXT md = {.sType = VK_STRUCTURE_TYPE_HDR_METADATA_EXT,
+                           .displayPrimaryRed = {0.708f, 0.292f}, .displayPrimaryGreen = {0.170f, 0.797f},
+                           .displayPrimaryBlue = {0.131f, 0.046f}, .whitePoint = {0.3127f, 0.3290f},
+                           .maxLuminance = peak, .minLuminance = 0.0f, .maxContentLightLevel = peak,
+                           .maxFrameAverageLightLevel = avg};
+    set_hdr_metadata(g_vk.dev, 1, &g_vk.swapchain, &md);
+    sent_peak = peak, sent_avg = avg;
+}
+
+// Android takes the app's window away when it leaves the screen (minimised, a file picker over it) and makes a new one
+// when it comes back. A surface dies with its window: everything on it says VK_ERROR_SURFACE_LOST_KHR from then on, so
+// frame_begin makes a new surface (surface_ready). The window can also go while a swapchain is being made: not fatal.
+#ifdef __ANDROID__
+static bool surface_lost;
+#define SURFACE_CHECK(x) do { VkResult sr_ = (x); \
+        if (sr_ == VK_ERROR_SURFACE_LOST_KHR || sr_ == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) { surface_lost = true; return; } \
+        VK_CHECK(sr_); } while (0)
+#else
+#define SURFACE_CHECK(x) VK_CHECK(x)
+#endif
+
+// The window's render passes, one per (format, load, final layout), kept for good: the overlay and the present
+// pipeline are remade when the pass they were made for changes, which a destroyed pass's handle, reused, would hide.
+// clear: cleared first (the game's picture is drawn into it), else every pixel is drawn (HDR: hdr.c).
+static VkRenderPass window_pass(VkFormat fmt, bool clear, VkImageLayout final) {
+    typedef struct { VkFormat fmt; bool clear; VkImageLayout final; VkRenderPass rp; } Made;
+    static Made made[8];
+    static int nmade;
+    for (int i = 0; i < nmade; i++)
+        if (made[i].fmt == fmt && made[i].clear == clear && made[i].final == final) return made[i].rp;
+    VkAttachmentDescription a = {.format = fmt, .samples = VK_SAMPLE_COUNT_1_BIT,
+                                 .loadOp = clear ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                                 .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+                                 .finalLayout = final};
+    VkAttachmentReference ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &ref};
+    VkSubpassDependency dep = {.srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
+                               .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                               .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                               .srcAccessMask = VK_ACCESS_ALL_WRITES,
+                               .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT};
+    VkRenderPassCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &a,
+                                 .subpassCount = 1, .pSubpasses = &sp, .dependencyCount = 1, .pDependencies = &dep};
+    VkRenderPass rp;
+    VK_CHECK(vkCreateRenderPass(g_vk.dev, &ci, NULL, &rp));
+    if (nmade < 8) made[nmade++] = (Made){fmt, clear, final, rp};
+    return rp;
+}
 
 static void create_swapchain(void) {
     VkSurfaceCapabilitiesKHR caps;
-    VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
+    SURFACE_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
     int w, h;
     SDL_GetWindowSizeInPixels(ui_window(), &w, &h);
     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
@@ -418,13 +562,36 @@ static void create_swapchain(void) {
     VkSurfaceFormatKHR fmts[64];
     if (nf > 64) nf = 64;
     vkGetPhysicalDeviceSurfaceFormatsKHR(g_vk.phys, g_vk.surface, &nf, fmts);
+#ifdef __ANDROID__
+    if (!nf) { surface_lost = true; return; }
+#endif
     // scanout shows the bytes the game wrote: a UNORM swapchain (sRGB game images are read through UNORM views)
     VkSurfaceFormatKHR sf = fmts[0];
     for (uint32_t i = 0; i < nf; i++)
         if (fmts[i].format == VK_FORMAT_B8G8R8A8_UNORM && fmts[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { sf = fmts[i]; break; }
+    // HDR: an HDR10 / scRGB window image where the surface offers one (hdr.c draws the composition into it)
+    int want_hdr = hdr_wanted(), out = HDR_OUT_NONE;
+    if (want_hdr) {
+        int i = hdr_surface_format(fmts, nf, want_hdr, &out);
+        if (i >= 0) sf = fmts[i];
+        if (want_hdr != swapchain_hdr) {
+            if (out) {
+                LOG("[hdr] on: %s window image (format %d, colour space %d)\n", out == HDR_OUT_PQ ? "HDR10 (PQ)" : "scRGB",
+                    sf.format, sf.colorSpace);
+            } else {
+                LOG("[hdr] the display offers no HDR format (%s): SDR\n",
+                    colorspace_ext ? "is HDR on in the system's display settings?" : "no VK_EXT_swapchain_colorspace");
+                overlay_notice("HDR", "This display offers no HDR output. Turn HDR on in the system's display settings, "
+                                      "then turn HDR off and on again here.");
+            }
+        }
+    } else if (swapchain_hdr > 0) {
+        LOG("[hdr] off\n");
+    }
+    swapchain_hdr = want_hdr;
     uint32_t count = caps.minImageCount + 1 < 3 ? 3 : caps.minImageCount + 1;
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
-    if (count > 8) count = 8;
+    if (count > SC_MAX) count = SC_MAX;
     // The window image is drawn upright and the system turns it to the screen (a phone's screen is portrait at
     // heart: in landscape currentTransform is a quarter turn, which would show the upright image squashed).
     VkSurfaceTransformFlagBitsKHR xf = caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR
@@ -446,43 +613,50 @@ static void create_swapchain(void) {
     FullScreenExclusiveInfo fse = {.sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT,
                                    .fullScreenExclusive = FULL_SCREEN_EXCLUSIVE_DISALLOWED};
     if (no_exclusive) ci.pNext = &fse;
-    VK_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
+    SURFACE_CHECK(vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &g_vk.swapchain));
     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
         vkDestroyFramebuffer(g_vk.dev, sc_fb[i], NULL);
+        vkDestroyFramebuffer(g_vk.dev, hdr_fb[i], NULL);
+        sc_fb[i] = hdr_fb[i] = VK_NULL_HANDLE;
         vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+        g_vk.sc_views[i] = VK_NULL_HANDLE;
     }
+    g_vk.sc_count = 0;
     if (old) vkDestroySwapchainKHR(g_vk.dev, old, NULL);
-    if (sc_pass && sf.format != g_vk.sc_format) { vkDestroyRenderPass(g_vk.dev, sc_pass, NULL); sc_pass = VK_NULL_HANDLE; }
+    g_hdr_out = out;
+    // (HDR: the game draws into the composition image, which stays in GENERAL to be sampled)
+    VkFormat wfmt = out ? COMPOSE_FORMAT : sf.format;
+    VkRenderPass pass = window_pass(wfmt, true, out ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+    if (pass != sc_pass || !out) compose_free();  // (its framebuffer was made for the old pass)
+    sc_pass = pass;
+    if (out) hdr_pass = window_pass(sf.format, false, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     g_vk.sc_format = sf.format;
     g_vk.sc_extent = ext;
-    if (!sc_pass) {  // the window image: cleared, then presented (copied from for screenshots first)
-        VkAttachmentDescription a = {.format = sf.format, .samples = VK_SAMPLE_COUNT_1_BIT, .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                                     .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-                                     .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR};
-        VkAttachmentReference ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-        VkSubpassDescription sp = {.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = 1, .pColorAttachments = &ref};
-        VkSubpassDependency dep = {.srcSubpass = VK_SUBPASS_EXTERNAL, .dstSubpass = 0,
-                                   .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                                   .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                                   .srcAccessMask = VK_ACCESS_ALL_WRITES,
-                                   .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT};
-        VkRenderPassCreateInfo rp = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = 1, .pAttachments = &a,
-                                     .subpassCount = 1, .pSubpasses = &sp, .dependencyCount = 1, .pDependencies = &dep};
-        VK_CHECK(vkCreateRenderPass(g_vk.dev, &rp, NULL, &sc_pass));
+    if (out && !compose_make(ext)) {  // (no memory for it: SDR from now on, the swapchain made again)
+        LOG("[hdr] could not create the %ux%u composition image: SDR\n", ext.width, ext.height);
+        hdr_broken = true;
+        create_swapchain();
+        return;
     }
-    g_vk.sc_count = 8;
+    // (all of them: a capped list leaves images the swapchain can still hand out, with no framebuffer)
+    uint32_t n = 0;
+    vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &n, NULL);
+    if (n > SC_MAX) FATAL("the window's swapchain has %u images (asked for %u): at most %d are supported\n", n, count, SC_MAX);
+    g_vk.sc_count = n;
     vkGetSwapchainImagesKHR(g_vk.dev, g_vk.swapchain, &g_vk.sc_count, g_vk.sc_images);
     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = g_vk.sc_images[i],
                                     .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sf.format,
                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
         VK_CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &g_vk.sc_views[i]));
-        VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = sc_pass, .attachmentCount = 1,
-                                      .pAttachments = &g_vk.sc_views[i], .width = ext.width, .height = ext.height, .layers = 1};
-        VK_CHECK(vkCreateFramebuffer(g_vk.dev, &fi, NULL, &sc_fb[i]));
+        VkFramebufferCreateInfo fi = {.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = g_hdr_out ? hdr_pass : sc_pass,
+                                      .attachmentCount = 1, .pAttachments = &g_vk.sc_views[i], .width = ext.width,
+                                      .height = ext.height, .layers = 1};
+        VK_CHECK(vkCreateFramebuffer(g_vk.dev, &fi, NULL, g_hdr_out ? &hdr_fb[i] : &sc_fb[i]));
     }
-    LOG("[vk] swapchain %ux%u, %u images, format %d\n", ext.width, ext.height, g_vk.sc_count, sf.format);
+    if (g_hdr_out) hdr_send_metadata(true);
+    LOG("[vk] swapchain %ux%u, %u images (asked for %u), format %d%s\n", ext.width, ext.height, g_vk.sc_count, count, sf.format,
+        g_hdr_out == HDR_OUT_PQ ? " (HDR10)" : g_hdr_out == HDR_OUT_SCRGB ? " (scRGB)" : "");
 }
 
 static void recreate_swapchain(void) {
@@ -502,7 +676,7 @@ VkRenderPass vk_window_pass(void) { return sc_pass; }
 // ================================================================== frames
 // Acquire semaphores rotate per frame in flight; a slot is reused once the submission that waited on it is done.
 #define FRAMES 3
-static VkSemaphore acquire_sem[FRAMES], done_sem[8];
+static VkSemaphore acquire_sem[FRAMES], done_sem[SC_MAX];
 static uint64_t slot_seq[FRAMES];
 static int slot;
 
@@ -513,6 +687,55 @@ static VkSemaphore binary_semaphore(void) {
     return s;
 }
 
+#ifdef __ANDROID__
+static void *surface_window;  // the window g_vk.surface was made for
+
+static void *android_window(void) {
+    return SDL_GetPointerProperty(SDL_GetWindowProperties(ui_window()), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, NULL);
+}
+
+static void surface_destroy(void) {
+    vk_wait_seq(vk_pending_seq() - 1);
+    vkDeviceWaitIdle(g_vk.dev);
+    for (uint32_t i = 0; i < g_vk.sc_count; i++) {
+        vkDestroyFramebuffer(g_vk.dev, sc_fb[i], NULL);
+        vkDestroyFramebuffer(g_vk.dev, hdr_fb[i], NULL);
+        sc_fb[i] = hdr_fb[i] = VK_NULL_HANDLE;
+        vkDestroyImageView(g_vk.dev, g_vk.sc_views[i], NULL);
+        g_vk.sc_views[i] = VK_NULL_HANDLE;
+    }
+    g_vk.sc_count = 0;
+    for (int i = 0; i < SC_MAX; i++) {  // (a present that failed may have left these signalled)
+        if (done_sem[i]) vkDestroySemaphore(g_vk.dev, done_sem[i], NULL);
+        done_sem[i] = VK_NULL_HANDLE;
+    }
+    if (g_vk.swapchain) vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    g_vk.swapchain = VK_NULL_HANDLE;
+    SDL_Vulkan_DestroySurface(g_vk.inst, g_vk.surface, NULL);
+    g_vk.surface = VK_NULL_HANDLE;
+    surface_window = NULL;
+}
+
+// Is there a surface to draw on? Lets go of a dead one (a window can only have one surface, and the memory is better
+// given back while the app is away) and makes one on the window Android has now.
+static bool surface_ready(void) {
+    void *win = android_window();
+    if (win && win == surface_window && !surface_lost) return true;
+    if (g_vk.swapchain) LOG("[vk] the window went away: surface closed\n");
+    if (g_vk.surface) surface_destroy();
+    surface_lost = false;
+    if (!win) return false;
+    if (!SDL_Vulkan_CreateSurface(ui_window(), g_vk.inst, NULL, &g_vk.surface)) {
+        LOG("[vk] no new surface yet: %s\n", SDL_GetError());
+        g_vk.surface = VK_NULL_HANDLE;
+        return false;
+    }
+    surface_window = win;
+    create_swapchain();
+    return !surface_lost;
+}
+#endif
+
 typedef struct { uint32_t image; VkSemaphore acquired; bool ok; } Frame;
 static Frame cur_frame;
 
@@ -522,6 +745,9 @@ static bool frame_begin(void) {
     int w, h;
     SDL_GetWindowSizeInPixels(ui_window(), &w, &h);
     if (!w || !h || ui_window_away()) return false;  // minimised (or the window going away: ui.c)
+#ifdef __ANDROID__
+    if (!surface_ready()) return false;
+#endif
     // All GPU mutations happen here under vk_lock(), after resolving the old
     // scene. Existing attachment caches defer old image destruction safely.
     int msaa = config_live_msaa();
@@ -529,7 +755,7 @@ static bool frame_begin(void) {
     if (msaa != configured_msaa) { vk_set_msaa((uint32_t)msaa); configured_msaa = msaa; }
     if (g_sc_recreate) { g_sc_recreate = 0; recreate_swapchain(); }  // (the pause menu's VSync row: vk_set_vsync)
     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height ||
-        config_live_vsync() != swapchain_vsync) recreate_swapchain();
+        config_live_vsync() != swapchain_vsync || hdr_wanted() != swapchain_hdr) recreate_swapchain();
     if (!g_vk.swapchain) return false;
     slot = (slot + 1) % FRAMES;
     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
@@ -539,6 +765,9 @@ static bool frame_begin(void) {
         recreate_swapchain();
         r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
     }
+#ifdef __ANDROID__
+    if (r == VK_ERROR_SURFACE_LOST_KHR) { surface_lost = true; return false; }
+#endif
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { LOG("[vk] acquire failed: %d\n", r); return false; }
     cur_frame.acquired = acquire_sem[slot];
     slot_seq[slot] = vk_pending_seq();
@@ -546,7 +775,7 @@ static bool frame_begin(void) {
     vk_full_barrier(cb);  // (the game's image is complete before it is sampled)
     VkClearValue black = {.color.float32 = {0, 0, 0, 1}};
     VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = sc_pass,
-                                .framebuffer = sc_fb[cur_frame.image], .renderArea = {{0, 0}, g_vk.sc_extent},
+                                .framebuffer = g_hdr_out ? compose_fb : sc_fb[cur_frame.image], .renderArea = {{0, 0}, g_vk.sc_extent},
                                 .clearValueCount = 1, .pClearValues = &black};
     vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
     VkViewport vp = {0, 0, (float)g_vk.sc_extent.width, (float)g_vk.sc_extent.height, 0, 1};
@@ -558,9 +787,22 @@ static bool frame_begin(void) {
 }
 
 // A screenshot being written: the window image's pixels (B8G8R8A8 or R8G8B8A8), made RGBA and saved as PNG.
-typedef struct { char path[300]; uint8_t *px; uint32_t w, h; bool bgr; } ShotJob;
+typedef struct { char path[300]; uint8_t *px; uint32_t w, h; bool bgr; uint16_t *half; } ShotJob;
+static float half_to_float(uint16_t h) {
+    uint32_t e = (h >> 10) & 31, m = h & 1023;
+    float v = e == 0 ? ldexpf((float)m, -24) : e == 31 ? 65504.0f : ldexpf((float)(m | 1024), (int)e - 25);
+    return h & 0x8000 ? -v : v;
+}
 static void *shot_thread(void *arg) {
     ShotJob *j = arg;
+    if (j->half && j->px) {  // (HDR: the composition image, RGBA16F holding the SDR picture)
+        uint64_t n = (uint64_t)j->w * j->h * 4;
+        for (uint64_t i = 0; i < n; i++) {
+            float v = half_to_float(j->half[i]);
+            j->px[i] = (uint8_t)(v <= 0.0f ? 0 : v >= 1.0f ? 255 : lrintf(v * 255.0f));
+        }
+    }
+    free(j->half);
     if (j->px) {
         uint64_t n = (uint64_t)j->w * j->h;
         for (uint64_t i = 0; j->bgr && i < n; i++) { uint8_t t = j->px[i * 4]; j->px[i * 4] = j->px[i * 4 + 2]; j->px[i * 4 + 2] = t; }
@@ -581,7 +823,26 @@ static void frame_end(const char *shot_path) {
     vkCmdEndRenderPass(cb);
     VkSpan shot = {0};
     uint32_t img = cur_frame.image;
-    if (shot_path) {  // PRESENT_SRC -> TRANSFER_SRC, copy, back
+    bool hdr = g_hdr_out != HDR_OUT_NONE;
+    if (shot_path && hdr) {  // (HDR) the composition image (GENERAL): the SDR picture with the overlay
+        uint32_t w = compose.width, h = compose.height;
+        shot = vk_readback((uint64_t)w * h * 8);
+        VkMemoryBarrier mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                              .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+        VkBufferImageCopy rg = {.bufferOffset = shot.off, .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .imageExtent = {w, h, 1}};
+        vkCmdCopyImageToBuffer(cb, compose.image, VK_IMAGE_LAYOUT_GENERAL, shot.buf, 1, &rg);
+    }
+    if (hdr) {  // (HDR) the composition -> the window image (hdr.c)
+        vk_full_barrier(cb);
+        VkRenderPassBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = hdr_pass,
+                                    .framebuffer = hdr_fb[img], .renderArea = {{0, 0}, g_vk.sc_extent}};
+        vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
+        vk_hdr_encode(cb, hdr_pass, &compose);
+        vkCmdEndRenderPass(cb);
+        hdr_send_metadata(false);
+    }
+    if (shot_path && !hdr) {  // PRESENT_SRC -> TRANSFER_SRC, copy, back
         uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
         shot = vk_readback((uint64_t)w * h * 4);
         VkImageMemoryBarrier b = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -608,6 +869,7 @@ static void frame_end(const char *shot_path) {
     // window size is caught in frame_begin.)
 #ifdef __ANDROID__
     if (r == VK_ERROR_OUT_OF_DATE_KHR) recreate_swapchain();
+    if (r == VK_ERROR_SURFACE_LOST_KHR) surface_lost = true;
 #else
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
 #endif
@@ -617,12 +879,15 @@ static void frame_end(const char *shot_path) {
         vk_wait_seq(seq);
         ShotJob *j = malloc(sizeof *j);
         if (!j) { LOG("[vk] saving %s failed: out of memory\n", shot_path); return; }
-        j->w = g_vk.sc_extent.width, j->h = g_vk.sc_extent.height;
-        j->bgr = g_vk.sc_format == VK_FORMAT_B8G8R8A8_UNORM || g_vk.sc_format == VK_FORMAT_B8G8R8A8_SRGB;
+        j->w = hdr ? compose.width : g_vk.sc_extent.width, j->h = hdr ? compose.height : g_vk.sc_extent.height;
+        j->bgr = !hdr && (g_vk.sc_format == VK_FORMAT_B8G8R8A8_UNORM || g_vk.sc_format == VK_FORMAT_B8G8R8A8_SRGB);
         j->px = malloc((size_t)j->w * j->h * 4);
+        j->half = hdr ? malloc((size_t)j->w * j->h * 8) : NULL;
         snprintf(j->path, sizeof j->path, "%s", shot_path);
         pthread_t th;
-        if (j->px) memcpy(j->px, shot.ptr, (size_t)j->w * j->h * 4);
+        if (hdr && !j->half) { free(j->px); j->px = NULL; }
+        if (j->half) memcpy(j->half, shot.ptr, (size_t)j->w * j->h * 8);
+        else if (j->px) memcpy(j->px, shot.ptr, (size_t)j->w * j->h * 4);
         if (!j->px || pthread_create(&th, NULL, shot_thread, j) != 0) shot_thread(j);
         else pthread_detach(th);
     }
@@ -660,11 +925,13 @@ void backend_present(NvnTexture *t) {
     extern void vi_apply_framerate(void);
     vi_apply_framerate();
     vk_lock();
+    if (vk_hdr_tracking()) vk_hdr_present(t);  // (HDR: learns the frame's full-screen image, hdr.c)
     if (g_fsr_on || g_scale_on) t = vk_fsr_present(t);  // FSR / RenderScale: its output-size picture with the HUD
     TexBackend *b = vk_tex(t, true);
     b->presented = true;
     vk_end_pass();
     vk_ms_resolve(b);
+    if (g_hdr_out) vk_hdr_analyze(vk_cmd(), b);  // ([HDR] Analysis: measured before it is drawn, hdr.c)
     if (frame_begin()) {
         // the game's image, as large as fits with its aspect ratio, centred
         double ww = g_vk.sc_extent.width, wh = g_vk.sc_extent.height, s = fmin(ww / t->width, wh / t->height);
@@ -709,6 +976,8 @@ void backend_present(NvnTexture *t) {
         else if (g_hudtrace_request) { g_hudtrace_request = 0; g_hudtrace_active = 2; }
     }
     { void vk_gpuprof_frame(void); vk_gpuprof_frame(); }  // (debug) MHGU_CONTROL "gpuprof"
+    { void menulearn_frame(void); menulearn_frame(); }  // (the frame's HUD pieces: runtime/menulearn.c)
+    { void prompts_frame(void); prompts_frame(); }  // (keyboard and mouse button glyphs: runtime/hle/prompts.c)
     vk_unlock();
     static int fps = -1;
     if (fps < 0) fps = getenv("MHGU_FPS") != NULL;
@@ -724,6 +993,7 @@ void backend_present(NvnTexture *t) {
 // ================================================================== init
 void vk_exec_init(void);
 void vk_shaders_init(void);
+static SDL_AtomicInt vk_up;  // backend_init has finished (the loading screen waits for it)
 
 // exit() from any thread. The atexit chain is the danger: SDL_Quit and libnvidia's own destructors tear the
 // driver down while other threads are still inside nvnQueueSubmitCommands / vkWaitSemaphores (the exit-time
@@ -740,6 +1010,7 @@ static void exit_handler(void) {
         vkDeviceWaitIdle(g_vk.dev);
         pipeline_cache_save();
     }
+    engine_modules_shutdown();  // (its own atexit handler was registered before this one, so it would never run)
     fflush(stdout);
     fflush(stderr);
     _exit(0);
@@ -751,7 +1022,13 @@ void backend_init(void) {
     done = true;
     if (!ui_window()) FATAL("no window\n");
     create_instance();
+#ifdef __ANDROID__
+    while (!android_window()) SDL_Delay(50);  // (minimised right at the start: no window until the app comes back)
+#endif
     if (!SDL_Vulkan_CreateSurface(ui_window(), g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
+#ifdef __ANDROID__
+    surface_window = android_window();
+#endif
     pick_device();
     create_device();
     vk_exec_init();
@@ -759,4 +1036,40 @@ void backend_init(void) {
     vk_fsr_init();  // ([Upscaler] FSR: fsr.c)
     create_swapchain();
     atexit(exit_handler);
+    SDL_SetAtomicInt(&vk_up, 1);
+}
+
+// ================================================================== loading screen
+// From backend_init until the game presents its first frame (its own start-up, then the first programs of the shader
+// prewarm: seconds of a black window, more on a first run or a slow PC) a thread of its own presents the window image
+// with the overlay's loading indicator (runtime/overlay.cpp overlay_loading), about 30 times a second, between the
+// game's submissions (under the Vulkan lock; backend_execute submits all it records). Its frames are not counted as
+// the game's (g_frames: MHGU_SHOT_AT, the control file's frame counts). MHGU_NO_LOADING_SCREEN=1: none.
+static void *loading_thread(void *arg) {
+    (void)arg;
+    while (!SDL_GetAtomicInt(&vk_up)) SDL_Delay(20);  // (Android: the game's thread starts the renderer)
+    uint64_t t0 = plat_now_ns();
+    int n = 0;
+    for (;;) {
+        vk_lock();
+        bool game = g_frames != 0;
+        if (!game && frame_begin()) {
+            OverlayTarget ot = {g_vk.inst, g_vk.phys, g_vk.dev, g_vk.qfam, g_vk.queue, g_vk.pcache, sc_pass,
+                                g_vk.sc_extent.width, g_vk.sc_extent.height};
+            overlay_loading(vk_cmd(), &ot);
+            frame_end(NULL);
+            n++;
+        }
+        vk_unlock();
+        if (game) break;
+        SDL_Delay(33);
+    }
+    LOG("[vk] loading screen: %d frames, %.1f s until the game's first\n", n, (plat_now_ns() - t0) / 1e9);
+    return NULL;
+}
+
+void backend_loading_screen(void) {
+    if (!g_config.loading_indicator || getenv("MHGU_NO_LOADING_SCREEN")) return;  // ([Performance] LoadingIndicator)
+    pthread_t t;
+    if (pthread_create(&t, NULL, loading_thread, NULL) == 0) pthread_detach(t);
 }

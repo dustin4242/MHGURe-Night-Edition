@@ -35,7 +35,7 @@ RT_SRC   := $(wildcard runtime/*.c) $(wildcard runtime/hle/*.c) $(wildcard runti
             runtime/platform/$(PLATFORM).c
 # (simd_int.c / neon.c, helpers of the recompiled code, live in the executable: the game code library imports them,
 # and runtime/interp.c uses them too)
-RT_HDRS  := $(wildcard runtime/*.h) $(wildcard runtime/net/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) $(wildcard runtime/nvn/*/*.h)
+RT_HDRS  := $(wildcard runtime/*.h) $(wildcard runtime/hle/*.h) $(wildcard runtime/net/*.h) $(wildcard runtime/platform/*.h) $(wildcard runtime/nvn/*.h) $(wildcard runtime/nvn/*/*.h)
 
 # FFmpeg (the game's movies, runtime/hle/movie.c): by default a small static build of a pinned FFmpeg release, made
 # here from its source (downloaded once to third_party/ffmpeg/, checked against FFMPEG_SHA256) with only what the movies
@@ -107,9 +107,27 @@ else
 SHADERC_DEPS := $(SHADERC_DIR)/lib/libshaderc_combined.a
 SHADERC_LIBS := $(SHADERC_DEPS)
 endif
+# zstd (runtime/net/room.c: suyu-family rooms compress every game packet): Windows links MSYS2's static libzstd; Linux
+# and Android a static build of a pinned release, compiled here from its source like FFmpeg (the NDK has no zstd, and on
+# Linux the programs need nothing more than before). ZSTD=system links the system's libzstd instead.
+ZSTD          ?= $(if $(filter windows,$(PLATFORM)),system,bundled)
+ZSTD_VER      := 1.5.7
+ZSTD_SHA256   := eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+ZSTD_TAR      := third_party/zstd/zstd-$(ZSTD_VER).tar.gz
+ZSTD_DIR      := $(O)/zstd-$(ZSTD_VER)
+ZSTD_FLAGS    := -O2 -fPIC -DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DZSTD_NO_TRACE -DXXH_NAMESPACE=ZSTD_
+ZSTD_AR        = $(if $(ANDROID),$(LLVM)/llvm-ar,ar)
+ifeq ($(ZSTD),system)
+ZSTD_DEPS :=
+ZSTD_LIBS := -lzstd
+else
+ZSTD_DEPS := $(ZSTD_DIR)/lib/libzstd.a
+ZSTD_LIBS := $(ZSTD_DEPS)
+endif
 # the libraries' headers, for everything compiled here (the stamps: built before anything includes them)
-LIB_INC    := $(if $(SDL_DEPS),-I$(SDL3_DIR)/include -DMHGU_SDL_BUNDLED) $(if $(SHADERC_DEPS),-I$(SHADERC_DIR)/include)
-LIB_STAMPS := $(if $(SDL_DEPS),$(SDL3_DIR)/.built) $(if $(SHADERC_DEPS),$(SHADERC_DIR)/.built)
+LIB_INC    := $(if $(SDL_DEPS),-I$(SDL3_DIR)/include -DMHGU_SDL_BUNDLED) $(if $(SHADERC_DEPS),-I$(SHADERC_DIR)/include) \
+              $(if $(ZSTD_DEPS),-I$(ZSTD_DIR)/include)
+LIB_STAMPS := $(if $(SDL_DEPS),$(SDL3_DIR)/.built) $(if $(SHADERC_DEPS),$(SHADERC_DIR)/.built) $(if $(ZSTD_DEPS),$(ZSTD_DIR)/.built)
 
 ifeq ($(PLATFORM),windows)
 EXE      := $(B)/mhgurecomp.exe
@@ -117,8 +135,8 @@ OSFLAGS  := -D_FILE_OFFSET_BITS=64 -DWIN32_LEAN_AND_MEAN -DNOMINMAX -D_CRT_RAND_
 GENFLAGS += -D_FILE_OFFSET_BITS=64
 # (the GCC runtime - libstdc++, libgcc, winpthreads - linked in: three DLLs fewer to ship, and their licenses ask no
 # more than their notices then; build/licenses has those)
-LDFLAGS  := -fuse-ld=lld -Wl,--stack,16777216 $(SDL_LIBS) $(AV_LIBS) -lvulkan-1 $(SHADERC_LIBS) -lwinmm -lversion -lole32 -lshell32 -luuid -lws2_32 \
-            -lbcrypt -static-libgcc -static-libstdc++ -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic \
+LDFLAGS  := -fuse-ld=lld -Wl,--stack,268435456 $(SDL_LIBS) $(AV_LIBS) -lvulkan-1 $(SHADERC_LIBS) -lwinmm -lversion -lole32 -lshell32 -luuid -lws2_32 \
+            -lbcrypt -static-libgcc -static-libstdc++ -Wl,-Bstatic -lwinpthread $(ZSTD_LIBS) -lz -Wl,-Bdynamic \
             -Wl,--export-all-symbols -Wl,--out-implib,$(O)/mhgurecomp.dll.a
 GAMELIB  := $(B)/mhgugame.dll
 GAMELIB_LDFLAGS := -shared -fuse-ld=lld -static-libgcc $(O)/mhgurecomp.dll.a
@@ -137,7 +155,7 @@ FFMPEG_CONF += --enable-pic
 # (--exclude-libs: the static libraries linked in - SDL3, shaderc with glslang, FFmpeg - stay inside; only the runtime's
 # own functions are exported, for the game code library. A Vulkan layer or overlay with its own glslang or SDL then
 # doesn't bind to ours, as happened with ImGui: see IMGUIFLAGS.)
-LDFLAGS  := -fuse-ld=lld -rdynamic -Wl,--exclude-libs,ALL $(SDL_LIBS) $(AV_LIBS) -lvulkan $(SHADERC_LIBS) -lpthread -ldl -lm
+LDFLAGS  := -fuse-ld=lld -rdynamic -Wl,--exclude-libs,ALL $(SDL_LIBS) $(AV_LIBS) -lvulkan $(SHADERC_LIBS) $(ZSTD_LIBS) -lz -lpthread -ldl -lm
 # The programs start with glibc GLIBC_MAX or later (Ubuntu 24.04, Linux Mint 22, Debian 13, SteamOS): calls to the
 # functions newer glibc versions gave a new symbol version go to the old one (runtime/platform/linux_glibc.c), and the
 # link checks that nothing newer is left.
@@ -153,6 +171,16 @@ endif
 GAMELIB_SRCS := tools/gen.py tools/lifter.py tools/neon.py tools/nso.py tools/gamelib_entry.c \
                 runtime/hle/hle_symbols.txt runtime/cpu.h runtime/vfp.h runtime/neon_rt.h runtime/gamelib.h
 GAMELIB_ID := $(shell (cat $(GAMELIB_SRCS); echo '$(GENFLAGS)') | sha256sum | cut -c1-16)
+# GEN_ID: what decides the code in generated/. make gen records it there and make dist refuses a release without a match:
+# neither make nor the game notices stale game code, GAMELIB_ID hashes the sources above and not what they generated.
+# (Line endings ignored: Windows and WSL builds share one generated/.)
+GEN_SRCS := tools/gen.py tools/lifter.py tools/neon.py tools/nso.py runtime/hle/hle_symbols.txt
+GEN_ID    = $(shell cat $(GEN_SRCS) | tr -d '\r' | sha256sum | cut -c1-16)
+ifneq ($(filter dist,$(MAKECMDGOALS)),)
+ifneq ($(shell cat $(GEN)/gen.id 2>/dev/null),$(GEN_ID))
+$(error dist: $(GEN)/ was not made from the current $(GEN_SRCS): run make gen GAME=<the game files> first)
+endif
+endif
 # SHADER_ID: the shader translator, whose output cache/programs.bin keeps (runtime/nvn/vulkan/exec.c): the cache stays
 # valid across builds until the translator changes. (Line endings ignored: the same sources hash the same everywhere.)
 SHADER_SRCS := runtime/nvn/maxwell/translate.c runtime/nvn/maxwell/shader.h
@@ -160,9 +188,25 @@ SHADER_ID := $(shell cat $(SHADER_SRCS) | tr -d '\r' | sha256sum | cut -c1-16)
 # VERSION: this build's release (git describe: 0.10.3 on a release's tag, 0.10.3-4-gabc1234 after it), shown in the log.
 VERSION ?= $(shell git describe --tags 2>/dev/null || echo unknown)
 
-RT_OBJ   = $(patsubst runtime/%.c,$(O)/rt/%.o,$(RT_SRC)) $(RT_CXX) $(O)/rt/overlay.o $(IMGUI_OBJ) \
-           $(ICON_RES)
+RT_OBJ   = $(patsubst runtime/%.c,$(O)/rt/%.o,$(RT_SRC)) $(RYUSRV_OBJ) $(RT_CXX) $(O)/rt/overlay.o $(O)/rt/settings_panel.o $(O)/rt/binding_view.o $(IMGUI_OBJ) \
+           $(ICON_RES) $(ENET_OBJ)
+# The Ryujinx LDN server this game can run itself (runtime/net/ryusrv/: C++)
+RYUSRV_OBJ := $(patsubst runtime/net/ryusrv/%.cpp,$(O)/rt/net/ryusrv/%.o,$(wildcard runtime/net/ryusrv/*.cpp))
+$(O)/rt/net/ryusrv/%.o: runtime/net/ryusrv/%.cpp $(wildcard runtime/net/ryusrv/*.h) runtime/net/ryusrv.h
+	@mkdir -p $(dir $@)
+	$(CXX) -std=c++20 -O2 -g -Wall -Iruntime/net/ryusrv/shim -Iruntime/net/ryusrv $(if $(filter windows,$(PLATFORM)),-D_WIN32_WINNT=0x0A00) -c $< -o $@
+# ENet 1.3.18 (third_party/enet, MIT): the reliable UDP of suyu-family emulators' multiplayer rooms (runtime/net/room.c)
+ENET      := third_party/enet
+ENET_SRC  := $(addprefix $(ENET)/,callbacks.c compress.c host.c list.c packet.c peer.c protocol.c) \
+             $(ENET)/$(if $(filter windows,$(PLATFORM)),win32.c,unix.c)
+ENET_OBJ  := $(patsubst $(ENET)/%.c,$(O)/enet/%.o,$(ENET_SRC))
+ENETFLAGS := -O2 -g -w -I$(ENET)/include $(if $(filter windows,$(PLATFORM)),,-DHAS_FCNTL -DHAS_POLL -DHAS_GETADDRINFO -DHAS_GETNAMEINFO -DHAS_INET_PTON -DHAS_INET_NTOP -DHAS_MSGHDR_FLAGS -DHAS_SOCKLEN_T)
+$(O)/enet/%.o: $(ENET)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ENETFLAGS) -c $< -o $@
 # (runtime/net/sha256.c: ldn.c hashes the hub server's matchmaking key with it)
+$(O)/rt/settings_panel.o: $(O)/version.id
+$(O)/rt/settings_panel.o: IMGUIFLAGS += -DMHGU_VERSION='"$(VERSION)"'
 # Dear ImGui with cimgui's C API (third_party/cimgui: Forge plugins' ImGui, runtime/forge_imgui.c, overlay.cpp)
 IMGUI    := third_party/cimgui
 IMGUI_SRC := $(IMGUI)/cimgui.cpp $(addprefix $(IMGUI)/imgui/,imgui.cpp imgui_draw.cpp imgui_tables.cpp imgui_widgets.cpp imgui_demo.cpp)
@@ -174,7 +218,7 @@ IMGUI_OBJ := $(patsubst $(IMGUI)/%.cpp,$(O)/imgui/%.o,$(IMGUI_SRC))
 IMGUIFLAGS := -O2 -g -fvisibility=hidden -DCIMGUI_NO_EXPORT -I$(IMGUI) -I$(IMGUI)/imgui $(LIB_INC)
 # (vendored VulkanMemoryAllocator fallback: -I on a missing dir is ignored, so MSYS2 builds
 # with the system vulkan-memory-allocator package are unaffected)
-RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Ithird_party/vk_mem_alloc -I$(IMGUI) $(OSFLAGS) $(LIB_INC)
+RTFLAGS  := -O2 -g -fno-strict-aliasing -Wall -Wno-unused-function -Iruntime -Ithird_party/vk_mem_alloc -I$(IMGUI) -Ithird_party/enet/include $(OSFLAGS) $(LIB_INC)
 # FSR 3.1 temporal upscaler (runtime/nvn/vulkan/fsr.c): third_party/fsr-vulkan = AMD FidelityFX SDK 1.1.4's FSR 3.1.4
 # upscaler (host scheduler, Vulkan backend, its GLSL) + a portable C wrapper, all MIT. No AMD binaries: the shaders are
 # compiled with shaderc from the embedded GLSL when first used (src/ffx_fsr3_shaderblobs.cpp), linked into the executable.
@@ -230,6 +274,55 @@ test-settings: $(LIB_STAMPS)
 	$(CC) $(RTFLAGS) tests/test_settings.c runtime/config.c runtime/config_store.c $(SDL_LIBS) -lm -o $(O)/settings-test/test-settings$(if $(filter windows,$(PLATFORM)),.exe)
 	$(O)/settings-test/test-settings$(if $(filter windows,$(PLATFORM)),.exe) $(O)/settings-test/settings.ini
 
+# Host-only test of game-action rebinding (runtime/actions.c): ini, sampling, and the golden property of the defaults.
+.PHONY: test-actions
+test-actions: $(LIB_STAMPS)
+	@mkdir -p $(O)/settings-test
+	$(CC) $(RTFLAGS) tests/test_actions.c runtime/actions.c runtime/config.c runtime/config_store.c $(SDL_LIBS) -lm -o $(O)/settings-test/test-actions$(if $(filter windows,$(PLATFORM)),.exe)
+	$(O)/settings-test/test-actions$(if $(filter windows,$(PLATFORM)),.exe)
+
+# Engine modules (docs/ENGINE-MODULES.md). example-engine-module builds the example into the folder layout engine_modules/
+# expects; test-engine-modules builds the loader (runtime/engine_module.c) into a host program and checks it against test
+# modules - one that loads, and the ways one can fail - without the game files.
+ENGMOD_EXT  := $(if $(filter windows,$(PLATFORM)),dll,so)
+ENGMOD_CC   := $(CC) -O2 -Wall -fPIC -shared -fuse-ld=lld
+ENGMOD_TEST := $(O)/engine-module-test
+ENGMOD_SRC  := extras/example-engine-module/example_engine_module.c
+.PHONY: example-engine-module test-engine-modules
+example-engine-module:
+	@mkdir -p $(ENGMOD_TEST)/engine_modules/example
+	$(ENGMOD_CC) $(ENGMOD_SRC) -o $(ENGMOD_TEST)/engine_modules/example/example.$(ENGMOD_EXT)
+	@echo "built $(ENGMOD_TEST)/engine_modules/example: copy the folder to engine_modules/ and add the line 'example' to engine_modules/enabled.txt"
+
+test-engine-modules: $(LIB_STAMPS)
+	@rm -rf $(ENGMOD_TEST)/t && mkdir -p $(ENGMOD_TEST)/t/good $(ENGMOD_TEST)/t/hidden $(ENGMOD_TEST)/t/badapi $(ENGMOD_TEST)/t/noapi $(ENGMOD_TEST)/t/declines $(ENGMOD_TEST)/t/notamodule
+	$(ENGMOD_CC) $(ENGMOD_SRC) -o $(ENGMOD_TEST)/t/good/good.$(ENGMOD_EXT)
+	cp $(ENGMOD_TEST)/t/good/good.$(ENGMOD_EXT) $(ENGMOD_TEST)/t/hidden/hidden.$(ENGMOD_EXT)
+	$(ENGMOD_CC) -DEXAMPLE_API=99 $(ENGMOD_SRC) -o $(ENGMOD_TEST)/t/badapi/badapi.$(ENGMOD_EXT)
+	$(ENGMOD_CC) -DEXAMPLE_NO_API $(ENGMOD_SRC) -o $(ENGMOD_TEST)/t/noapi/noapi.$(ENGMOD_EXT)
+	$(ENGMOD_CC) -DEXAMPLE_DECLINE $(ENGMOD_SRC) -o $(ENGMOD_TEST)/t/declines/declines.$(ENGMOD_EXT)
+	printf 'int unrelated;\n' > $(ENGMOD_TEST)/t/notamodule.c
+	$(ENGMOD_CC) $(ENGMOD_TEST)/t/notamodule.c -o $(ENGMOD_TEST)/t/notamodule/notamodule.$(ENGMOD_EXT)
+	printf '\357\273\277good\n# the loader test\n  badapi  \nnoapi\ndeclines\nnotamodule\nnosuch\n../evil\ngood\n' > $(ENGMOD_TEST)/t/enabled.txt
+	$(CC) $(RTFLAGS) tests/test_engine_module.c runtime/engine_module.c runtime/config.c runtime/config_store.c $(SDL_LIBS) -lm -o $(ENGMOD_TEST)/test-engine-module$(if $(filter windows,$(PLATFORM)),.exe)
+	MHGU_ENGINE_MODULES_DIR=$(ENGMOD_TEST)/t $(ENGMOD_TEST)/test-engine-module$(if $(filter windows,$(PLATFORM)),.exe) > $(ENGMOD_TEST)/t/out.txt 2>&1 || { cat $(ENGMOD_TEST)/t/out.txt; exit 1; }
+	@cat $(ENGMOD_TEST)/t/out.txt
+	@for want in 'good: starting' 'good: loaded (Example' '\[example\] port test-version' 'badapi: built for engine module API 99' \
+	             'noapi: no mhgu_engine_module_api' 'declines: the module declined' 'notamodule: no mhgu_engine_module_api' \
+	             'nosuch: no such folder' '"../evil" is not a folder name' 'engine modules loaded .*: Example' '\[example\] shutdown'; do \
+	    grep -q "$$want" $(ENGMOD_TEST)/t/out.txt || { echo "missing in the log: $$want"; exit 1; }; done
+	@! grep -q 'hidden' $(ENGMOD_TEST)/t/out.txt || { echo "a module enabled.txt does not list was loaded"; exit 1; }
+	@! grep -Eq 'folder .*/(badapi|noapi)' $(ENGMOD_TEST)/t/out.txt || { echo "the entry of a refused module was called"; exit 1; }
+	@test "$$(grep -c 'good: loaded' $(ENGMOD_TEST)/t/out.txt)" = 1 || { echo "good loaded twice"; exit 1; }
+	@echo "test-engine-modules: OK"
+
+# Host-only test of the cheats folder being read again: no game dump or generated code required.
+.PHONY: test-cheats
+test-cheats: $(LIB_STAMPS)
+	@mkdir -p $(O)/settings-test
+	$(CC) $(RTFLAGS) tests/test_cheats.c runtime/cheats.c -lpthread -o $(O)/settings-test/test-cheats$(if $(filter windows,$(PLATFORM)),.exe)
+	cd $(O)/settings-test && ./test-cheats$(if $(filter windows,$(PLATFORM)),.exe)
+
 # The game code is compiled with $(GENFLAGS), which includes the ISA ($(GENARCH)), and make does not rebuild objects
 # for a changed flag. Its value is kept in a stamp that every game-code object depends on, so changing it makes the
 # whole tree stale and rebuilds it (a leftover object for another ISA would fault on a CPU without it, and the
@@ -273,6 +366,14 @@ $(O)/rt/overlay.o: runtime/overlay.cpp runtime/overlay.h runtime/forge.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(IMGUIFLAGS) $(if $(filter 1,$(NULL_GPU)),-DMHGU_NULL_BACKEND) -Wall -Iruntime -c $< -o $@
 
+	@mkdir -p $(dir $@)
+	$(CXX) $(IMGUIFLAGS) -Wall -Iruntime -c $< -o $@
+
+$(O)/rt/settings_panel.o: runtime/settings_panel.cpp runtime/settings_panel.h runtime/modorder.h runtime/config.h runtime/settings_locale.h runtime/settings_icons.h runtime/app_actions.h runtime/overlay.h runtime/net/net.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(IMGUIFLAGS) -Wall -Iruntime -c $< -o $@
+
+$(O)/rt/binding_view.o: runtime/binding_view.cpp runtime/binding_view.h runtime/config.h runtime/keymap.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(IMGUIFLAGS) -Wall -Iruntime -c $< -o $@
 
@@ -328,6 +429,7 @@ $(1):
 	mv -f $$@.part $$@
 endef
 $(eval $(call FETCH,$(FFMPEG_TAR),https://ffmpeg.org/releases/ffmpeg-$(FFMPEG_VER).tar.xz,$(FFMPEG_SHA256)))
+$(eval $(call FETCH,$(ZSTD_TAR),https://github.com/facebook/zstd/releases/download/v$(ZSTD_VER)/zstd-$(ZSTD_VER).tar.gz,$(ZSTD_SHA256)))
 $(eval $(call FETCH,$(SDL3_TAR),https://github.com/libsdl-org/SDL/releases/download/release-$(SDL3_VER)/SDL3-$(SDL3_VER).tar.gz,$(SDL3_SHA256)))
 $(eval $(call FETCH,third_party/shaderc/shaderc-$(SHADERC_VER).tar.gz,https://github.com/google/shaderc/archive/refs/tags/v$(SHADERC_VER).tar.gz,f06ce5bcca94e5df7f34e115743597d0ad2e13c5fe9213c67dc8c76031241947))
 $(eval $(call FETCH,third_party/shaderc/glslang-$(GLSLANG_VER).tar.gz,https://github.com/KhronosGroup/glslang/archive/refs/tags/$(GLSLANG_VER).tar.gz,9c09b901149c729df745057dafa815278aaa101b84d2b6e14f16a42de52f97f2))
@@ -345,6 +447,20 @@ $(FFMPEG_DIR)/.built: $(FFMPEG_TAR)
 	@echo "ffmpeg: FFmpeg $(FFMPEG_VER) (H.264 + AAC in MP4) built in $(FFMPEG_DIR)"
 
 $(FFMPEG_LIBS): $(FFMPEG_DIR)/.built ;
+
+# the bundled zstd: its library's sources (common, compress, decompress; no assembly, no legacy formats) compiled with
+# this build's compiler into $(ZSTD_DIR)/lib/libzstd.a, its headers into $(ZSTD_DIR)/include
+$(ZSTD_DIR)/.built: $(ZSTD_TAR)
+	rm -rf $(ZSTD_DIR) && mkdir -p $(ZSTD_DIR)/src $(ZSTD_DIR)/obj $(ZSTD_DIR)/lib $(ZSTD_DIR)/include
+	tar -xzf $< -C $(ZSTD_DIR)/src --strip-components=1 zstd-$(ZSTD_VER)/lib zstd-$(ZSTD_VER)/LICENSE  # (only these: its tests hold symlinks, which MSYS2's tar can't make)
+	@cd $(ZSTD_DIR) && for f in src/lib/common/*.c src/lib/compress/*.c src/lib/decompress/*.c; do \
+	    $(CC) $(ZSTD_FLAGS) -c $$f -o obj/$$(basename $$f .c).o || exit 1; done
+	$(ZSTD_AR) rcs $(ZSTD_DIR)/lib/libzstd.a $(ZSTD_DIR)/obj/*.o
+	cp $(ZSTD_DIR)/src/lib/zstd.h $(ZSTD_DIR)/src/lib/zstd_errors.h $(ZSTD_DIR)/include/
+	touch $@
+	@echo "zstd: zstd $(ZSTD_VER) built in $(ZSTD_DIR)"
+
+$(ZSTD_DIR)/lib/libzstd.a: $(ZSTD_DIR)/.built ;
 
 # the bundled SDL3: configure (checking that it found SDL3_NEED), build, install into $(SDL3_DIR)
 $(SDL3_DIR)/.built: $(SDL3_TAR)
@@ -392,7 +508,8 @@ $(B)/pipelines.list: extras/pipelines.list
 	cp $< $@
 
 LICENSE_TXT = $(B)/licenses/LICENSE.txt $(B)/licenses/THIRD_PARTY_NOTICES.txt $(if $(AV_DEPS),$(B)/licenses/FFmpeg.txt) \
-              $(if $(SDL_DEPS),$(B)/licenses/SDL3.txt) $(if $(SHADERC_DEPS),$(B)/licenses/shaderc.txt)
+              $(if $(SDL_DEPS),$(B)/licenses/SDL3.txt) $(if $(SHADERC_DEPS),$(B)/licenses/shaderc.txt) \
+              $(if $(ZSTD_DEPS),$(B)/licenses/zstd.txt)
 licenses: $(LICENSE_TXT)
 $(B)/licenses/%.txt: %
 	@mkdir -p $(dir $@)
@@ -418,6 +535,11 @@ $(B)/licenses/shaderc.txt: $(SHADERC_DIR)/.built
 	   echo "KhronosGroup/glslang, KhronosGroup/SPIRV-Tools and KhronosGroup/SPIRV-Headers."; \
 	   for f in LICENSE third_party/glslang/LICENSE.txt third_party/spirv-tools/LICENSE third_party/spirv-headers/LICENSE; do \
 	     echo; echo "==== $$f"; echo; cat $(SHADERC_DIR)/src/$$f; done; } > $@
+$(B)/licenses/zstd.txt: $(ZSTD_DIR)/.built
+	@mkdir -p $(dir $@)
+	@{ echo "This program contains zstd $(ZSTD_VER) (its library), linked statically, under the BSD license (below). Its source code"; \
+	   echo "is https://github.com/facebook/zstd/releases/download/v$(ZSTD_VER)/zstd-$(ZSTD_VER).tar.gz."; \
+	   echo; cat $(ZSTD_DIR)/src/LICENSE; } > $@
 
 $(GAMELIB): $(GEN_OBJ) | $(EXE)
 	@mkdir -p $(O)
@@ -434,7 +556,7 @@ PY := $(firstword $(wildcard tools/venv/Scripts/python.exe) $(wildcard tools/ven
 # log.txt are written only when the game runs). run-game.bat runs it with those in run/ (MHGU_HOME), not here.
 # (--with: MSYS2 packages linked into the executable or into a bundled DLL, whose licenses go along too: the static
 # GCC runtime, VulkanMemoryAllocator, and glslang / SPIRV-Tools inside shaderc's DLL)
-LICENSE_PKGS := libstdc++ libgcc libwinpthread vulkan-memory-allocator glslang spirv-tools zlib
+LICENSE_PKGS := libstdc++ libgcc libwinpthread vulkan-memory-allocator glslang spirv-tools zlib zstd
 bundle: $(EXE) $(if $(GEN_SRC),$(GAMELIB))
 	@$(PY) tools/bundle_dlls.py "$$(cygpath -m "$$(dirname "$$(command -v $(CC))")")" $(B) $^ \
 	    --licenses $(B)/licenses --with $(LICENSE_PKGS)
@@ -548,6 +670,7 @@ $(B)/data/.complete:
 gen:
 	cd tools && ../$(PY) gen.py sdk ../$(GAME)/exefs/sdk 0x02400000 ../$(GEN)/sdk --hle ../runtime/hle/hle_symbols.txt
 	cd tools && ../$(PY) gen.py main ../$(GAME)/exefs/main 0x00200000 ../$(GEN)/main
+	echo '$(GEN_ID)' > $(GEN)/gen.id
 
 # differential test of the recompiler against Unicorn (tools/test_lift.py)
 test-lift:

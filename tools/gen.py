@@ -36,18 +36,30 @@ MOV_LR_PC = 0xE1A0E00F
 PATCHES = {
     ('main', 0xdbcd34): (0xE3A00D1E, '{ extern uint32_t g_render_size[2]; c->r[0] = g_render_size[0]; }'),
     ('main', 0xdbcd38): (0xE3007438, '{ extern uint32_t g_render_size[2]; c->r[7] = g_render_size[1]; }'),
+    # The GPU memory pool render targets and textures share (game heap 6): `movt #0x3520` = 848 MB, sized for the
+    # Switch's resolutions; larger with a larger render size (runtime/config.c g_gpu_pool_size). 0x351e40: the heap
+    # table's entry, 0x351fa4: the pool's creation.
+    ('main', 0x351e40): (0xE3432520, '{ extern uint32_t g_gpu_pool_size; c->r[2] = g_gpu_pool_size; }'),
+    ('main', 0x351fa4): (0xE3433520, '{ extern uint32_t g_gpu_pool_size; c->r[3] = g_gpu_pool_size; }'),
     # 2D UI canvas size: mov r7, #1280 (0xdbcd48) / mov r7, #720 (0xdbcd54)
     ('main', 0xdbcd48): (0xE3A07C05, '{ extern uint32_t g_ui_size[2]; c->r[7] = g_ui_size[0]; }'),
     ('main', 0xdbcd54): (0xE3A07E2D, '{ extern uint32_t g_ui_size[2]; c->r[7] = g_ui_size[1]; }'),
     # 3D camera projection (sCamera / uCamera -> the perspective matrix at 0x9c617c(near, far, fovy, aspect)): a
-    # camera made for the screen (aspect 16:9) gets the picture's shape (config.c g_render_aspect, 16:10 or wider)
-    # and its field of view from config.c camera_fovy (the FOV factor; Vert+ below 16:9); other cameras keep theirs
-    ('main', 0x21c36c): (0xEDD11A0E, '{ extern float g_render_aspect; float a = LDF(c->r[1] + 0x38u); c->v.f[3] = a > 1.77f && a < 1.786f ? g_render_aspect : a; }'),
+    # camera made for the screen (aspect 16:9) gets the picture's shape (config.c camera_aspect, 16:10 or wider; a model
+    # preview's camera at 16:10 its box's 16:9 shape) and its field of view from config.c camera_fovy (the FOV factor;
+    # Vert+ below 16:9); other cameras keep theirs
+    ('main', 0x21c36c): (0xEDD11A0E, '{ extern float camera_aspect(float); c->v.f[3] = camera_aspect(LDF(c->r[1] + 0x38u)); }'),
     ('main', 0x21c370): (0xEE211A02, '{ extern float camera_fovy(float, float); c->v.f[2] = camera_fovy(c->v.f[2] * c->v.f[4], c->v.f[3]); }'),
-    ('main', 0x21c3b8): (0xEDD01A0E, '{ extern float g_render_aspect; float a = LDF(c->r[0] + 0x38u); c->v.f[3] = a > 1.77f && a < 1.786f ? g_render_aspect : a; }'),
+    ('main', 0x21c3b8): (0xEDD01A0E, '{ extern float camera_aspect(float); c->v.f[3] = camera_aspect(LDF(c->r[0] + 0x38u)); }'),
     ('main', 0x21c3c0): (0xEE221A01, '{ extern float camera_fovy(float, float); c->v.f[2] = camera_fovy(c->v.f[4] * c->v.f[2], c->v.f[3]); }'),
-    ('main', 0xaf44a8): (0xEDD11A0E, '{ extern float g_render_aspect; float a = LDF(c->r[1] + 0x38u); c->v.f[3] = a > 1.77f && a < 1.786f ? g_render_aspect : a; }'),
+    ('main', 0xaf44a8): (0xEDD11A0E, '{ extern float camera_aspect(float); c->v.f[3] = camera_aspect(LDF(c->r[1] + 0x38u)); }'),
     ('main', 0xaf44ac): (0xEE211A02, '{ extern float camera_fovy(float, float); c->v.f[2] = camera_fovy(c->v.f[2] * c->v.f[4], c->v.f[3]); }'),
+    # A monster's stall timers count per update (`vadd.f32 s0, s16, s0` / `vadd.f32 s0, s2, s0`; r4 = the monster):
+    # runtime/hle/emstall.c scales what they add by its step
+    ('main', 0x2c4058): (0xEE380A00, '{ extern float emstall_scale(uint32_t); c->v.f[0] += c->v.f[16] * emstall_scale(c->r[4]); }'),
+    ('main', 0x2c4150): (0xEE310A00, '{ extern float emstall_scale(uint32_t); c->v.f[0] = c->v.f[2] + c->v.f[0] * emstall_scale(c->r[4]); }'),
+    # The AI script interpreter's loop, `str r0, [r4]`, the new script position (debug, MHGU_EMTRACE_CMD: runtime/hle/emtrace.c)
+    ('main', 0x2855b4): (0xE5840000, '{ extern void emtrace_cmd(Cpu *); ST32(c->r[4], c->r[0]); emtrace_cmd(c); }'),
     # Per-monster network receive (push {r4, r5, fp, lr}): runtime/net/emsync.c may drop a small monster's message
     ('main', 0x2cb120): (0xE92D4830, '{ extern int emsync_filter(Cpu *); if (emsync_filter(c)) { c->pc = c->r[14]; return; } '
                                      'uint32_t ea = c->r[13] - 16u; ST32(ea, c->r[4]); ST32(ea + 4u, c->r[5]); '
@@ -59,9 +71,32 @@ PATCHES = {
     # and its reload `mov r0, #20` count in the frame step instead of updates
     ('main', 0x834d20): (0xE2477001, '{ extern uint32_t buffcycle_tick(void); c->r[7] -= buffcycle_tick(); }'),
     ('main', 0x834ef4): (0xE3A00014, '{ extern uint32_t buffcycle_reload(void); c->r[0] = buffcycle_reload(); }'),
+    # Free slots of a piece (f_2db66c: its slot count minus each decoration's size, `subne r8, r1, r0` at 0x2db770, a u8
+    # at the end): a decoration bigger than the space left (another hunter's armor modded for more slots, or a slot mod
+    # removed) gives -1 = 255, and the slot icons (f_750570, 0x750680) then draw 255 "empty" ones from a 3-entry array
+    # on the stack, crashing when the equipment is viewed. Clamped at 0 on the next instruction, `ldrh r1, [r4, #0xa]`,
+    # which every subtraction reaches
+    ('main', 0x2db778): (0xE1D410BA, '{ if ((int32_t)c->r[8] < 0) c->r[8] = 0; c->r[1] = LD16(c->r[4] + 0xau); }'),
+    # UI text glyph snap (runtime/hle/textlayout.c): after a text's lines are aligned, each glyph's x is snapped to the
+    # 1280x720 canvas, `vadd.f32 s0, s0, s24` (+0.5), `vrintm.f32 s0, s0` (floor), then +0.5 again; with a canvas unit
+    # 1.5 px (1080p) the letters land half a pixel apart unevenly. x keeps its exact place instead (+0.5, as on average)
+    # ([Graphics] FixKerning off: the game's snap)
+    ('main', 0xc45554): (0xEE300A0C, '{ extern int config_live_fix_kerning(void); if (!config_live_fix_kerning()) c->v.f[0] += c->v.f[24]; }'),
+    ('main', 0xc4555c): (0xFEBB0A40, '{ extern int config_live_fix_kerning(void); if (!config_live_fix_kerning()) c->v.f[0] = floorf(c->v.f[0]); }'),
     # Two-button input window (runtime/hle/combowin.c): the countdown a press waits for a second button takes 1.0 off
     # per update (`vmov.f32 s2, #-1.0`); it takes the frame step instead
     ('main', 0x47ca84): (0xEEBF1A00, '{ extern float combowin_tick(void); c->v.f[2] = -combowin_tick(); }'),
+    # ... and the new-press word the code from here to 0x47cc58 decides on: real presses, a third button waited for
+    # (`mov r6, r4` at the start, `ldrh r1, [sb]` where all its paths have met)
+    ('main', 0x47ca38): (0xE1A06004, '{ extern void combowin_begin(uint32_t); c->r[6] = c->r[4]; combowin_begin(c->r[4]); }'),
+    ('main', 0x47cc58): (0xE1D910B0, '{ extern void combowin_end(uint32_t); combowin_end(c->r[4]); c->r[1] = LD16(c->r[9]); }'),
+    # ... the press that opens the window is kept in 12 bits (`and r0, r1, r0, lsl #13`: bits 13..24 of +0x1444): the
+    # Game actions' virtual WeaponR bit (0x8000, runtime/hle/input_view.c) is kept as the real R-role bit instead
+    ('main', 0x47d574): (0xE0010680, '{ extern uint32_t input_view_window_press(uint32_t); c->r[0] = c->r[1] & (input_view_window_press(c->r[0]) << 13); }'),
+    # ... and the R-role hold timer (f_47e774, +0x144c: the HBG's quick aim) picks R's or ZR's bit by comparing the
+    # getter's mask with 0x40, then reads the held word (`ldrh r1, [r6]`, twice): it reads WeaponR there with the weapon out
+    ('main', 0x47e7c8): (0xE1D610B0, '{ extern uint32_t input_view_weapon_held(uint32_t, uint32_t); c->r[1] = input_view_weapon_held(c->r[4], LD16(c->r[6])); }'),
+    ('main', 0x47e814): (0xE1D610B0, '{ extern uint32_t input_view_weapon_held(uint32_t, uint32_t); c->r[1] = input_view_weapon_held(c->r[4], LD16(c->r[6])); }'),
     # Town NPC fade (uLobbyNpc, 0x8c2d9c): `vldr s8, [r2]` loads the squared distance within which the NPC fades in
     # (table at 0x8c2ef0: 2500^2, or 1800^2 with flag 0x40 of +0x186a); config.c npc_fade_dist2 scales it ([Graphics]
     # DrawDistance)

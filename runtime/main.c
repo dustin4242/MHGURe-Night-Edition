@@ -18,6 +18,7 @@
 #include "hle/mousecam.h"
 #include "kernel.h"
 #include "mods.h"
+#include "engine_module.h"
 #include "app_actions.h"
 #include "net/discord.h"
 #ifdef __ANDROID__
@@ -96,10 +97,12 @@ static void boot(const char *root) {
     armor_class_init();  // (armour stats follow the equipped weapon's class: runtime/hle/armor_class.c)
     weaponfusion_init();  // (a fused weapon's appearance id draws its model: runtime/hle/weaponfusion.c)
     villagehub_init();  // (Village quests at the Hub / Pub counter: runtime/hle/villagehub.c)
+    rewardbox_init();  // (quest rewards: Send to the Item Box in one go: runtime/hle/rewardbox.c)
     urgentcredit_init();  // (Urgent quests count for all who clear them: runtime/hle/urgentcredit.c)
     mashrate_init();  // (mashing out of a stun at high frame rates: runtime/hle/mashrate.c)
     hatestep_init();  // (monsters' attention scores at high frame rates: runtime/hle/hatestep.c)
     inflate_init();  // (zlib's inflate_fast as host code, for loading: runtime/hle/inflate.c)
+    fastload_init();  // (shorter transitions when not in a network session: runtime/hle/fastload.c)
     movelog_init();  // (debug, MHGU_LOG_MOVES: runtime/hle/movelog.c)
     quickhunt_init();  // (debug, MHGU_QUICKHUNT: runtime/hle/quickhunt.c)
     { void icons_init(void); icons_init(); }  // (controller glyph sets: runtime/ui_icons.c)
@@ -108,9 +111,17 @@ static void boot(const char *root) {
     camjit_init();  // (FSR: the main camera and its jitter: runtime/hle/camera_jitter.c)
     mousecam_init();  // (mouse look on the hunt camera's angles: runtime/hle/mousecam.c)
     itembar_init();  // (the mouse wheel on the item bar: runtime/hle/itembar.c)
+    { void menuptr_init(void); menuptr_init(); }  // (the mouse in the pause menu: runtime/hle/menuptr.c)
+    { void prompts_init(void); prompts_init(); }  // (keyboard and mouse button prompts: runtime/hle/prompts.c)
+    { void input_view_init(void); input_view_init(); }  // (game-action rebinding, with [Actions] Enable=1: runtime/hle/input_view.c)
+    { void title_exit_init(void); title_exit_init(); }  // (B on the title screen's Main Menu asks to quit: runtime/hle/title_exit.c)
+    { void textlayout_init(void); textlayout_init(); }  // (UI text spacing and kerning: runtime/hle/textlayout.c)
+    { void chat_init(void); chat_init(); }  // (typed chat: a message's rows under one name: runtime/hle/chat.c)
     emtrace_init();  // (debug, MHGU_EMTRACE: runtime/hle/emtrace.c)
     kotrace_init();  // (debug, MHGU_KOTRACE: runtime/hle/kotrace.c)
     dummy_init();  // (debug, MHGU_DUMMY: runtime/hle/dummy.c)
+    hitsync_init();  // (multiplayer: hits as their hunter saw them: runtime/net/hitsync.c)
+    netrate_init();  // (debug, MHGU_NETRATE: runtime/hle/netrate.c)
     cheats_init();  // (cheat codes from cheats/: runtime/cheats.c)
     discord_init();  // (Discord Rich Presence: runtime/net/discord.c, runtime/hle/presence.c)
     { void sampler_init(void); sampler_init(); }  // (debug, Windows, MHGU_SAMPLE: runtime/sampler.c)
@@ -258,6 +269,9 @@ int main(int argc, char **argv) {
         g_game_dir = data;
         mods_make_dir();
         cheats_make_dir();
+#ifndef __ANDROID__
+        engine_modules_make_dir();
+#endif
         static char save[1024];
         if (plat_user_dir(save, sizeof save - 8)) {
             strcat(save, "/save");
@@ -284,6 +298,18 @@ int main(int argc, char **argv) {
         g_config.shader_prewarm = 1;  // (the caches are the point: whatever the ini or MHGU_NO_PREWARM says)
         LOG("[precompile] %s: translating the game's shaders into cache/, then exiting\n",
             prewarm_flag ? "--prewarm" : "[Performance] Precompile");
+    }
+#ifndef __ANDROID__
+    engine_modules_init(MHGU_VERSION);  // (the ones engine_modules/enabled.txt lists: runtime/engine_module.c)
+#endif
+    {   // The renderer now rather than at the game's nvnDeviceInitialize, so the loading screen shows while the game
+        // starts (Android: still there, this thread mustn't wait for a window the app may not have yet)
+        void backend_init(void), backend_loading_screen(void), overlay_init_early(void);
+        overlay_init_early();  // (its indicator: ImGui's font until Forge's config is read in boot)
+#if !defined(__ANDROID__) && !defined(MHGU_NULL_BACKEND)
+        backend_init();
+#endif
+        backend_loading_screen();
     }
     boot(g_game_dir);
     return ui_run();

@@ -19,6 +19,7 @@ static char **launch_argv;
 static SDL_AtomicInt requested_action, action_failed;
 void ui_capture_launch_args(int argc, char **argv) { launch_argc = argc; launch_argv = argv; }
 void ui_request_action(bool restart) { SDL_SetAtomicInt(&requested_action, restart ? 2 : 1); }
+void ui_request_exit_menu(void) { SDL_SetAtomicInt(&requested_action, 12); }  // (B on the title screen's Main Menu)
 void ui_request_import(int what) { SDL_SetAtomicInt(&requested_action, 2 + what); }
 static SDL_AtomicInt away;
 bool ui_window_away(void) { return SDL_GetAtomicInt(&away) != 0; }
@@ -124,7 +125,7 @@ static void set_fullscreen(bool on) {
         SDL_SetWindowSize(window, win_w, win_h);
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     }
-    if (on && !overlay_menu_open() && !chat_active()) SDL_HideCursor(); else SDL_ShowCursor();
+    if (on && !overlay_menu_open() && !chat_active() && !host_input_mouse_free()) SDL_HideCursor(); else SDL_ShowCursor();
 }
 
 // The window's icon. Windows takes it from the exe (extras/icon/mhgurecomp.rc) and Android from the launcher icon, so only
@@ -232,6 +233,12 @@ static void set_window_icon(void) {}
 #endif
 
 void ui_init(void) {
+#ifdef __ANDROID__
+    // SDL's poll sentinel makes SDL_WaitEventTimeout spin on Android: every pump pushes one, and pushing an event queues
+    // a WAKE lifecycle event that releases the next wait at once, so the wait never blocks (this thread sat at 100% of a
+    // core, with no syscalls). Without the sentinel it blocks until an event arrives or the timeout is up.
+    SDL_SetHint(SDL_HINT_POLL_SENTINEL, "0");
+#endif
     if (!SDL_Init(SDL_INIT_VIDEO)) FATAL("SDL_Init: %s\n", SDL_GetError());
     int sdl = SDL_GetVersion();
 #ifdef MHGU_SDL_BUNDLED
@@ -328,6 +335,13 @@ int ui_run(void) {
             } while (SDL_PollEvent(&e));
         }
         int action = SDL_SetAtomicInt(&requested_action, 0);
+        if (action == 12) {  // (the title screen's B: the same question as closing the window)
+            if (!config_confirm_exit() && !overlay_settings_dirty()) {
+                LOG("exit from the title screen\n");
+                exit(0);
+            }
+            overlay_request_close();
+        }
         if (action == 1) exit(0);
         if (action == 2) {
             if (restart_application()) exit(0);
@@ -335,10 +349,11 @@ int ui_run(void) {
         }
 #ifdef __ANDROID__
         // (on this thread: SDL's own, which Java made. The app closes after an import: the game has the old files open)
-        if (action >= 3 && action <= 9) {
+        if (action >= 3 && action <= 11) {
             SDL_SetAtomicInt(&away, 1);  // (the picker takes the window's surface away: the renderer draws nothing)
             // (after 1 and 2 the app closes, the game has the old files open; the others leave it running)
-            if (android_import(action - 2, true) && action <= 4) { LOG("[ui] imported: closing\n"); exit(0); }
+            // (and after 8 / 9, the files folder changed: the game has the old one's files open)
+            if (android_import(action - 2, true) && (action <= 4 || action >= 10)) { LOG("[ui] imported: closing\n"); exit(0); }
             SDL_SetAtomicInt(&away, 0);
         }
 #else

@@ -3,7 +3,8 @@
 // deleting it resets everything; keys that are missing or not understood keep their defaults (the log says which).
 //   MHGU_CONFIG=<path>   another settings file
 //   MHGU_WINDOW=WxH      windowed at that size, MHGU_RENDER=WxH  3D resolution, MHGU_MSAA=1|2|4|8, MHGU_FXAA=0|1,
-//                        MHGU_RT16=0|1 (SmoothGradients), MHGU_PAD_POSITIONAL=0|1 (test runs; override the file)
+//                        MHGU_RT16=0|1 (SmoothGradients), MHGU_FIX_KERNING=0|1, MHGU_BOLD_TEXT=0|1, MHGU_HDR=0|1,
+//                        MHGU_PAD_POSITIONAL=0|1 (test runs; override the file)
 #include <ctype.h>
 #include <float.h>
 #include <math.h>
@@ -25,10 +26,126 @@
     {SDL_SCANCODE_Q}, {SDL_SCANCODE_E}, {SDL_SCANCODE_TAB}, {SDL_SCANCODE_T}, {SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER}, \
     {SDL_SCANCODE_BACKSPACE}, {SDL_SCANCODE_UP}, {SDL_SCANCODE_DOWN}, {SDL_SCANCODE_LEFT}, {SDL_SCANCODE_RIGHT},          \
     {SDL_SCANCODE_LCTRL, SDL_SCANCODE_RCTRL}, {SDL_SCANCODE_LALT, SDL_SCANCODE_RALT}, {KEY_WHEEL_UP}, {KEY_WHEEL_DOWN}}
-#define CONFIG_DEFAULT_VALUES DISPLAY_BORDERLESS, 1920, 1080, 0, 0, 1.0f, 60, 1, 1, 1, FACE_POSITION, 39500, "", 1, 1, 1, 1, 1, {{1, 1, 1, 1}, 2}, 1.0f, 0.0f, 1.0f, UI_CENTER, 1, 100, 0, 0, 100, MENU_CONFIRM_ORIGINAL, 0, FSR_NATIVE, 0.8f, 1, 0.9f, 1, FSR_UP_3, ICONS_SWITCH, 1, UPDATES_ASK, 1, 0, 1.0f, 0, COMBO_LENIENT, "", "", "/", FXAA_ORIGINAL, 0, DEFAULT_BINDS, THEME_HUNTER, 1, 1, 0, 1, BATTERY_OFF, ""
+// [Graphics] BoldText: on by default on Android (a phone's small screen reads the bolder letters more easily)
+#ifdef __ANDROID__
+#define BOLD_TEXT_DEFAULT 1
+#define BOLD_TEXT_DEFAULT_INI "On"
+#else
+#define BOLD_TEXT_DEFAULT 0
+#define BOLD_TEXT_DEFAULT_INI "Off"
+#endif
+#define CONFIG_DEFAULT_VALUES                                                                       \
+    /* [Display] */                                                                                 \
+    .display_mode = DISPLAY_BORDERLESS,                                                             \
+    .width = 1920,                                                                                  \
+    .height = 1080,                                                                                 \
+    .render_w = 0,                                                                                  \
+    .render_h = 0,                                                                                  \
+    .aspect_ratio = 0.0f,                                                                           \
+    .fov = 1.0f,                                                                                    \
+    .ui_anchor = UI_CENTER,                                                                         \
+    /* [Anti-aliasing] */                                                                           \
+    .msaa = 1,                                                                                      \
+    .fxaa = 1,                                                                                      \
+    .fxaa_mode = FXAA_ORIGINAL,                                                                     \
+    /* [Upscaler] */                                                                                \
+    .fsr = 0,                                                                                       \
+    .fsr_quality = FSR_NATIVE,                                                                      \
+    .fsr_sharpness = 0.8f,                                                                          \
+    .fsr_objmotion = 1,                                                                             \
+    .fsr_reactive = 0.9f,                                                                           \
+    .fsr_animsurf = 1,                                                                              \
+    /* [Graphics] */                                                                                \
+    .draw_distance = 1.0f,                                                                          \
+    .smooth_gradients = 0,                                                                          \
+    .fix_kerning = 1,                                                                               \
+    .bold_text = BOLD_TEXT_DEFAULT,                                                                 \
+    /* [HDR] */                                                                                 \
+    .hdr = 0,                                                                                   \
+    .hdr_peak = 1000.0f,                                                                        \
+    .hdr_game = 203.0f,                                                                         \
+    .hdr_ui = 203.0f,                                                                           \
+    .hdr_tonemap = HDR_TONEMAP_RENODRT,                                                         \
+    .hdr_gamma = HDR_GAMMA_22,                                                                  \
+    .hdr_exposure = 0.65f,                                                                      \
+    .hdr_highlights = 60.0f,                                                                    \
+    .hdr_shadows = 50.0f,                                                                       \
+    .hdr_contrast = 50.0f,                                                                      \
+    .hdr_saturation = 50.0f,                                                                    \
+    .hdr_highlight_saturation = 82.0f,                                                          \
+    .hdr_flare = 0.0f,                                                                          \
+    .hdr_bloom = 100.0f,                                                                        \
+    .hdr_scene = 1,                                                                             \
+    .hdr_format = HDR_FORMAT_AUTO,                                                              \
+    .hdr_analysis = 0,                                                                          \
+    /* [Performance] */                                                                             \
+    .show_fps = 0,                                                                                  \
+    .show_battery = BATTERY_OFF,                                                                    \
+    .fps = 60,                                                                                      \
+    .vsync = 1,                                                                                     \
+    .shader_prewarm = 1,                                                                            \
+    .loading_indicator = 1,                                                                         \
+    /* [Controls] */                                                                                \
+    .face_buttons = FACE_POSITION,                                                                  \
+    .menu_confirm = MENU_CONFIRM_ORIGINAL,                                                          \
+    .background_input = 1,                                                                          \
+    .kbm_prompts = 1,                                                                               \
+    .combo_window = COMBO_LENIENT,                                                                  \
+    .chat_key = "/",                                                                                \
+    .menu_chord = 1,                                                                                \
+    /* [Mouse] */                                                                                   \
+    .mouse_sensitivity = 1.0f,                                                                      \
+    .mouse_sensitivity_y = 1.0f,                                                                    \
+    .mouse_invert_y = 0,                                                                            \
+    .mouse_smoothing = 0.0f,                                                                        \
+    .mouse_capture = MOUSE_CAPTURE_CLICK,                                                           \
+    /* [Keybinds] */                                                                                \
+    .binds = DEFAULT_BINDS,                                                                         \
+    /* [Multiplayer] */                                                                             \
+    .ldn_port = 39500,                                                                              \
+    .ldn_join = "",                                                                                 \
+    .ldn_server = "",                                                                               \
+    .ldn_key = "",                                                                                  \
+    .ldn_direct = 1,                                                                                \
+    .sync_small_monsters = 1,                                                                       \
+    .lag_compensation = 1,                                                                          \
+    .share_urgent = 1,                                                                              \
+    /* [Monster HP, Village Quests] */                                                              \
+    .hp = {{1, 1, 1, 1}, 2},                                                                        \
+    .village_in_hub = 1,                                                                            \
+    /* [Quest Rewards] */                                                                           \
+    .quest_hold_send = 1,                                                                           \
+    /* [Discord] */                                                                                 \
+    .discord = 1,                                                                                   \
+    .discord_hunter = 1,                                                                            \
+    /* [Bonus Content] */                                                                           \
+    .bonus_content = 1,                                                                             \
+    /* [Audio] */                                                                                   \
+    .volume = 100,                                                                                  \
+    .mute_in_background = 0,                                                                        \
+    .audio_output = AUDIO_OUT_STEREO,                                                               \
+    /* [Application] */                                                                             \
+    .confirm_exit = 1,                                                                              \
+    .language = 0,                                                                                  \
+    .button_icons = 0,                                                                              \
+    .menu_theme = THEME_HUNTER,                                                                     \
+    .menu_scale = 100,                                                                              \
+    .updates = UPDATES_ASK,                                                                         \
+    .save_location = "",                                                                            \
+    /* [Night Edition] */                                                                          \
+    .render_scale = 1.0f,                                                                          \
+    .armor_fusion = 1,                                                                             \
+    .fsr_upscaler = FSR_UP_3,                                                                      \
+    .icons = ICONS_SWITCH,                                                                         \
+    .hd_ui = 1,                                                                                    \
+    .precompile = 0,                                                                               \
+
 Config g_config = {CONFIG_DEFAULT_VALUES};
 Config config_defaults(void) { Config c = {CONFIG_DEFAULT_VALUES}; return c; }
 uint32_t g_render_size[2] = {1920, 1080};
+uint32_t g_render_host[2] = {1920, 1080};
+float g_rscale[2] = {1.0f, 1.0f};
+uint32_t g_gpu_pool_size = 0x35200000u;  // the game's GPU pool for render targets and textures (gen.py PATCHES)
 float g_render_aspect = 16.0f / 9.0f;
 float g_fov_scale = 1.0f;
 uint32_t g_ui_size[2] = {1280, 720};
@@ -133,6 +250,86 @@ static const char DEFAULT_INI[] =
     "; Default: Off\n"
     "SmoothGradients = Off\n"
     "\n"
+    "; Evens out the spacing between letters in the game's text: exact placement, even margins and kerning\n"
+    "; (closer pairs such as \"Va\" and \"To\"). Off: the text as the game sets it\n"
+    "; Default: On\n"
+    "FixKerning = On\n"
+    "\n"
+    "; Draws letters slightly thicker and wider, as the original game does. Some players, including players with\n"
+    "; dyslexia, find this easier to read. Off: letters at their true size, thinner and crisper\n"
+    "; Default: " BOLD_TEXT_DEFAULT_INI "\n"
+    "BoldText = " BOLD_TEXT_DEFAULT_INI "\n"
+    "\n"
+    "[HDR]\n"
+    "; 16-bit HDR output for HDR capable monitors/phones (NOT FOR HDR400 DISPLAYS). Smooth gradients and FSR do not work with HDR\n"
+    "; Default: Off\n"
+    "HDR = Off\n"
+    "\n"
+    "; The brightest your display can show, in nits (its specifications, or Windows HDR Calibration)\n"
+    "; Between 80 and 10000\n"
+    "; Default: 1000\n"
+    "PeakBrightness = 1000\n"
+    "\n"
+    "; How bright the game's white is, in nits (203 is the HDR reference white)\n"
+    "; Between 48 and 500\n"
+    "; Default: 203\n"
+    "GameBrightness = 203\n"
+    "\n"
+    "; How bright the HUD, menus, text and this settings menu are, in nits\n"
+    "; Between 48 and 500\n"
+    "; Default: 203\n"
+    "UIBrightness = 203\n"
+    "\n"
+    "; Vanilla (the game's SDR picture, clipped), None (no tone mapping: clipped at the peak) or RenoDRT (highlights rolled\n"
+    "; off smoothly towards the peak)\n"
+    "; Default: RenoDRT\n"
+    "ToneMapper = RenoDRT\n"
+    "\n"
+    "; Off (sRGB), 2.2 (what most SDR displays show: deeper shadows) or BT.1886 (2.4, a dark room)\n"
+    "; Default: 2.2\n"
+    "GammaCorrection = 2.2\n"
+    "\n"
+    "; Brightness of the whole picture before tone mapping, 1 = the game's\n"
+    "; Between 0 and 2\n"
+    "; Default: 0.65\n"
+    "Exposure = 0.65\n"
+    "\n"
+    "; Colour grading, 50 = the game's: Highlights (brighter highlights above 50), Shadows (lighter shadows above 50),\n"
+    "; Contrast, Saturation, HighlightSaturation (more colour in bright areas above 50, whiter below)\n"
+    "; Between 0 and 100\n"
+    "; Default: 50 (Highlights 60, HighlightSaturation 82)\n"
+    "Highlights = 60\n"
+    "Shadows = 50\n"
+    "Contrast = 50\n"
+    "Saturation = 50\n"
+    "HighlightSaturation = 82\n"
+    "\n"
+    "; Lifts the darkest parts of the picture (a hazy, filmic look), 0 = none\n"
+    "; Between 0 and 100\n"
+    "; Default: 0\n"
+    "Flare = 0\n"
+    "\n"
+    "; Strength of the game's bloom (the glow around bright lights), 100 = the game's\n"
+    "; Between 0 and 100\n"
+    "; Default: 100\n"
+    "Bloom = 100\n"
+    "\n"
+    "; Everything the game renders (the 3D scene, depth of field, bloom) is 16-bit float, not only the post-processing,\n"
+    "; so the sun, fire and sparks keep their brightness and glow. Turn it off if anything looks wrong with HDR. Not in\n"
+    "; the settings menu\n"
+    "; Default: On\n"
+    "UnclampedScene = On\n"
+    "\n"
+    "; The HDR signal: Auto (HDR10 where the display offers it, else scRGB), HDR10 (10-bit PQ) or scRGB (16-bit linear).\n"
+    "; Not in the settings menu\n"
+    "; Default: Auto\n"
+    "HDRFormat = Auto\n"
+    "\n"
+    "; Shows an HDR analysis over the game: the picture's brightness in nits (maximum, average, minimum, the middle of\n"
+    "; the screen), the colour gamut it uses and a waveform of its brightness across the screen, as the display gets it\n"
+    "; Default: Off\n"
+    "Analysis = Off\n"
+    "\n"
     "[Performance]\n"
     "; Show the frame rate (FPS) in a small box on the screen. Drag it with the mouse\n"
     "; Default: Off\n"
@@ -166,6 +363,10 @@ static const char DEFAULT_INI[] =
     "; On, Off\n"
     "; Default: On\n"
     "HDUi = On\n"
+    "; A \"Loading\" box in the bottom right corner while the game starts up and prepares its shaders. Not in the\n"
+    "; settings menu: turn it off here if it stays on screen or gets in the way.\n"
+    "; Default: On\n"
+    "LoadingIndicator = On\n"
     "\n"
     "[Controls]\n"
     "; Controller face button layout. Set to \"Label\" to reverse A/B and X/Y on XBox controllers to match the button prompts (not recommended)\n"
@@ -180,6 +381,11 @@ static const char DEFAULT_INI[] =
     "; Controller input is also registered if the window is out of focus\n"
     "; Default: On\n"
     "BackgroundInput = On\n"
+    "\n"
+    "; While you play with the keyboard and mouse, the game's button prompts, such as (A) or (ZL), show the key or mouse\n"
+    "; button that does it instead. A controller always gets the game's own prompts\n"
+    "; Default: On\n"
+    "KeyboardPrompts = On\n"
     "\n"
     "; How long the game waits for a second button after the first, for inputs like X+A. Lenient: as long as at 30 fps\n"
     "; (on the Switch) at any frame rate. Strict: a fixed number of frames, so the higher the frame rate, the closer\n"
@@ -197,6 +403,23 @@ static const char DEFAULT_INI[] =
     "; Mouse sensitivity\n"
     "; Default: 1.0\n"
     "MouseSensitivity = 1.0\n"
+    "\n"
+    "; Vertical sensitivity: times the mouse sensitivity for looking up and down\n"
+    "; Default: 1.0\n"
+    "MouseSensitivityY = 1.0\n"
+    "\n"
+    "; Invert the mouse's up and down (on top of the game's own invert option)\n"
+    "; Default: Off\n"
+    "MouseInvertY = Off\n"
+    "\n"
+    "; Mouse smoothing for the camera in a hunt: 0 turns exactly with the mouse, higher values let the turn trail it\n"
+    "; Default: 0.0\n"
+    "MouseSmoothing = 0.0\n"
+    "\n"
+    "; Click: a click in the window captures the mouse (Esc lets it go). Hunt: it is also captured by itself while the\n"
+    "; hunt camera is yours, and free in menus and cutscenes\n"
+    "; Default: Click\n"
+    "MouseCapture = Click\n"
     "\n"
     "[Keybinds]\n"
     "; The keys or mouse buttons for each Switch button, for moving (the left stick) and for turning the item bar\n"
@@ -229,7 +452,7 @@ static const char DEFAULT_INI[] =
     "ItemRight = Wheel Down\n"
     "\n"
     "[Multiplayer]\n"
-    "; Which port to host/join hubs on (TCP and UDP)\n"
+    "; Which port to host/join hubs on (TCP and UDP). A change counts from the next hub you host or search for\n"
     "; Default: 39500\n"
     "Port = 39500\n"
     "\n"
@@ -250,15 +473,64 @@ static const char DEFAULT_INI[] =
     "; Default:\n"
     "Key =\n"
     "\n"
+    "; Direct = On: in an internet hub, your game and the host's send their packets straight to each other when both\n"
+    "; routers let them (the hub server helps them find each other), for a lower ping; else they go through the hub\n"
+    "; server. Direct means the other player's game sees your IP address (as on the Switch). Off: always through the hub\n"
+    "; server, nobody sees your address. Both ends need it On for a direct connection.\n"
+    "; Default: On\n"
+    "Direct = On\n"
+    "\n"
     "; Sync small monsters between players in multiplayer. Everyone in the hunt should use the same setting.\n"
     "; Default: On\n"
     "SyncSmallMonsters = On\n"
+    "\n"
+    "; Experimental. Your hits on large monsters (melee, bows and bowguns) count as you saw them land, even if your hunter\n"
+    "; missed on the screen of the player running the monster. Works when that player has it on too, and has no effect\n"
+    "; otherwise. Emulator players in a crossplay hub need the Lag Compensation Forge plugin for it.\n"
+    "; Default: On\n"
+    "LagCompensation = On\n"
     "\n"
     "; Clearing an Urgent quest posted by someone else also counts for you, if you have unlocked it yourself. The\n"
     "; original game only counts it for the hunter who posted it. This only changes your own save, the others in the\n"
     "; quest have their own setting.\n"
     "; Default: On\n"
     "ShareUrgentCredit = On\n"
+    "; Crossplay with Ryujinx players. RyuServers: Ryujinx LDN servers whose lobbies show up in Search Hubs next to\n"
+    "; the others (host or host:port, comma separated; default port 30456). Empty: no crossplay. RyuHost: the server a\n"
+    "; hub you create is made on, so Ryujinx players can join it (their LDN server = the same address); empty: a\n"
+    "; normal hub. RyuPassphrase: empty = public lobbies, or Ryujinx- and 8 hex digits for a private group (Ryujinx\n"
+    "; players enter the same). Everyone needs game version 1.4.0. The port's extras (small monster sync, HP scaling)\n"
+    "; are off in a hub with Ryujinx players. Ryujinx's public server is for Ryujinx users: use your own LdnServer.\n"
+    "; Default:\n"
+    "RyuServers =\n"
+    "RyuHost =\n"
+    "RyuPassphrase =\n"
+    "; RyuServe = On: this game runs the Ryujinx LDN server itself while local play is open, so nobody needs a separate\n"
+    "; LdnServer: Ryujinx players set their LDN server to this PC's address (port RyuServePort, default 30456; forward\n"
+    "; it or use a VPN such as Radmin), and hubs you create are made on it (RyuHost can stay empty).\n"
+    "; Default: Off\n"
+    "RyuServe = Off\n"
+    "RyuServePort = 30456\n"
+    "\n"
+    "; RoomServe = On: this game also runs a small suyu-style room itself while local play is open, so suyu, yuzu, Eden and\n"
+    "; Citron players join it (their multiplayer room address = this PC, port RoomServePort, default 24872; forward it\n"
+    "; for the internet) and play in the same hubs as Ryujinx players. Hubs you create are shared with the room. The room\n"
+    "; password is RoomPassword.\n"
+    "RoomServe = Off\n"
+    "RoomServePort = 24872\n"
+    "\n"
+    "; Crossplay with suyu, yuzu and the forks that kept their multiplayer rooms (Eden, Citron, ...). RoomServer: the\n"
+    "; room's address (host or host:port, default port 24872); this game joins it while local play is open, and the\n"
+    "; emulators' hubs show up in Search Hubs. RoomHost = On: a hub you create lives in the room, so their players can\n"
+    "; search and join it. RoomName: your name in the room. The same game version (1.4.0) is needed, and the port's extras\n"
+    "; (small monster sync, HP scaling) are off in such a hub. With RyuHost set as well the hub stays on that server and\n"
+    "; the room's players join it there: Ryujinx and suyu players share one hub.\n"
+    "; Default: Off\n"
+    "RoomServer =\n"
+    "RoomPassword =\n"
+    "RoomName =\n"
+    "RoomHost = Off\n"
+    "\n"
     "\n"
     "[Monster HP]\n"
     "; Playercount-specific HP multipliers for monsters in Hub quests.\n"
@@ -289,6 +561,10 @@ static const char DEFAULT_INI[] =
     "; are used. Palico fusion and the Lab's other facilities keep their normal rules.\n"
     "; Default: On\n"
     "Enabled = On\n"
+    "[Quest Rewards]\n"
+    "; At the end of a quest, press and hold A on the Reward Box (Send to the Item Box option) to rapidly send items one-by-one, similar to World/Rise/Wilds.\n"
+    "; Default: On\n"
+    "HoldASend = On\n"
     "\n"
     "[Discord]\n"
     "; Show what you're doing in the game on your Discord profile (Discord must be running on this computer):\n"
@@ -302,7 +578,8 @@ static const char DEFAULT_INI[] =
     "\n"
     "[Bonus Content]\n"
     "; If enabled, the free online downloadable content (Event Quests, item packs, Palicoes) are automatically copied from the provided savegame inside the `bonus/` folder into your own savegame.\n"
-    "; This only happens if your savegame hasn't received any downloadable content yet.\n"
+    "; This only happens if your savegame hasn't received any downloadable content yet. A change counts the next time\n"
+    "; the game opens the save file.\n"
     "; Default: On\n"
     "BonusContent = On\n"
     "\n"
@@ -315,6 +592,11 @@ static const char DEFAULT_INI[] =
     "; Mute the game while its window is in the background (not focused)\n"
     "; Default: Off\n"
     "MuteInBackground = Off\n"
+    "\n"
+    "; Speakers: Stereo, or 5.1 (front left / right, center, subwoofer, rear left / right) for a surround system.\n"
+    "; The game mixes its sound in 5.1 either way; Stereo folds it down to two channels.\n"
+    "; Default: Stereo\n"
+    "Output = Stereo\n"
     "\n"
     "[Application]\n"
     "; Language of the hub server's messages\n"
@@ -392,6 +674,25 @@ static int parse_factors(const char *v, float f[4]) {
     return *v ? 0 : n;
 }
 
+// A 3D camera's aspect (tools/gen.py PATCHES: the three callers of the perspective matrix that load a camera's). One
+// made for the screen (16:9) gets the picture's shape. On a picture narrower than 16:9 (16:10), a model preview's camera
+// (the Smithy's, made for its box in the HUD) has the shape of that box stretched to the taller picture: the renderer
+// (nvn/vulkan/exec.c ui_preview_map) records the shapes of the preview boxes it drew, and a camera of one of those shapes
+// gets the box's 16:9 shape instead, so the model is as big and as wide as at 16:9 (the renderer draws it in a box of
+// that shape, g_preview_cam_present says it can). Any other camera keeps its aspect.
+volatile float g_preview_box_aspect[4];
+volatile uint64_t g_preview_box_present[4], g_preview_cam_present;
+float camera_aspect(float a) {
+    if (a > 1.77f && a < 1.786f) return g_render_aspect;
+    if (g_render_aspect >= 16.0f / 9.0f - 0.01f) return a;
+    for (int i = 0; i < 4; i++)
+        if (g_preview_box_present[i] + 30 >= g_present_count && fabsf(a / g_preview_box_aspect[i] - 1.0f) < 0.001f) {
+            g_preview_cam_present = g_present_count;
+            return a * (16.0f / 9.0f) / g_render_aspect;
+        }
+    return a;
+}
+
 // The vertical field of view (radians) a camera of this aspect gets (tools/gen.py PATCHES: the three callers of the
 // perspective matrix that load a camera's). One made for the screen (its 16:9 aspect replaced with g_render_aspect)
 // gets the FOV factor and, on a picture narrower than 16:9 (16:10), the height that keeps 16:9's width (Vert+): more
@@ -444,6 +745,7 @@ static bool parse_aspect(const char *v, float *out) {
 #define ERR_GAME_FOLDER "Invalid game files folder (one line, no ';' or '#')."
 #define ERR_HP "HP factors must be 0.05-20."
 #define ERR_VILLAGE "Invalid village HP or quest override count."
+#define ERR_MOUSE "Mouse sensitivity must be 0.1-10 and smoothing 0-0.9."
 #define ERR_CONFIRM "Invalid menu confirmation policy."
 #define ERR_SCALE "Invalid interface scale."
 #define ERR_ICONS "Invalid button icon layout."
@@ -451,6 +753,7 @@ static bool parse_aspect(const char *v, float *out) {
 #define ERR_UPDATES "Invalid update setting."
 #define ERR_DRAW "Draw distance must be 0-10 (0: no limit)."
 #define ERR_KEYS "Invalid keybind."
+#define ERR_HDR "Invalid HDR setting."
 #define F(x) offsetof(Config, x)
 #define ON_OFF(section, key, field, restart) {section, key, SET_BOOL, F(field), 0, 0, 0, NULL, NULL, restart, ERR_TOGGLE}
 #define KEYS(key, bind) {"Keybinds", key, SET_KEYS, F(binds[bind]), 0, 0, 0, NULL, NULL, false, ERR_KEYS}
@@ -472,52 +775,92 @@ const ConfigSetting g_settings[] = {
     ON_OFF("Upscaler", "FSR", fsr, true),
     {"Upscaler", "FSRQuality", SET_CHOICE, F(fsr_quality), 0, 0, 0,
      "NativeAA|native|aa,Quality,Balanced,Performance,UltraPerformance|ultraperf", NULL, true, ERR_FSR},
-    {"Upscaler", "Sharpness", SET_FLOAT, F(fsr_sharpness), 0, 0.0f, 1.0f, NULL, NULL, true, ERR_FSR},
+    {"Upscaler", "Sharpness", SET_FLOAT, F(fsr_sharpness), 0, 0.0f, 1.0f, NULL, NULL, false, ERR_FSR},
     ON_OFF("Upscaler", "ObjectMotion", fsr_objmotion, true),
-    {"Upscaler", "Reactive", SET_FLOAT, F(fsr_reactive), 0, 0.0f, 1.0f, NULL, NULL, true, ERR_FSR},
+    {"Upscaler", "Reactive", SET_FLOAT, F(fsr_reactive), 0, 0.0f, 1.0f, NULL, NULL, false, ERR_FSR},
     ON_OFF("Upscaler", "AnimSurf", fsr_animsurf, true),
     {"Upscaler", "Upscaler", SET_CHOICE, F(fsr_upscaler), 0, 0, 0, "FSR3|3|FSR3.1|3.1,FSR4|4", NULL, true, ERR_FSR},
     {"Graphics", "DrawDistance", SET_FLOAT, F(draw_distance), 0, 0.0f, 10.0f, NULL, NULL, false, ERR_DRAW},
     ON_OFF("Graphics", "SmoothGradients", smooth_gradients, false),
+    ON_OFF("Graphics", "FixKerning", fix_kerning, false),
+    ON_OFF("Graphics", "BoldText", bold_text, false),
+    ON_OFF("HDR", "HDR", hdr, false),
+    {"HDR", "PeakBrightness", SET_FLOAT, F(hdr_peak), 0, 80.0f, 10000.0f, NULL, NULL, false, ERR_HDR},
+    {"HDR", "GameBrightness", SET_FLOAT, F(hdr_game), 0, 48.0f, 500.0f, NULL, NULL, false, ERR_HDR},
+    {"HDR", "UIBrightness", SET_FLOAT, F(hdr_ui), 0, 48.0f, 500.0f, NULL, NULL, false, ERR_HDR},
+    {"HDR", "ToneMapper", SET_CHOICE, F(hdr_tonemap), 0, 0, 0, "Vanilla|sdr,None|off|untonemapped,RenoDRT|reno|neutwo", NULL, false, ERR_HDR},
+    {"HDR", "GammaCorrection", SET_CHOICE, F(hdr_gamma), 0, 0, 0, "Off|srgb,2.2|22|gamma22,BT.1886|bt1886|2.4|24", NULL, false, ERR_HDR},
+    {"HDR", "Exposure", SET_FLOAT, F(hdr_exposure), 0, 0.0f, 2.0f, NULL, NULL, false, ERR_HDR},
+    {"HDR", "Highlights", SET_FLOAT, F(hdr_highlights), 0, 0.0f, 100.0f, NULL, NULL, false, ERR_HDR},
+    {"HDR", "Shadows", SET_FLOAT, F(hdr_shadows), 0, 0.0f, 100.0f, NULL, NULL, false, ERR_HDR},
+    {"HDR", "Contrast", SET_FLOAT, F(hdr_contrast), 0, 0.0f, 100.0f, NULL, NULL, false, ERR_HDR},
+    {"HDR", "Saturation", SET_FLOAT, F(hdr_saturation), 0, 0.0f, 100.0f, NULL, NULL, false, ERR_HDR},
+    {"HDR", "HighlightSaturation", SET_FLOAT, F(hdr_highlight_saturation), 0, 0.0f, 100.0f, NULL, NULL, false, ERR_HDR},
+    {"HDR", "Flare", SET_FLOAT, F(hdr_flare), 0, 0.0f, 100.0f, NULL, NULL, false, ERR_HDR},
+    {"HDR", "Bloom", SET_FLOAT, F(hdr_bloom), 0, 0.0f, 100.0f, NULL, NULL, false, ERR_HDR},
+    ON_OFF("HDR", "UnclampedScene", hdr_scene, false),
+    ON_OFF("HDR", "Analysis", hdr_analysis, false),
+    {"HDR", "HDRFormat", SET_CHOICE, F(hdr_format), 0, 0, 0, "Auto,HDR10|pq,scRGB|fp16", NULL, false, ERR_HDR},
     ON_OFF("Performance", "ShowFPS", show_fps, false),
     {"Performance", "ShowBattery", SET_CHOICE, F(show_battery), 0, 0, 0, "Off,WithFPS,ByItself", NULL, false, ERR_MISC},
     {"Performance", "FPS|FrameRate", SET_INT, F(fps), 0, 30, 240, NULL, NULL, false, ERR_MISC},
     ON_OFF("Performance", "VSync", vsync, false),
     ON_OFF("Performance", "ShaderPrewarm", shader_prewarm, true),
-    ON_OFF("Performance", "Precompile", precompile, false),
+    ON_OFF("Performance", "LoadingIndicator", loading_indicator, true),  // (ini only: not in the settings menu)
     {"Controls", "FaceButtons", SET_CHOICE, F(face_buttons), 0, 0, 0, "Position|positional|nintendo,Label|labels|xbox",
      NULL, false, ERR_MISC},
     {"Controls", "Icons", SET_CHOICE, F(icons), 0, 0, 0, "Switch,Xbox,PlayStation", NULL, false, ERR_MISC},
     ON_OFF("Controls", "BackgroundInput", background_input, false),
+    ON_OFF("Controls", "KeyboardPrompts", kbm_prompts, false),
+    ON_OFF("Controls", "MenuChord", menu_chord, false),
     {"Controls", "ComboInputWindow", SET_CHOICE, F(combo_window), 0, 0, 0, "Lenient,Strict", NULL, false, ERR_MISC},
     {"Controls", "ChatKey", SET_TEXT, F(chat_key), sizeof g_config.chat_key, 0, 0, NULL, NULL, false, ERR_MISC},
     {"Mouse", "MouseSensitivity", SET_FLOAT, F(mouse_sensitivity), 0, 0.1f, 10.0f, NULL, NULL, false, ERR_VIEW},
+    {"Mouse", "MouseSensitivityY", SET_FLOAT, F(mouse_sensitivity_y), 0, 0.1f, 10.0f, NULL, NULL, false, ERR_MOUSE},
+    ON_OFF("Mouse", "MouseInvertY", mouse_invert_y, false),
+    {"Mouse", "MouseSmoothing", SET_FLOAT, F(mouse_smoothing), 0, 0.0f, 0.9f, NULL, NULL, false, ERR_MOUSE},
+    {"Mouse", "MouseCapture", SET_CHOICE, F(mouse_capture), 0, 0, 0, "Click,Hunt", NULL, false, ERR_MISC},
     KEYS("MoveUp", BIND_MOVE_UP), KEYS("MoveDown", BIND_MOVE_DOWN), KEYS("MoveLeft", BIND_MOVE_LEFT),
     KEYS("MoveRight", BIND_MOVE_RIGHT), KEYS("Walk", BIND_WALK), KEYS("A", BIND_A), KEYS("B", BIND_B), KEYS("X", BIND_X),
     KEYS("Y", BIND_Y), KEYS("L", BIND_L), KEYS("R", BIND_R), KEYS("ZL", BIND_ZL), KEYS("ZR", BIND_ZR),
     KEYS("Plus", BIND_PLUS), KEYS("Minus", BIND_MINUS), KEYS("DpadUp", BIND_DPAD_UP), KEYS("DpadDown", BIND_DPAD_DOWN),
     KEYS("DpadLeft", BIND_DPAD_LEFT), KEYS("DpadRight", BIND_DPAD_RIGHT), KEYS("LeftStickClick", BIND_LSTICK),
     KEYS("RightStickClick", BIND_RSTICK), KEYS("ItemLeft", BIND_ITEM_LEFT), KEYS("ItemRight", BIND_ITEM_RIGHT),
-    {"Multiplayer", "Port", SET_INT, F(ldn_port), 0, 1, 65535, NULL, NULL, true, ERR_NET},
+    {"Multiplayer", "Port", SET_INT, F(ldn_port), 0, 1, 65535, NULL, NULL, false, ERR_NET},
     {"Android", "SaveFolder", SET_TEXT, F(save_dir), sizeof g_config.save_dir, 0, 0, NULL, NULL, true, ERR_FOLDER},
     {"Android", "GameFolder", SET_TEXT, F(game_dir), sizeof g_config.game_dir, 0, 0, NULL, NULL, true, ERR_GAME_FOLDER},
-    {"Multiplayer", "Join", SET_TEXT, F(ldn_join), sizeof g_config.ldn_join, 0, 0, NULL, NULL, true, ERR_NET},
+    {"Multiplayer", "Join", SET_TEXT, F(ldn_join), sizeof g_config.ldn_join, 0, 0, NULL, NULL, false, ERR_NET},
     {"Multiplayer", "Server", SET_TEXT, F(ldn_server), sizeof g_config.ldn_server, 0, 0, NULL, NULL, false, ERR_SERVER},
     {"Multiplayer", "Key", SET_TEXT, F(ldn_key), sizeof g_config.ldn_key, 0, 0, NULL, NULL, false, ERR_SERVER},
-    ON_OFF("Multiplayer", "SyncSmallMonsters", sync_small_monsters, true),
+    ON_OFF("Multiplayer", "Direct", ldn_direct, false),
+    ON_OFF("Multiplayer", "SyncSmallMonsters", sync_small_monsters, false),
+    ON_OFF("Multiplayer", "LagCompensation", lag_compensation, false),
     ON_OFF("Multiplayer", "ShareUrgentCredit", share_urgent, false),
-    {"Monster HP", "1Player|1Players", SET_FACTOR, F(hp.scale[0]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
-    {"Monster HP", "2Players|2Player", SET_FACTOR, F(hp.scale[1]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
-    {"Monster HP", "3Players|3Player", SET_FACTOR, F(hp.scale[2]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
-    {"Monster HP", "4Players|4Player", SET_FACTOR, F(hp.scale[3]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_HP},
-    ON_OFF("Village Quests", "VillageQuestsInHub", village_in_hub, true),
-    ON_OFF("Armor Fusion", "Enabled", armor_fusion, true),
-    {"Village Quests", "HubHP", SET_FACTOR, F(hp.village), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, true, ERR_VILLAGE},
+    {"Monster HP", "1Player|1Players", SET_FACTOR, F(hp.scale[0]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, false, ERR_HP},
+    {"Monster HP", "2Players|2Player", SET_FACTOR, F(hp.scale[1]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, false, ERR_HP},
+    {"Monster HP", "3Players|3Player", SET_FACTOR, F(hp.scale[2]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, false, ERR_HP},
+    {"Monster HP", "4Players|4Player", SET_FACTOR, F(hp.scale[3]), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, false, ERR_HP},
+    ON_OFF("Village Quests", "VillageQuestsInHub", village_in_hub, false),
+    {"Village Quests", "HubHP", SET_FACTOR, F(hp.village), 0, HP_SCALE_MIN, HP_SCALE_MAX, NULL, NULL, false, ERR_VILLAGE},
+    ON_OFF("Quest Rewards", "HoldASend", quest_hold_send, false),
+    {"Multiplayer", "RyuServers", SET_TEXT, F(ldn_ryu_servers), sizeof g_config.ldn_ryu_servers, 0, 0, NULL, NULL, false, ERR_SERVER},
+    {"Multiplayer", "RyuHost", SET_TEXT, F(ldn_ryu_host), sizeof g_config.ldn_ryu_host, 0, 0, NULL, NULL, false, ERR_SERVER},
+    {"Multiplayer", "RyuPassphrase", SET_TEXT, F(ldn_ryu_pass), sizeof g_config.ldn_ryu_pass, 0, 0, NULL, NULL, false, ERR_SERVER},
+    {"Multiplayer", "RoomServer", SET_TEXT, F(ldn_room_server), sizeof g_config.ldn_room_server, 0, 0, NULL, NULL, false, ERR_SERVER},
+    {"Multiplayer", "RoomPassword", SET_TEXT, F(ldn_room_pass), sizeof g_config.ldn_room_pass, 0, 0, NULL, NULL, false, ERR_SERVER},
+    {"Multiplayer", "RoomName", SET_TEXT, F(ldn_room_nick), sizeof g_config.ldn_room_nick, 0, 0, NULL, NULL, false, ERR_SERVER},
+    ON_OFF("Multiplayer", "RoomHost", ldn_room_host, false),
+    ON_OFF("Multiplayer", "RyuServe", ldn_ryu_serve, false),
+    {"Multiplayer", "RyuServePort", SET_INT, F(ldn_ryu_serve_port), 0, 0, 65535, NULL, NULL, false, ERR_NET},
+    ON_OFF("Multiplayer", "RoomServe", ldn_room_serve, false),
+    {"Multiplayer", "RoomServePort", SET_INT, F(ldn_room_serve_port), 0, 0, 65535, NULL, NULL, false, ERR_NET},
     ON_OFF("Discord", "RichPresence", discord, false),
     ON_OFF("Discord", "ShowHunter", discord_hunter, false),
-    ON_OFF("Bonus Content", "BonusContent", bonus_content, true),
+    ON_OFF("Bonus Content", "BonusContent", bonus_content, false),
     {"Audio", "Volume", SET_INT, F(volume), 0, 0, 100, NULL, NULL, false, ERR_MISC},
     ON_OFF("Audio", "MuteInBackground", mute_in_background, false),
+    {"Audio", "Output", SET_CHOICE, F(audio_output), 0, 0, 0, "Stereo|2.0,5.1|surround|5.1surround", NULL, false, ERR_MISC},
+    ON_OFF("Application", "ConfirmExit", confirm_exit, false),
     {"Application", "Language", SET_CHOICE, F(language), 0, 0, 0, "English|en,Spanish|es", NULL, false, ERR_LANGUAGE},
     {"Application", "ButtonIcons", SET_CHOICE, F(button_icons), 0, 0, 0, "Xbox,Switch,PlayStation", NULL, false, ERR_ICONS},
     {"Application", "Theme", SET_CHOICE, F(menu_theme), 0, 0, 0, "Gold,Blue,Hunter", NULL, false, ERR_MISC},
@@ -615,6 +958,29 @@ static bool parse_bool(const char *v, int *out) {
     return true;
 }
 
+bool config_parse_keys(const char *value, int keys[BIND_KEYS]) {  // names separated by ',' ("Return, Keypad Enter"), or None
+    char v[256];
+    snprintf(v, sizeof v, "%s", value);
+    squash(v);
+    int got[BIND_KEYS] = {0}, n = 0;
+    if (strcmp(v, "none") && *v)
+        for (const char *p = value;; p++) {
+            size_t len = strcspn(p, ",");
+            char one[64];
+            snprintf(one, sizeof one, "%.*s", (int)len, p);
+            char *a = one, *b = one + strlen(one);
+            while (isspace((unsigned char)*a)) a++;
+            while (b > a && isspace((unsigned char)b[-1])) *--b = 0;
+            int code = config_key_code(a);
+            if (!code || !bind_key_valid(code) || n == BIND_KEYS) return false;
+            if (!n || got[0] != code) got[n++] = code;
+            p += len;
+            if (!*p) break;
+        }
+    memcpy(keys, got, sizeof got);
+    return true;
+}
+
 bool config_parse(const ConfigSetting *s, const char *value, Config *c) {
     char v[256], *end;
     snprintf(v, sizeof v, "%s", value);
@@ -653,27 +1019,17 @@ bool config_parse(const ConfigSetting *s, const char *value, Config *c) {
     case SET_TEXT:  // (as written: host names keep their dashes)
         snprintf((char *)c + s->field, s->field2, "%s", value);
         return true;
-    case SET_KEYS: {  // names separated by ',' ("Return, Keypad Enter"), or None
-        int keys[BIND_KEYS] = {0}, n = 0;
-        if (strcmp(v, "none") && *v)
-            for (const char *p = value;; p++) {
-                size_t len = strcspn(p, ",");
-                char one[64];
-                snprintf(one, sizeof one, "%.*s", (int)len, p);
-                char *a = one, *b = one + strlen(one);
-                while (isspace((unsigned char)*a)) a++;
-                while (b > a && isspace((unsigned char)b[-1])) *--b = 0;
-                int code = config_key_code(a);
-                if (!code || !bind_key_valid(code) || n == BIND_KEYS) return false;
-                if (!n || keys[0] != code) keys[n++] = code;
-                p += len;
-                if (!*p) break;
-            }
-        memcpy(field_int(c, s->field), keys, sizeof keys);
-        return true;
-    }
+    case SET_KEYS: return config_parse_keys(value, field_int(c, s->field));
     }
     return false;
+}
+
+void config_format_keys(const int keys[BIND_KEYS], char *buf, size_t size) {
+    size_t n = 0;
+    if (size) *buf = 0;
+    for (int i = 0; i < BIND_KEYS; i++)
+        if (keys[i] && n < size) n += (size_t)snprintf(buf + n, size - n, "%s%s", n ? ", " : "", config_key_name(keys[i]));
+    if (!n) snprintf(buf, size, "None");
 }
 
 void config_format(const ConfigSetting *s, const Config *c, char *buf, size_t size) {
@@ -699,15 +1055,7 @@ void config_format(const ConfigSetting *s, const Config *c, char *buf, size_t si
         else snprintf(buf, size, "%g", (double)fv);
         break;
     case SET_TEXT: snprintf(buf, size, "%s", (const char *)c + s->field); break;
-    case SET_KEYS: {
-        const int *k = field_int(c, s->field);
-        size_t n = 0;
-        if (size) *buf = 0;
-        for (int i = 0; i < BIND_KEYS; i++)
-            if (k[i] && n < size) n += (size_t)snprintf(buf + n, size - n, "%s%s", n ? ", " : "", config_key_name(k[i]));
-        if (!n) snprintf(buf, size, "None");
-        break;
-    }
+    case SET_KEYS: config_format_keys(field_int(c, s->field), buf, size); break;
     }
 }
 
@@ -967,9 +1315,12 @@ void config_load(void) {
     } else {
         char buf[512], seen[512] = "|";
         int line = 0;
+        bool own = false;  // in a section another module reads itself ([Actions*], runtime/actions.c)
         while (fgets(buf, sizeof buf, f)) {
             line++;
             char *s = trim(buf);
+            if (*s == '[') own = !strncasecmp(s + 1, "Actions", 7) && (s[8] == ']' || s[8] == '.');
+            if (own) continue;
             if (*s == '[' && strchr(s, ']') && strlen(seen) + strlen(s) + 2 < sizeof seen) {
                 for (char *q = s + 1; *q != ']'; q++) {
                     size_t n = strlen(seen);
@@ -1004,13 +1355,21 @@ void config_load(void) {
     if ((e = getenv("MHGU_MSAA"))) g_config.msaa = atoi(e) >= 8 ? 8 : atoi(e) >= 4 ? 4 : atoi(e) >= 2 ? 2 : 1;
     if ((e = getenv("MHGU_FXAA"))) g_config.fxaa = atoi(e) != 0;
     if ((e = getenv("MHGU_RT16"))) g_config.smooth_gradients = atoi(e) != 0;
+    if ((e = getenv("MHGU_FIX_KERNING"))) g_config.fix_kerning = atoi(e) != 0;
+    if ((e = getenv("MHGU_BOLD_TEXT"))) g_config.bold_text = atoi(e) != 0;
+    if ((e = getenv("MHGU_HDR"))) g_config.hdr = atoi(e) != 0;
     if ((e = getenv("MHGU_BACKGROUND_INPUT"))) g_config.background_input = atoi(e) != 0;
     if ((e = getenv("MHGU_PAD_POSITIONAL"))) g_config.face_buttons = atoi(e) ? FACE_POSITION : FACE_LABEL;
     if ((e = getenv("MHGU_LDN_PORT")) && atoi(e) > 0) g_config.ldn_port = atoi(e);
     if ((e = getenv("MHGU_SYNC_ZAKO"))) g_config.sync_small_monsters = atoi(e) != 0;
+    if ((e = getenv("MHGU_LAGCOMP"))) g_config.lag_compensation = atoi(e) != 0;
     if ((e = getenv("MHGU_LDN_JOIN"))) snprintf(g_config.ldn_join, sizeof g_config.ldn_join, "%s", e);
     if ((e = getenv("MHGU_LDN_SERVER"))) snprintf(g_config.ldn_server, sizeof g_config.ldn_server, "%s", e);
     if ((e = getenv("MHGU_LDN_KEY"))) snprintf(g_config.ldn_key, sizeof g_config.ldn_key, "%s", e);
+    if ((e = getenv("MHGU_LDN_DIRECT"))) g_config.ldn_direct = atoi(e) != 0;
+    if ((e = getenv("MHGU_LDN_RYU"))) snprintf(g_config.ldn_ryu_servers, sizeof g_config.ldn_ryu_servers, "%s", e);
+    if ((e = getenv("MHGU_LDN_RYU_HOST"))) snprintf(g_config.ldn_ryu_host, sizeof g_config.ldn_ryu_host, "%s", e);
+    if ((e = getenv("MHGU_LDN_ROOM"))) snprintf(g_config.ldn_room_server, sizeof g_config.ldn_room_server, "%s", e);
     if ((e = getenv("MHGU_ASPECT"))) parse_aspect(e, &g_config.aspect_ratio);
     if ((e = getenv("MHGU_FOV")) && strtof(e, NULL) >= 0.5f && strtof(e, NULL) <= 2.0f) g_config.fov = strtof(e, NULL);
     if ((e = getenv("MHGU_RENDER_SCALE")) && strtof(e, NULL) >= 0.1f && strtof(e, NULL) <= 2.0f) g_config.render_scale = strtof(e, NULL);
@@ -1023,6 +1382,10 @@ void config_load(void) {
     if ((e = getenv("MHGU_FSR_ANIMSURF"))) g_config.fsr_animsurf = atoi(e) != 0;
     if ((e = getenv("MHGU_FSR_SHARPNESS")) && strtof(e, NULL) >= 0.0f && strtof(e, NULL) <= 1.0f) g_config.fsr_sharpness = strtof(e, NULL);
     if ((e = getenv("MHGU_FSR_REACTIVE")) && strtof(e, NULL) >= 0.0f && strtof(e, NULL) <= 1.0f) g_config.fsr_reactive = strtof(e, NULL);
+    if (g_config.hdr && g_config.fsr) {  // (FSR's input stays 8-bit: the picture would be SDR-bright, nvn/vulkan/hdr.c)
+        LOG("[config] HDR is on: FSR off\n");
+        g_config.fsr = 0;
+    }
 
     int tw = g_config.width, th = g_config.height;  // (Borderless shows the image at the desktop size)
     if (g_config.display_mode == DISPLAY_BORDERLESS) tw = tw < desktop_w ? tw : desktop_w, th = th < desktop_h ? th : desktop_h;
@@ -1071,8 +1434,9 @@ void config_load(void) {
     // [Display] RenderScale: a fraction of the size above (rendered small, upscaled) or a multiple of it
     // (supersampling). Only the 3D picture is rendered at this size: the HUD is drawn on an output-size stand-in
     // (nvn/vulkan/fsr.c's plain-scaling path), which needs that output size as g_fsr_output when FSR is off.
-    if (g_config.render_scale >= 0.1f && g_config.render_scale <= 2.0f &&
-        fabsf(g_config.render_scale - 1.0f) > 0.001f) {
+    bool rs_scaled = g_config.render_scale >= 0.1f && g_config.render_scale <= 2.0f &&
+                     fabsf(g_config.render_scale - 1.0f) > 0.001f;
+    if (rs_scaled) {
         if (!g_config.fsr) g_fsr_output[0] = (uint32_t)w, g_fsr_output[1] = (uint32_t)h;
         int sh = (int)((float)h * g_config.render_scale + 0.5f) & ~1;
         if (sh < 64) sh = 64;  // (the picture keeps its shape: both clamps recompute the other side)
@@ -1086,9 +1450,52 @@ void config_load(void) {
             if (!(lod && *lod)) g_fsr_lod_bias = log2f((float)w / (float)g_fsr_output[0]);
         }
     }
+    // Resolution scaling: a 3D picture more than 1080 lines high (the Switch's docked picture) is rendered by the game
+    // 1080 lines high, in the same shape (g_render_size: what its code, its cameras and its memory see), and the
+    // renderer makes its screen-sized render targets that much larger (textures.c tex_scalable; exec.c scales
+    // viewports, scissors, copies and shader texel coordinates). The game's GPU pool then holds what it holds on the
+    // Switch at any size: rendering at the size itself, its targets took ~59 bytes a pixel of it, which capped the size.
+    // Not with FSR (its stand-ins and inputs are made for the game rendering at its input size: that keeps the old way)
+    // nor with MHGU_NO_RSCALE=1 (A/B tests).
+    bool rscale = !rs_scaled && !g_config.fsr && h > 1080 && !getenv("MHGU_NO_RSCALE");
+    if (!rscale) {  // The game's 2.5 GB heap fits its GPU pool (below) grown by ~665 MB at most (4800x2700 played;
+        // 5120x2880, +774: "out of command memory" before the town). Larger render sizes never worked: their targets
+        // alone are more than the pool. Keep the shape, lower the size to what fits with 640 MB.
+        const uint64_t max_px = 1920ull * 1080ull + (640ull << 20) / 64;
+        uint64_t px = (uint64_t)w * (uint64_t)h;
+        if (px > max_px) {
+            double s = sqrt((double)max_px / (double)px);
+            int ow = w, oh = h;
+            fit_aspect((int)(w * s), (int)(h * s), aspect, &w, &h);
+            while ((uint64_t)w * (uint64_t)h > max_px) fit_aspect(w - 8, h - 8, aspect, &w, &h);
+            LOG("[config] 3D resolution %dx%d is more than the game's memory holds: using %dx%d\n", ow, oh, w, h);
+            if (g_config.fsr && !getenv("MHGU_FSR_LODBIAS")) g_fsr_lod_bias = log2f((float)w / (float)g_fsr_output[0]);
+        }
+    } else if (w > 16384 || h > 16384) {  // (the largest image GPUs make)
+        int ow = w, oh = h;
+        fit_aspect(w < 16384 ? w : 16384, h < 16384 ? h : 16384, aspect, &w, &h);
+        LOG("[config] 3D resolution %dx%d is larger than the GPU's images: using %dx%d\n", ow, oh, w, h);
+    }
+    int gw = w, gh = h;
+    if (rscale) fit_aspect(w, 1080, aspect, &gw, &gh);
     g_config.render_w = w, g_config.render_h = h;
-    g_render_size[0] = (uint32_t)w;
-    g_render_size[1] = (uint32_t)h;
+    g_render_host[0] = (uint32_t)w, g_render_host[1] = (uint32_t)h;
+    g_render_size[0] = (uint32_t)gw;
+    g_render_size[1] = (uint32_t)gh;
+    g_rscale[0] = (float)w / (float)gw, g_rscale[1] = (float)h / (float)gh;
+    if (rscale) LOG("[config] resolution scaling: the game renders %dx%d, its picture is made %dx%d (x%.3f)\n", gw, gh, w, h,
+                    g_rscale[1]);
+    {   // The game's screen-sized targets come out of its 848 MB GPU pool: ~59 bytes a pixel (measured at 720p to
+        // 4320x2430). Above the Switch's 1920x1080 the pool grows by that much (64 a pixel), so what's left for
+        // textures stays as on the Switch; at 4320x2430 the pool was otherwise too full for a boss demo's 5.6 MB
+        // texture, and the game copied it to address 0 over its own code. (With resolution scaling only a picture wider
+        // than 16:9 is more pixels than that.)
+        uint64_t px = (uint64_t)gw * (uint64_t)gh, base = 1920ull * 1080ull;
+        uint64_t size = 0x35200000ull + (px > base ? ((px - base) * 64 + 0xfffff) & ~0xfffffull : 0);
+        g_gpu_pool_size = (uint32_t)size;
+        if (px > base) LOG("[config] GPU memory pool %u MB (848 + %u for the render size)\n", (unsigned)(size >> 20),
+                           (unsigned)((size - 0x35200000ull) >> 20));
+    }
     g_render_aspect = aspect;
     g_fov_scale = g_config.fov;
 

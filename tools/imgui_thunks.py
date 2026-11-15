@@ -150,6 +150,9 @@ def _layout(name, abi):
             continue
         unit = None
         s, a, lv = type_layout(parse(f['type']), abi)
+        if name == 'ImDrawList' and f['name'] == '_VtxWritePtr':
+            # A moving buffer cursor, like _IdxWritePtr; not a persistent object.
+            lv = [(0, 'data', s, None)]
         off = align(off, a)
         for i in range(f.get('size', 1)):
             leaves += [(off + i * s + o, k, z, x) for o, k, z, x in lv]
@@ -464,6 +467,12 @@ def gen(o):
     # the call and its result
     callx = '%s(%s)' % (fn, ', '.join(call))
     lines = ['IG_ENTER(c);'] if not memret else ['uint32_t ret_ = c->r[0];', 'IG_ENTER(c);']
+    # a method (ImDrawList_AddText, ImFont_CalcTextSizeA...) given a null object: ImGui would crash the game on it, so
+    # the call is skipped with a log line naming the plugin's code (ig_null_self) and a zero result
+    if (o.get('stname') and not o.get('constructor') and args and args[0]['name'] == 'self'
+            and parse(args[0]['type'])[0] == 'ptr'):
+        size = layout(rt[1], 'g')[0] if memret else 0
+        lines = ['if (!a0) { ig_null_self(c, "%s", %d); return; }' % (sym, size)] + lines
     lines = pre + lines + conv
     k = rt[0]
     if k == 'void':
@@ -595,4 +604,5 @@ def _field_offsets(name, abi):
     return res
 
 
-main()
+if __name__ == '__main__':
+    main()

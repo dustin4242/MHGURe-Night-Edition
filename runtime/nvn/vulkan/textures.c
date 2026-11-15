@@ -250,9 +250,38 @@ void vk_defer_view(VkImageView v) { vk_framebuffers_forget_view(v); defer((Dead)
 void vk_defer_framebuffer(VkFramebuffer f) { defer((Dead){.fb = f}); }
 void vk_defer_buffer(VkBuffer b, VmaAllocation mem) { defer((Dead){.buf = b, .mem = mem}); }
 
+// ---- resolution scaling (config.c: g_rscale above 1)
+// The game renders at g_render_size; its screen-sized render targets are made g_rscale times larger here, and exec.c
+// maps the guest's pixel units onto them (viewports, scissors, copies, the shaders' texel coordinates and FragCoord
+// through the rscale table). Scaled: 2D render targets (NVN's COMPRESSIBLE flag, which every target the game makes has
+// and its loaded textures don't) of the render size or a halving of it (1920x1080, 960x540 ... 60x33 in the game's
+// bloom chain: rounded down, or up). Not the shadow maps (their own sizes) nor the handheld-size twins the game makes
+// at the same storage (1280x720 and its halvings: never rendered to while docked).
+static bool tex_scalable(const NvnTexture *t) {
+    if (g_rscale[0] <= 1.0f && g_rscale[1] <= 1.0f) return false;
+    if (t->target != 1 || t->samples > 1 || !(t->flags & 8) || !t->width || !t->height) return false;
+    for (int k = 0; k < 8; k++) {
+        uint32_t m = (1u << k) - 1, w0 = g_render_size[0] >> k, h0 = g_render_size[1] >> k;
+        uint32_t w1 = (g_render_size[0] + m) >> k, h1 = (g_render_size[1] + m) >> k;
+        if (!w0 || !h0) break;
+        if ((t->width == w0 || t->width == w1) && (t->height == h0 || t->height == h1)) return true;
+    }
+    return false;
+}
+
 static void create_image(NvnTexture *t, TexBackend *b) {
     VkFmt mf = fmt_of(t->format);
     uint32_t tw = t->width ? t->width : 1, th = t->height ? t->height : 1;
+    b->sx = b->sy = 1.0f;
+    if (tex_scalable(t)) {
+        tw = (uint32_t)lroundf((float)tw * g_rscale[0]), th = (uint32_t)lroundf((float)th * g_rscale[1]);
+        if (!tw) tw = 1;
+        if (!th) th = 1;
+        b->sx = (float)tw / (float)t->width, b->sy = (float)th / (float)t->height;
+        static int nlog;
+        if (nlog++ < 24 || getenv("MHGU_TEX_LOG"))
+            LOG("[vk] render target %ux%u (format %#x) made %ux%u (resolution scaling)\n", t->width, t->height, t->format, tw, th);
+    }
     VkImageType type = VK_IMAGE_TYPE_2D;
     uint32_t layers = 1, depth = 1;
     switch (t->target) {
@@ -296,7 +325,7 @@ static void create_image(NvnTexture *t, TexBackend *b) {
             vf = VK_FORMAT_R8G8B8A8_UNORM;
         }
     }
-    if (b->wide) vf = VK_FORMAT_R16G16B16A16_UNORM;
+    if (b->wide) vf = vk_wide_format(b->wide);
     bool depthfmt = renderer_format_is_depth(t->format);
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (depthfmt) usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -556,6 +585,9 @@ static void upload_texture(NvnTexture *t, TexBackend *b) {
     b->full_frame = frame;
     b->sample_hash = fnv_sample(mem, total);
     if (b->uploaded && h == b->data_hash) return;
+    // (hle/prompts.c: the button glyphs' textures, by their data - a backend is reused for a quest's textures, so not
+    // only its first upload)
+    { void prompts_texture_seen(uint32_t, const uint8_t *, uint64_t); prompts_texture_seen((uint32_t)t->addr, mem, total); }
     if (b->uploaded && h != b->data_hash) b->dynamic = true;
     b->data_hash = h;
     b->uploaded = true;
@@ -618,29 +650,32 @@ TexBackend *vk_tex(NvnTexture *t, bool for_render) {
     if (b->pending_rgba) upload_pending(b);
     if (for_render) b->gpu_owned = true;
     else if (!b->gpu_owned) {
+        // (timed for MHGU_VK_STATS only: this runs for every texture of every draw)
+        static int stats = -1;
+        if (stats < 0) stats = getenv("MHGU_VK_STATS") != NULL;
         extern uint64_t stat_upload_ns;
-        uint64_t t0 = plat_now_ns();
+        uint64_t t0 = stats ? plat_now_ns() : 0;
         upload_texture(t, b);
-        stat_upload_ns += plat_now_ns() - t0;
+        if (stats) stat_upload_ns += plat_now_ns() - t0;
     }
     return b;
 }
 
 // (exec.c begin_pass, outside a render pass, before t is rendered to) An RGBA8 2D target re-made wide or back to
 // RGBA8 (SmoothGradients turned off, or it turns out to be FSR's input), its contents blitted over.
-void vk_rt_widen(NvnTexture *t, bool on) {
+void vk_rt_widen(NvnTexture *t, int on) {
     if (t->format != 0x25 || t->target != 1) return;
     TexBackend *b = tex_backend(t);
-    if (b->wide == on || b->format != (b->wide ? VK_FORMAT_R16G16B16A16_UNORM : VK_FORMAT_R8G8B8A8_UNORM)) return;
+    if (b->wide == on || b->format != vk_wide_format(b->wide)) return;
     if (b->pending_rgba) upload_pending(b);
     vk_ms_resolve(b);
     if (b->ms) { destroy_image(b->ms); free(b->ms); b->ms = NULL; }
     b->ms_valid = b->ms_dirty = false;
     views_forget(b);
     TexBackend old = *b;
-    b->wide = on;
+    b->wide = (uint8_t)on;
     create_image(t, b);
-    b->wide = b->format == VK_FORMAT_R16G16B16A16_UNORM;  // (creation failed: RGBA8 after all)
+    if (b->format != vk_wide_format(on)) b->wide = WIDE_NONE;  // (creation failed: RGBA8 after all)
     VkCommandBuffer cb = vk_cmd();
     vk_full_barrier(cb);
     VkImageBlit r[16];
@@ -654,7 +689,9 @@ void vk_rt_widen(NvnTexture *t, bool on) {
     vk_full_barrier(cb);
     defer((Dead){.img = old.image, .mem = old.mem});
     static int nlog;
-    if (nlog++ < 40) LOG("[vk] render target %ux%u (%u levels) %s\n", b->width, b->height, b->levels, b->wide ? "wide" : "RGBA8");
+    if (nlog++ < 40)
+        LOG("[vk] render target %ux%u (%u levels) %s\n", b->width, b->height, b->levels,
+            b->wide == WIDE_FLOAT16 ? "RGBA16F (HDR)" : b->wide ? "wide" : "RGBA8");
 }
 
 void renderer_mark_gpu_owned(NvnTexture *t) { tex_backend(t)->gpu_owned = true; }
